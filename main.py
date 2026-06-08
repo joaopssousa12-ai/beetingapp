@@ -17,6 +17,7 @@ from collectors.database import (
     get_xg_summary, get_team_xg,
     get_elo_summary, get_elo_rating, elo_based_probability,
     save_manual_odd, delete_manual_odd, get_manual_odds_map,
+    invalidate_value_bets_cache,
     USE_POSTGRES, DATABASE_URL
 )
 from collectors.football import collect_football
@@ -380,6 +381,7 @@ async def run_odds_only():
         except Exception as e:
             cb(f"CLV capture error: {repr(e)}")
         cb("✓ Odds refresh finished.")
+        invalidate_value_bets_cache()
     except Exception as e:
         import traceback
         cb(f"ODDS ERROR: {repr(e)}")

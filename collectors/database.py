@@ -2,6 +2,7 @@ import sqlite3
 import os
 import math
 import re
+import time
 
 # Import new v2 collectors (simplified, no scipy or HTTP)
 try:
@@ -11,6 +12,18 @@ except ImportError as e:
     print(f"WARN: New collectors import failed: {e}", flush=True)
     calculate_recent_form = None
     predict_ou_and_btts = None
+
+# ============================================================
+# IN-MEMORY CACHE — get_value_bets() is expensive (Poisson + Elo
+# per event on every request). Cache results for 5 minutes.
+# Invalidated immediately when manual odds are saved/deleted.
+# ============================================================
+_vb_cache = {"data": None, "ts": 0.0}
+_VB_CACHE_TTL = 300  # 5 minutes
+
+def invalidate_value_bets_cache():
+    _vb_cache["data"] = None
+    _vb_cache["ts"] = 0.0
 
 # ============================================================
 # DATABASE LAYER — supports both SQLite (local) and PostgreSQL (production)
@@ -604,10 +617,81 @@ def remove_vig(odds_home, odds_draw, odds_away):
     }
 
 
+def remove_vig_power(odds_home, odds_draw, odds_away):
+    """
+    Power (Shin) devig — more accurate than proportional for 3-way markets.
+
+    Finds exponent k such that sum(implied^(1/k)) = 1.0 via binary search.
+    Distributes vig proportionally to each outcome's implied probability,
+    which gives slightly higher true probability to favorites vs proportional.
+
+    Used by OddsJam and professional sharp bettors.
+    Falls back to proportional if binary search fails.
+    """
+    if not odds_home or odds_home <= 1:
+        return None
+
+    imp = [1.0 / odds_home]
+    if odds_away and odds_away > 1:
+        imp.append(1.0 / odds_away)
+    if odds_draw and odds_draw > 1:
+        imp.insert(1, 1.0 / odds_draw)  # keep home/draw/away order
+
+    raw_vig = sum(imp)
+    if raw_vig <= 1.0:
+        # No vig — already fair odds
+        s = sum(imp)
+        normed = [round(p / s * 100, 2) for p in imp]
+        result = {"home": normed[0], "vig_pct": 0.0}
+        if odds_draw and odds_draw > 1:
+            result["draw"] = normed[1]
+            result["away"] = normed[2]
+        else:
+            result["draw"] = None
+            result["away"] = normed[1]
+        return result
+
+    # Binary search for power exponent k
+    lo, hi = 0.2, 10.0
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        try:
+            total = sum(p ** (1.0 / mid) for p in imp)
+        except (ValueError, ZeroDivisionError):
+            return None
+        if total > 1.0:
+            hi = mid
+        else:
+            lo = mid
+    k = (lo + hi) / 2.0
+
+    try:
+        true_probs = [p ** (1.0 / k) for p in imp]
+    except (ValueError, ZeroDivisionError):
+        return None
+
+    s = sum(true_probs)
+    if s <= 0:
+        return None
+    true_probs = [round(p / s * 100, 2) for p in true_probs]
+
+    vig_pct = round((raw_vig - 1.0) * 100, 2)
+
+    if odds_draw and odds_draw > 1:
+        return {"home": true_probs[0], "draw": true_probs[1], "away": true_probs[2], "vig_pct": vig_pct}
+    return {"home": true_probs[0], "draw": None, "away": true_probs[1], "vig_pct": vig_pct}
+
+
+# Pinnacle margin threshold above which market is considered illiquid.
+# Pinnacle's typical margins: 1.5-2.5% (major leagues), 3-4% (minor).
+# Above 4% = Pinnacle doesn't have strong info → trust less.
+PINNACLE_MAX_LIQUID_VIG = 4.0
+
+
 def calculate_edge(soft_odd, true_prob_pct):
     """
     Industry-standard edge calculation.
-    
+
     Formula: edge = (soft_odd × true_prob) - 1
     
     Args:
@@ -695,6 +779,11 @@ def confidence_score(edge_pct, pin_implied, sport_name, agreement=None):
 
 def get_value_bets():
     """Full analysis engine across 1X2, O/U 2.5, BTTS markets."""
+    # --- TTL cache ---
+    now = time.time()
+    if _vb_cache["data"] is not None and (now - _vb_cache["ts"]) < _VB_CACHE_TTL:
+        return _vb_cache["data"]
+
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM odds_events ORDER BY commence_time ASC").fetchall()
@@ -711,20 +800,21 @@ def get_value_bets():
         d = dict(r)
         picks = []
 
-        # ========== 1X2 ==========
+        # ========== 1X2 — Power devig (more accurate than proportional) ==========
         ph, pd_, pa = d.get("pin_home"), d.get("pin_draw"), d.get("pin_away")
         if ph and pa:
-            inv_h = implied_prob(ph) or 0
-            inv_d = implied_prob(pd_) or 0
-            inv_a = implied_prob(pa) or 0
-            margin = inv_h + inv_d + inv_a
-            if margin > 0:
-                true_h = inv_h / margin
-                true_d = (inv_d / margin) if inv_d else None
-                true_a = inv_a / margin
+            devig = remove_vig_power(ph, pd_, pa)
+            if devig:
+                true_h = devig["home"] / 100
+                true_d = (devig["draw"] / 100) if devig.get("draw") is not None else None
+                true_a = devig["away"] / 100
                 d["true_home_pct"] = round(true_h * 100, 1)
                 d["true_draw_pct"] = round(true_d * 100, 1) if true_d else None
                 d["true_away_pct"] = round(true_a * 100, 1)
+                d["pin_vig_pct"] = devig["vig_pct"]
+
+                # Pinnacle liquidity flag — margin > 4% = thin market, less reliable
+                d["pin_low_liquidity"] = devig["vig_pct"] > PINNACLE_MAX_LIQUID_VIG
 
                 for sel, tp, x1, best, pin_o in [
                     (d.get("home_team"), true_h, d.get("x1_home"), d.get("best_home"), ph),
@@ -1188,9 +1278,17 @@ def get_value_bets():
                     }
         d["best_manual_value"] = best_manual
 
+        # Liquidity penalty: if Pinnacle margin > 4%, reduce best_confidence by 1
+        if d.get("pin_low_liquidity") and d.get("best_confidence"):
+            d["best_confidence"] = max(1, d["best_confidence"] - 1)
+
         results.append(d)
 
     results.sort(key=lambda x: x.get("commence_time") or "9999")
+
+    # Store in cache
+    _vb_cache["data"] = results
+    _vb_cache["ts"] = time.time()
     return results
 
 
@@ -1210,6 +1308,7 @@ def save_manual_odd(event_id, selection, odd):
             VALUES (?, ?, ?, ?)
         """, (event_id, selection, float(odd), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
+        invalidate_value_bets_cache()
         return True
     finally:
         conn.close()
@@ -1221,6 +1320,7 @@ def delete_manual_odd(event_id, selection):
         conn.execute("DELETE FROM manual_odds WHERE event_id = ? AND selection = ?",
                      (event_id, selection))
         conn.commit()
+        invalidate_value_bets_cache()
         return True
     finally:
         conn.close()
