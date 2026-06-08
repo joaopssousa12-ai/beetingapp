@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BetIQ — Betting Intelligence</title>
+<link rel="stylesheet" href="/static/css/style.css?v=20260608a">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="layout">
+
+    <nav class="sidebar">
+      <div class="brand">
+        <span class="brand-icon">⬡</span>
+        <span class="brand-name">BetIQ</span>
+      </div>
+      <ul class="nav-links">
+        <li><a href="#" class="nav-link active" data-section="overview">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          Overview
+        </a></li>
+        <li><a href="#" class="nav-link" data-section="football">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 0-6.88 17.26M12 2a10 10 0 0 1 6.88 17.26M12 22V12M5.27 6.5l6.73 5.5M18.73 6.5L12 12"/></svg>
+          Football
+        </a></li>
+        <li><a href="#" class="nav-link" data-section="tennis">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M6.3 6.3a9.9 9.9 0 0 1 11.4 0M6.3 17.7a9.9 9.9 0 0 0 11.4 0M2 12h20"/></svg>
+          Tennis
+        </a></li>
+        <li><a href="#" class="nav-link" data-section="national">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 22V4a2 2 0 0 1 2-2h14l-3 6 3 6H6"/></svg>
+          National Teams
+        </a></li>
+        <li><a href="#" class="nav-link" data-section="edge">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+          Value Bets
+        </a></li>
+        <li><a href="#" class="nav-link" data-section="mybets">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          My Bets
+        </a></li>
+        <li><a href="#" class="nav-link" data-section="performance">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 6-6"/></svg>
+          Performance
+        </a></li>
+        <li><a href="#" class="nav-link" data-section="collector">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/></svg>
+          Data Collector
+        </a></li>
+      </ul>
+      <div class="sidebar-footer">
+        <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+          <svg class="icon-moon" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="icon-sun" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <span class="theme-label">Dark mode</span>
+        </button>
+        <div class="last-update" id="last-update">Checking...</div>
+      </div>
+    </nav>
+
+    <main class="main-content">
+
+      <!-- OVERVIEW -->
+      <section id="section-overview" class="section active">
+        <div class="page-header">
+          <h1>Overview</h1>
+          <span class="page-subtitle">Your betting intelligence command centre</span>
+        </div>
+        <div class="stat-grid" id="stat-grid">
+          <div class="stat-card"><div class="stat-label">Football Matches</div><div class="stat-value" id="s-football">—</div></div>
+          <div class="stat-card"><div class="stat-label">Tennis Matches</div><div class="stat-value" id="s-tennis">—</div></div>
+          <div class="stat-card"><div class="stat-label">Leagues Covered</div><div class="stat-value" id="s-leagues">—</div></div>
+          <div class="stat-card"><div class="stat-label">Last Collection</div><div class="stat-value small" id="s-last">—</div></div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <div class="card-head">Football coverage</div>
+            <div id="football-summary-overview">Loading...</div>
+          </div>
+          <div class="card">
+            <div class="card-head">Tennis coverage</div>
+            <div id="tennis-summary-overview">Loading...</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:1rem">
+          <div class="card-head">Recent collection log</div>
+          <div id="collection-log-overview">Loading...</div>
+        </div>
+      </section>
+
+      <!-- FOOTBALL -->
+      <section id="section-football" class="section">
+        <div class="page-header">
+          <h1>Football</h1>
+          <span class="page-subtitle">Match results, shots, odds — all leagues</span>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span>Recent matches</span>
+            <div class="filter-row">
+              <input class="filter-input" id="football-search" placeholder="Filter team or league..." type="text">
+            </div>
+          </div>
+          <div class="table-wrap" id="football-table-wrap">Loading...</div>
+        </div>
+      </section>
+
+      <!-- TENNIS -->
+      <section id="section-tennis" class="section">
+        <div class="page-header">
+          <h1>Tennis</h1>
+          <span class="page-subtitle">ATP & WTA match results and stats</span>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span>Recent matches</span>
+            <div class="filter-row">
+              <input class="filter-input" id="tennis-search" placeholder="Filter player or tournament..." type="text">
+            </div>
+          </div>
+          <div class="table-wrap" id="tennis-table-wrap">Loading...</div>
+        </div>
+      </section>
+
+      <!-- NATIONAL TEAMS -->
+      <section id="section-national" class="section">
+        <div class="page-header">
+          <h1>National Teams</h1>
+          <span class="page-subtitle">International matches — World Cup, qualifiers, Nations League, friendlies</span>
+        </div>
+        <div class="card">
+          <div class="card-head">Tournament coverage</div>
+          <div class="table-wrap" id="national-summary-wrap">Loading...</div>
+        </div>
+        <div class="card" style="margin-top:1rem">
+          <div class="card-head">
+            <span>Recent matches</span>
+            <div class="filter-row">
+              <input class="filter-input" id="national-search" placeholder="Filter by team (e.g. Portugal, Brazil)..." type="text">
+            </div>
+          </div>
+          <div class="table-wrap" id="national-table-wrap">Loading...</div>
+        </div>
+      </section>
+
+      <!-- EDGE ANALYSIS / VALUE BETS -->
+      <section id="section-edge" class="section">
+        <div class="page-header">
+          <h1>Value Bets</h1>
+          <span class="page-subtitle">Every upcoming match analysed across 1X2, Over/Under and BTTS markets</span>
+        </div>
+
+        <div class="vb-toolbar">
+          <div class="vb-toolbar-group">
+            <select id="vb-sport" class="vb-select"><option value="">All sports</option></select>
+            <select id="vb-when" class="vb-select">
+              <option value="all" selected>All upcoming</option>
+              <option value="24h">Next 24h</option>
+              <option value="48h">Next 48h</option>
+              <option value="7d">Next 7 days</option>
+              <option value="14d">Next 14 days</option>
+              <option value="30d">Next 30 days</option>
+            </select>
+            <select id="vb-mode" class="vb-select">
+              <option value="all" selected>All matches</option>
+              <option value="value">Only value bets (2-15% edge)</option>
+              <option value="confident">High confidence (4+ stars)</option>
+            </select>
+            <input id="vb-bankroll" type="number" placeholder="Bankroll €" value="1000" class="vb-input" style="width:130px" title="Set bankroll to see Kelly stake suggestions">
+          </div>
+          <div class="vb-toolbar-group">
+            <span id="vb-count" class="vb-count">—</span>
+            <button class="btn-refresh" id="refresh-odds-btn" onclick="refreshOdds()">↻ Refresh</button>
+          </div>
+        </div>
+
+        <div id="vb-cards" class="vb-cards-grid">Loading...</div>
+
+        <div id="odds-refresh-status" style="display:none;margin-top:0.75rem" class="card">
+          <div class="status-log" id="odds-refresh-log" style="max-height:160px"></div>
+        </div>
+      </section>
+
+      <!-- MY BETS -->
+      <section id="section-mybets" class="section">
+        <div class="page-header">
+          <h1>My Bets</h1>
+          <span class="page-subtitle">Track your bets, ROI, and Closing Line Value</span>
+        </div>
+
+        <div class="stat-grid" id="bet-stats-grid">
+          <div class="stat-card"><div class="stat-label">Total bets</div><div class="stat-value" id="bs-total">—</div></div>
+          <div class="stat-card"><div class="stat-label">Total staked</div><div class="stat-value" id="bs-staked">—</div></div>
+          <div class="stat-card"><div class="stat-label">Profit / Loss</div><div class="stat-value" id="bs-profit">—</div></div>
+          <div class="stat-card"><div class="stat-label">ROI</div><div class="stat-value" id="bs-roi">—</div></div>
+          <div class="stat-card"><div class="stat-label">Win rate</div><div class="stat-value" id="bs-winrate">—</div></div>
+          <div class="stat-card"><div class="stat-label">Avg CLV</div><div class="stat-value" id="bs-clv">—</div></div>
+        </div>
+
+        <div class="card" style="margin-top:1rem">
+          <div class="card-head">
+            <span>Add a bet</span>
+            <button class="btn-refresh" id="toggle-bet-form" onclick="toggleBetForm()">+ New bet</button>
+          </div>
+          <div id="bet-form" style="display:none;padding:1rem 1.25rem">
+            <div class="bet-form-grid">
+              <div class="form-field">
+                <label>Match (from Value Bets — optional)</label>
+                <select id="bet-event-select"><option value="">— pick a match or enter manually below —</option></select>
+              </div>
+              <div class="form-field">
+                <label>Sport</label>
+                <input id="bet-sport" placeholder="FIFA World Cup 2026">
+              </div>
+              <div class="form-field">
+                <label>Home team</label>
+                <input id="bet-home" placeholder="Spain">
+              </div>
+              <div class="form-field">
+                <label>Away team</label>
+                <input id="bet-away" placeholder="Saudi Arabia">
+              </div>
+              <div class="form-field">
+                <label>Date/time of match</label>
+                <input id="bet-commence" type="datetime-local">
+              </div>
+              <div class="form-field">
+                <label>Market</label>
+                <select id="bet-market"><option value="h2h">Match Winner (1X2)</option><option value="over_under">Over/Under</option><option value="other">Other</option></select>
+              </div>
+              <div class="form-field">
+                <label>Selection (what you bet on)</label>
+                <input id="bet-selection" placeholder="Spain">
+              </div>
+              <div class="form-field">
+                <label>Bookmaker</label>
+                <input id="bet-bookmaker" placeholder="1xBet" value="1xBet">
+              </div>
+              <div class="form-field">
+                <label>Your odds</label>
+                <input id="bet-odds" type="number" step="0.01" placeholder="1.85">
+              </div>
+              <div class="form-field">
+                <label>Stake (€)</label>
+                <input id="bet-stake" type="number" step="0.01" placeholder="10.00">
+              </div>
+              <div class="form-field full">
+                <label>Notes</label>
+                <input id="bet-notes" placeholder="Optional">
+              </div>
+            </div>
+            <div style="display:flex;gap:0.75rem;margin-top:1rem">
+              <button class="btn-primary" onclick="submitBet()">Save bet</button>
+              <button class="btn-secondary" onclick="toggleBetForm()">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:1rem">
+          <div class="card-head">Your bets</div>
+          <div class="table-wrap" id="bets-table-wrap">Loading...</div>
+        </div>
+
+        <div class="card info-banner" style="margin-top:1rem">
+          <strong>What is CLV?</strong> Closing Line Value tells you if your odds were better than Pinnacle's final odds. Positive CLV over many bets is the strongest signal you have a real edge — even more reliable than win rate or short-term profit.
+        </div>
+      </section>
+
+      <!-- PERFORMANCE -->
+      <section id="section-performance" class="section">
+        <div class="page-header">
+          <h1>Performance</h1>
+          <span class="page-subtitle">Where your edge actually lives — by sport, market, odds, and time</span>
+        </div>
+
+        <div class="perf-toolbar">
+          <label class="perf-toolbar-label">Starting bankroll</label>
+          <input id="perf-start-bankroll" type="number" placeholder="1000" value="1000" class="vb-input">
+          <span class="perf-toolbar-hint">All figures assume this starting amount</span>
+        </div>
+
+        <div class="perf-key-metrics" id="perf-key-metrics"></div>
+
+        <div class="card" style="margin-top:1rem">
+          <div class="card-head">Bankroll evolution</div>
+          <div id="perf-bankroll-chart" class="perf-chart-wrap">Loading...</div>
+        </div>
+
+        <div class="perf-grid">
+          <div class="card">
+            <div class="card-head">ROI by sport</div>
+            <div class="perf-table-wrap" id="perf-by-sport"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">ROI by market</div>
+            <div class="perf-table-wrap" id="perf-by-market"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">ROI by bookmaker</div>
+            <div class="perf-table-wrap" id="perf-by-bookmaker"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">ROI by odds range</div>
+            <div class="perf-table-wrap" id="perf-by-odds"></div>
+          </div>
+        </div>
+
+        <div class="card info-banner" style="margin-top:1rem">
+          <strong>How to read this:</strong> A positive CLV (Closing Line Value) over 30+ bets is the strongest signal of real edge. ROI by sport tells you where you're actually skilled. Avoid streak-chasing — the longest losing streak shows you what variance looks like, even when your model is right.
+        </div>
+      </section>
+
+      <!-- DATA COLLECTOR -->
+      <section id="section-collector" class="section">
+        <div class="page-header">
+          <h1>Data Collector</h1>
+          <span class="page-subtitle">Manually trigger or monitor data collection</span>
+        </div>
+        <div class="two-col">
+          <div class="card">
+            <div class="card-head">Sources</div>
+            <div class="source-list">
+              <div class="source-item">
+                <div class="source-dot green"></div>
+                <div>
+                  <div class="source-name">football-data.co.uk</div>
+                  <div class="source-desc">Match results + odds, 20+ leagues, back to 2015</div>
+                </div>
+              </div>
+              <div class="source-item">
+                <div class="source-dot green"></div>
+                <div>
+                  <div class="source-name">JeffSackmann (ATP/WTA)</div>
+                  <div class="source-desc">Tennis results + stats, 2015 onwards</div>
+                </div>
+              </div>
+              <div class="source-item">
+                <div class="source-dot amber"></div>
+                <div>
+                  <div class="source-name">Understat xG</div>
+                  <div class="source-desc">xG data from 5 major European leagues, 2024-26</div>
+                </div>
+              </div>
+              <div class="source-item">
+                <div class="source-dot amber"></div>
+                <div>
+                  <div class="source-name">OddsPortal (Pinnacle history)</div>
+                  <div class="source-desc">Coming soon — historical Pinnacle closing odds</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">Run collection</div>
+            <p class="muted-text">Fetches all data from active sources and stores it in the database. Runs automatically every night at 3am. You can also trigger it manually here.</p>
+            <button class="btn-primary" id="collect-btn" onclick="startCollection()">
+              ▶ Run Now
+            </button>
+            <div class="status-box" id="status-box" style="display:none">
+              <div class="status-header">
+                <span class="spinner" id="status-spinner"></span>
+                <span id="status-title">Running...</span>
+              </div>
+              <div class="status-log" id="status-log"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+<script src="/static/js/app.js?v=20260608l"></script>
+</body>
+</html>

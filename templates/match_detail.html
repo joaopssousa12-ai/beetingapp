@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ home_team }} vs {{ away_team }} — BetIQ</title>
+<link rel="stylesheet" href="/static/css/style.css?v=20260608l">
+<style>
+  .md-back { display: inline-flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; color: var(--accent); text-decoration: none; font-weight: 500; font-size: 14px; }
+  .md-back:hover { text-decoration: underline; }
+  
+  .md-header { background: linear-gradient(to right, var(--card-bg), var(--bg)); border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; border: 1px solid var(--border); }
+  .md-comp { color: var(--text3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.5rem; }
+  .md-teams { display: flex; align-items: center; gap: 2rem; font-size: 28px; font-weight: 600; flex-wrap: wrap; }
+  .md-vs { color: var(--text3); font-size: 16px; }
+  .md-time { color: var(--text3); font-size: 14px; margin-top: 0.5rem; }
+  
+  .md-section { background: var(--card-bg); border-radius: 10px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid var(--border); }
+  .md-section-title { font-size: 16px; font-weight: 600; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+  
+  .md-method-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #4A90E2, #357ABD);
+    color: white;
+    padding: 0.4rem 0.85rem;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .md-method-badge.fallback { background: linear-gradient(135deg, #F39C12, #E67E22); }
+  
+  .md-prob-bar { display: flex; height: 38px; border-radius: 6px; overflow: hidden; margin: 1rem 0; }
+  .md-prob-segment { display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 14px; }
+  .md-prob-home { background: #4A90E2; }
+  .md-prob-draw { background: #7F8C8D; }
+  .md-prob-away { background: #E67E22; }
+  .md-prob-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--text2); margin-top: -8px; }
+  
+  .md-signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
+  .md-signal-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; background: var(--bg); }
+  .md-signal-card.primary { border-left: 4px solid #4A90E2; background: #f5faff; }
+  .md-signal-card.confirm { border-left: 4px solid #27AE60; }
+  .md-signal-card.diverge { border-left: 4px solid #E74C3C; }
+  .md-signal-card.neutral { border-left: 4px solid #95A5A6; }
+  
+  .md-signal-name { font-size: 11px; text-transform: uppercase; color: var(--text3); margin-bottom: 0.5rem; font-weight: 600; }
+  .md-signal-prob { font-size: 22px; font-weight: 700; }
+  .md-signal-detail { font-size: 12px; color: var(--text2); margin-top: 0.3rem; line-height: 1.4; }
+  
+  .md-pick-box { background: linear-gradient(135deg, #f5f9ff, #e8f4ff); border: 2px solid #4A90E2; border-radius: 10px; padding: 1.5rem; margin-bottom: 1rem; }
+  .md-pick-box.safe { background: linear-gradient(135deg, #f5fff8, #e8ffee); border-color: #27AE60; }
+  .md-pick-box.value { background: linear-gradient(135deg, #fffbf5, #fff5e8); border-color: #F39C12; }
+  
+  .md-pick-title { font-size: 14px; font-weight: 600; margin-bottom: 0.5rem; }
+  .md-pick-selection { font-size: 22px; font-weight: 700; margin-bottom: 0.5rem; }
+  .md-pick-meta { display: flex; gap: 1.5rem; font-size: 13px; color: var(--text2); flex-wrap: wrap; }
+  .md-pick-explanation { font-size: 13px; color: var(--text2); line-height: 1.5; margin-top: 0.75rem; }
+  
+  .md-decision { background: linear-gradient(135deg, #1a1a2e, #16213e); color: white; border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  .md-decision-title { font-size: 12px; opacity: 0.7; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .md-decision-pick { font-size: 22px; font-weight: 700; margin-bottom: 0.25rem; }
+  .md-decision-reasoning { font-size: 13px; opacity: 0.9; line-height: 1.6; margin-top: 1rem; }
+  .md-decision-no { color: #F39C12; font-weight: 500; }
+  
+  .md-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }
+  .md-stat { background: var(--bg); border-radius: 6px; padding: 0.85rem; text-align: center; }
+  .md-stat-label { font-size: 10px; text-transform: uppercase; color: var(--text3); margin-bottom: 0.3rem; }
+  .md-stat-value { font-size: 18px; font-weight: 600; }
+  .md-stat-tag { font-size: 9px; margin-top: 4px; font-weight: 600; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; display: inline-block; }
+  .md-stat-tag.high { background: #d4edda; color: #155724; }
+  .md-stat-tag.medium { background: #fff3cd; color: #856404; }
+  .md-stat-tag.low { background: #f8d7da; color: #721c24; }
+  
+  .md-vig-info { background: #fff8e1; border-left: 4px solid #F39C12; padding: 0.85rem 1rem; border-radius: 4px; font-size: 13px; margin-top: 1rem; }
+  
+  .md-loading { text-align: center; padding: 4rem 1rem; color: var(--text3); }
+</style>
+</head>
+<body>
+<div class="container" style="max-width: 1000px; margin: 2rem auto; padding: 0 1rem;">
+  <a href="/" class="md-back">← Voltar aos jogos</a>
+  
+  <div class="md-header">
+    <div class="md-comp">{{ sport_name }}</div>
+    <div class="md-teams">
+      <span>{{ home_team }}</span>
+      <span class="md-vs">vs</span>
+      <span>{{ away_team }}</span>
+    </div>
+    <div class="md-time">{{ commence_time }}</div>
+  </div>
+  
+  <div id="match-content"><div class="md-loading">A carregar análise…</div></div>
+</div>
+
+<script>
+const eventId = "{{ event_id }}";
+
+async function loadMatch() {
+  try {
+    const resp = await fetch(`/api/match/${eventId}`);
+    const d = await resp.json();
+    if (!d || !d.event_id) {
+      document.getElementById('match-content').innerHTML = '<div class="md-section">Dados não disponíveis para este jogo</div>';
+      return;
+    }
+    document.getElementById('match-content').innerHTML = render(d);
+  } catch (e) {
+    document.getElementById('match-content').innerHTML = '<div class="md-section">Erro ao carregar: ' + e.message + '</div>';
+  }
+}
+
+function render(d) {
+  const bq = d.betiq_probs || {};
+  const home = d.home_team;
+  const away = d.away_team;
+  
+  // === DECISION RECOMMENDATION ===
+  let decisionHtml = '';
+  if (d.best_pick) {
+    const bp = d.best_pick;
+    decisionHtml = `
+      <div class="md-decision">
+        <div class="md-decision-title">🎯 BetIQ Recommendation</div>
+        <div class="md-decision-pick">${bp.selection}</div>
+        <div style="font-size: 13px; opacity: 0.85;">${bp.market} • Edge ${bp.edge_pct}% • Confidence ${bp.confidence}⭐</div>
+        <div class="md-decision-reasoning">
+          ${methodReasoning(bq)} 
+          Model probability: <strong>${bp.model_prob}%</strong>. 
+          Bet if 1xBet pays ≥ <strong>${bp.target_odd_5pct ? bp.target_odd_5pct.toFixed(2) : '—'}</strong> (5% min edge).
+          ${bp.kelly_pct ? `<br>📊 Suggested Kelly stake: <strong>${bp.kelly_pct}%</strong> of bankroll (¼ Kelly — conservative).` : ''}
+        </div>
+      </div>`;
+  } else {
+    decisionHtml = `
+      <div class="md-decision">
+        <div class="md-decision-title">🎯 BetIQ Recommendation</div>
+        <div class="md-decision-pick md-decision-no">No clear pick</div>
+        <div class="md-decision-reasoning">No outcome currently offers sufficient value (2-10% edge range).</div>
+      </div>`;
+  }
+  
+  // === TRUE PROBABILITY BAR ===
+  const homeP = bq.home || 0;
+  const drawP = bq.draw || 0;
+  const awayP = bq.away || 0;
+  
+  const methodBadge = bq.primary_source === 'pinnacle' 
+    ? '<span class="md-method-badge">Pinnacle No-Vig (Industry Standard)</span>'
+    : '<span class="md-method-badge fallback">Model Fallback (No Pinnacle)</span>';
+  
+  // === SIGNAL COMPARISON ===
+  const xgHome = d.xg_signal ? d.xg_signal.home : null;
+  const eloHome = d.elo_signal ? d.elo_signal.home : null;
+  
+  const xgDiff = xgHome && bq.home ? Math.abs(xgHome - bq.home) : null;
+  const eloDiff = eloHome && bq.home ? Math.abs(eloHome - bq.home) : null;
+  
+  const xgClass = xgDiff === null ? 'neutral' : xgDiff < 8 ? 'confirm' : xgDiff < 20 ? 'neutral' : 'diverge';
+  const eloClass = eloDiff === null ? 'neutral' : eloDiff < 8 ? 'confirm' : eloDiff < 20 ? 'neutral' : 'diverge';
+  
+  // === RENDER ===
+  return decisionHtml + `
+    <!-- TRUE PROBABILITY -->
+    <div class="md-section">
+      <div class="md-section-title">📊 True Probability ${methodBadge}</div>
+      <div class="md-prob-bar">
+        <div class="md-prob-segment md-prob-home" style="width: ${homeP}%">${homeP > 8 ? homeP+'%' : ''}</div>
+        ${drawP ? `<div class="md-prob-segment md-prob-draw" style="width: ${drawP}%">${drawP > 8 ? drawP+'%' : ''}</div>` : ''}
+        <div class="md-prob-segment md-prob-away" style="width: ${awayP}%">${awayP > 8 ? awayP+'%' : ''}</div>
+      </div>
+      <div class="md-prob-labels">
+        <span>${home}: ${homeP}% (fair odd ${homeP > 0 ? (100/homeP).toFixed(2) : '—'})</span>
+        ${drawP ? `<span>Draw: ${drawP}% (${(100/drawP).toFixed(2)})</span>` : ''}
+        <span>${away}: ${awayP}% (${awayP > 0 ? (100/awayP).toFixed(2) : '—'})</span>
+      </div>
+      ${bq.primary_source === 'pinnacle' ? `<div class="md-vig-info">
+        <strong>💡 Why Pinnacle?</strong> Sharp bookmaker odds (Pinnacle) are the industry-standard "true probability" — 
+        they aggregate xG models, form, news, injuries via sharp money. The no-vig version removes the bookmaker's margin to give a clean probability.
+      </div>` : ''}
+    </div>
+    
+    <!-- SIGNAL AGREEMENT -->
+    <div class="md-section">
+      <div class="md-section-title">🔍 Signal Agreement (Do Models Confirm The Market?)</div>
+      <div class="md-signal-grid">
+        ${bq.primary_source === 'pinnacle' ? `
+        <div class="md-signal-card primary">
+          <div class="md-signal-name">🏆 Pinnacle (Primary)</div>
+          <div class="md-signal-prob">${bq.home}%</div>
+          <div class="md-signal-detail">Industry standard — incorporates ALL information</div>
+        </div>` : ''}
+        ${xgHome !== null ? `
+        <div class="md-signal-card ${xgClass}">
+          <div class="md-signal-name">⚽ xG Model</div>
+          <div class="md-signal-prob">${xgHome}%</div>
+          <div class="md-signal-detail">${xgClass === 'confirm' ? '✓ Confirms market' : xgClass === 'diverge' ? '⚠ Diverges (data quality?)' : 'Moderate alignment'} 
+          ${xgDiff !== null ? `(diff: ${xgDiff.toFixed(1)}%)` : ''}</div>
+        </div>` : ''}
+        ${eloHome !== null ? `
+        <div class="md-signal-card ${eloClass}">
+          <div class="md-signal-name">📈 Elo Rating</div>
+          <div class="md-signal-prob">${eloHome}%</div>
+          <div class="md-signal-detail">${eloClass === 'confirm' ? '✓ Confirms market' : eloClass === 'diverge' ? '⚠ Diverges' : 'Moderate alignment'} 
+          ${eloDiff !== null ? `(diff: ${eloDiff.toFixed(1)}%)` : ''}</div>
+        </div>` : ''}
+        ${d.home_form_strength && d.home_form_strength !== 'Unknown' ? `
+        <div class="md-signal-card neutral">
+          <div class="md-signal-name">🔥 Recent Form</div>
+          <div class="md-signal-prob">${d.home_form_strength} / ${d.away_form_strength}</div>
+          <div class="md-signal-detail">Last 5 matches</div>
+        </div>` : ''}
+      </div>
+    </div>
+    
+    <!-- PICKS -->
+    ${d.best_pick ? `
+    <div class="md-pick-box">
+      <div class="md-pick-title">🏆 BEST PICK</div>
+      <div class="md-pick-selection">${d.best_pick.selection}</div>
+      <div class="md-pick-meta">
+        <span>📊 Market: ${d.best_pick.market}</span>
+        <span>🎯 Probability: <strong>${d.best_pick.model_prob}%</strong></span>
+        <span>⭐ Confidence: ${d.best_pick.confidence}/5</span>
+        ${d.best_pick.edge_pct ? `<span>📈 Edge: <strong>${d.best_pick.edge_pct}%</strong></span>` : ''}
+      </div>
+      <div class="md-pick-explanation">
+        <strong>Why:</strong> Sweet spot probability (50-70%) with positive edge. 
+        Fair odd: <strong>${d.best_pick.fair_odd ? d.best_pick.fair_odd.toFixed(2) : '—'}</strong>. 
+        Target odd for 5% edge: <strong>${d.best_pick.target_odd_5pct ? d.best_pick.target_odd_5pct.toFixed(2) : '—'}</strong>.
+        ${d.best_pick.kelly_pct ? `<br>💰 Optimal stake: <strong>${d.best_pick.kelly_pct}%</strong> of bankroll (¼ Kelly).` : ''}
+      </div>
+    </div>` : ''}
+    
+    ${d.safest_pick ? `
+    <div class="md-pick-box safe">
+      <div class="md-pick-title">🛡️ SAFEST PICK</div>
+      <div class="md-pick-selection">${d.safest_pick.selection}</div>
+      <div class="md-pick-meta">
+        <span>📊 Market: ${d.safest_pick.market}</span>
+        <span>🎯 Probability: <strong>${d.safest_pick.model_prob}%</strong></span>
+        <span>⭐ Confidence: ${d.safest_pick.confidence}/5</span>
+      </div>
+      <div class="md-pick-explanation">
+        <strong>Why:</strong> Highest probability outcome (≥55%). Lower odds but more reliable.
+        Fair odd: <strong>${d.safest_pick.fair_odd ? d.safest_pick.fair_odd.toFixed(2) : '—'}</strong>.
+      </div>
+    </div>` : ''}
+    
+    <!-- GOALS MARKETS -->
+    <div class="md-section">
+      <div class="md-section-title">⚽ Goals Markets</div>
+      <div class="md-stats-grid">
+        <div class="md-stat">
+          <div class="md-stat-label">Over 2.5</div>
+          <div class="md-stat-value">${d.true_over25_pct || '—'}${d.true_over25_pct ? '%' : ''}</div>
+          ${d.goals_ou_confidence ? `<span class="md-stat-tag ${d.goals_ou_confidence.toLowerCase()}">${d.goals_ou_confidence}</span>` : ''}
+        </div>
+        <div class="md-stat">
+          <div class="md-stat-label">Under 2.5</div>
+          <div class="md-stat-value">${d.true_under25_pct || '—'}${d.true_under25_pct ? '%' : ''}</div>
+        </div>
+        <div class="md-stat">
+          <div class="md-stat-label">BTTS Yes</div>
+          <div class="md-stat-value">${d.true_btts_yes_pct || '—'}${d.true_btts_yes_pct ? '%' : ''}</div>
+          ${d.goals_btts_confidence ? `<span class="md-stat-tag ${d.goals_btts_confidence.toLowerCase()}">${d.goals_btts_confidence}</span>` : ''}
+        </div>
+        <div class="md-stat">
+          <div class="md-stat-label">BTTS No</div>
+          <div class="md-stat-value">${d.true_btts_no_pct || '—'}${d.true_btts_no_pct ? '%' : ''}</div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- ODDS COMPARISON -->
+    <div class="md-section">
+      <div class="md-section-title">💰 Available Odds (Match Result)</div>
+      <div class="md-stats-grid">
+        <div class="md-stat">
+          <div class="md-stat-label">Pinnacle ${home}</div>
+          <div class="md-stat-value">${d.pin_home ? d.pin_home.toFixed(2) : '—'}</div>
+        </div>
+        ${d.pin_draw ? `<div class="md-stat">
+          <div class="md-stat-label">Pinnacle Draw</div>
+          <div class="md-stat-value">${d.pin_draw.toFixed(2)}</div>
+        </div>` : ''}
+        <div class="md-stat">
+          <div class="md-stat-label">Pinnacle ${away}</div>
+          <div class="md-stat-value">${d.pin_away ? d.pin_away.toFixed(2) : '—'}</div>
+        </div>
+        <div class="md-stat">
+          <div class="md-stat-label">1xBet ${home}</div>
+          <div class="md-stat-value">${d.x1_home ? d.x1_home.toFixed(2) : '—'}</div>
+        </div>
+        ${d.x1_draw ? `<div class="md-stat">
+          <div class="md-stat-label">1xBet Draw</div>
+          <div class="md-stat-value">${d.x1_draw.toFixed(2)}</div>
+        </div>` : ''}
+        <div class="md-stat">
+          <div class="md-stat-label">1xBet ${away}</div>
+          <div class="md-stat-value">${d.x1_away ? d.x1_away.toFixed(2) : '—'}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function methodReasoning(bq) {
+  if (bq.primary_source === 'pinnacle') {
+    if (bq.agreement === 'high') return '✅ Strong signal: xG/Elo models confirm market consensus.';
+    if (bq.agreement === 'medium') return '🟡 Moderate signal: models mostly align with market.';
+    if (bq.agreement === 'low') return '⚠️ Caution: xG/Elo models diverge from market (may indicate data quality issues with smaller teams).';
+    return '📊 Using Pinnacle no-vig as ground truth.';
+  } else {
+    return '⚠️ No Pinnacle odds — using xG/Elo fallback model.';
+  }
+}
+
+loadMatch();
+</script>
+</body>
+</html>
