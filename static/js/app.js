@@ -440,6 +440,7 @@ function renderCard(b) {
   const bv = b.best_value;
   const hasValue = bv && bv.edge_pct != null && bv.edge_pct >= 2 && bv.edge_pct <= 15;
   const isExpanded = vbState.expanded.has(b.event_id);
+  const hasAutoH2H = !!(b.x1_home || b.b365_home);
 
   // True probability strip
   let probStrip = '';
@@ -691,7 +692,28 @@ function renderCard(b) {
     ${betiqBlock}
     ${probStrip}
     ${xgBlock}
-    <div class="vb-manual-odds" id="manual-${b.event_id}">
+    ${hasAutoH2H ? (() => {
+      const hasDraw = b.true_draw_pct != null || (b.betiq_probs && b.betiq_probs.draw != null);
+      const cols = [b.home_team, ...(hasDraw ? ['Draw'] : []), b.away_team];
+      function aoRow(book, h, d, a) {
+        if (!h && !a) return '';
+        const vals = [h, ...(hasDraw ? [d] : []), a];
+        return `<div class="ao-row">
+          <span class="ao-book">${book}</span>
+          ${vals.map(v => `<span class="ao-val${v ? '' : ' ao-miss'}">${v ? v.toFixed(2) : '—'}</span>`).join('')}
+        </div>`;
+      }
+      return `<div class="vb-auto-odds">
+        <div class="ao-header">
+          <span class="ao-title">📊 Odds automáticas</span>
+          <div class="ao-cols">${cols.map(c => `<span>${c}</span>`).join('')}</div>
+        </div>
+        ${aoRow('1xBet', b.x1_home, b.x1_draw, b.x1_away)}
+        ${aoRow('Bet365', b.b365_home, b.b365_draw, b.b365_away)}
+        ${aoRow('🏆 Best', b.best_home, b.best_draw, b.best_away)}
+      </div>`;
+    })() : ''}
+    <div class="vb-manual-odds" id="manual-${b.event_id}"${hasAutoH2H ? ' style="display:none"' : ''}>
       <div class="vb-manual-header">
         <span class="vb-manual-title">⊕ Enter 1xBet odds to find real value (auto-saved)</span>
       </div>

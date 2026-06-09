@@ -1212,6 +1212,61 @@ tbody tr.value-row td.strong { color: var(--text); }
   font-size: 12.5px;
 }
 
+/* AUTO ODDS DISPLAY */
+.vb-auto-odds {
+  padding: 10px 18px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+}
+.ao-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.ao-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ao-cols {
+  display: flex;
+  gap: 0;
+}
+.ao-cols span {
+  font-size: 10px;
+  color: var(--text3);
+  text-align: right;
+  min-width: 52px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ao-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ao-row:last-child { border-bottom: none; }
+.ao-book {
+  font-size: 12px;
+  color: var(--text2);
+  flex: 1;
+  min-width: 0;
+}
+.ao-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 52px;
+  text-align: right;
+}
+.ao-val.ao-miss { color: var(--text3); font-weight: 400; }
+
 /* MANUAL ODDS INPUT */
 .vb-manual-odds {
   padding: 12px 18px;
