@@ -411,31 +411,30 @@ async def api_event_detail(event_id: str):
 
 @app.get("/api/debug/pin-odds")
 def debug_pin_odds():
-    """Debug endpoint: mostra todos os matches com Pinnacle odds da DB"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT event_id, home_team, away_team, pin_home, pin_away
-        FROM odds_events
-        ORDER BY event_id DESC
-        LIMIT 100
-    ''')
-    rows = cursor.fetchall()
-    conn.close()
-    return {
-        "total": len(rows),
-        "data": [
-            {
-                "event_id": r[0],
-                "home_team": r[1],
-                "away_team": r[2],
-                "pin_home": r[3],
-                "pin_away": r[4],
-                "pin_missing": r[3] is None,
-            }
-            for r in rows
-        ]
-    }
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT event_id, home_team, away_team, pin_home, pin_draw, pin_away "
+            "FROM odds_events ORDER BY commence_time ASC LIMIT 100"
+        ).fetchall()
+        conn.close()
+        data = []
+        for r in rows:
+            try:
+                data.append({
+                    "event_id": r["event_id"],
+                    "home_team": r["home_team"],
+                    "away_team": r["away_team"],
+                    "pin_home": r["pin_home"],
+                    "pin_draw": r["pin_draw"],
+                    "pin_away": r["pin_away"],
+                    "pin_missing": r["pin_home"] is None,
+                })
+            except Exception as row_err:
+                data.append({"row_error": str(row_err), "raw": str(r)})
+        return {"status": "ok", "count": len(data), "data": data}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 # ========== BET TRACKER ENDPOINTS ==========
