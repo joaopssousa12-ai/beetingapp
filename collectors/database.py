@@ -58,6 +58,14 @@ def _translate_query(query):
     q = re.sub(r"datetime\('now',\s*'([^']+)'\)", _dt_modifier, q, flags=re.IGNORECASE)
     # datetime('now') -> NOW()
     q = re.sub(r"datetime\('now'\)", "NOW()", q, flags=re.IGNORECASE)
+    # commence_time is stored as TEXT but must be cast to TIMESTAMP for NOW() comparisons.
+    # PostgreSQL raises "operator does not exist: text > timestamp" otherwise.
+    # Handles both plain column and aliased (b.commence_time, e.commence_time, etc.)
+    q = re.sub(
+        r'(\b(?:\w+\.)?commence_time)\s*([<>]=?)\s*NOW\b',
+        lambda m: f'CAST({m.group(1)} AS TIMESTAMP) {m.group(2)} NOW',
+        q, flags=re.IGNORECASE
+    )
     # AUTOINCREMENT -> SERIAL (handled in schema translation)
     return q
 
