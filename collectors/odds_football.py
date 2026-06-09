@@ -10,6 +10,7 @@ model-based probabilities (Elo) so the site is always useful.
 import os
 import requests
 import sys
+import unicodedata
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -153,22 +154,49 @@ def collect_openfootball_fixtures(cb):
     return total
 
 
+def _norm_team(name):
+    """Strip diacritics and lowercase for robust team name matching.
+    'Curaçao' == 'Curacao', 'Côte d'Ivoire' ≈ 'Cote d Ivoire', etc.
+    """
+    name = unicodedata.normalize("NFD", name or "")
+    name = name.encode("ascii", "ignore").decode("ascii")
+    return " ".join(name.lower().split())
+
+
 def add_odds_from_theoddsapi(cb):
-    """Try to enrich stored fixtures with real odds from The Odds API."""
+    """Enrich stored fixtures with Pinnacle odds from The Odds API.
+
+    Uses normalized team-name matching to handle diacritic differences
+    between openfootball ('Curacao') and The Odds API ('Curaçao').
+    """
     api_key = os.environ.get("ODDS_API_KEY", "")
     if not api_key:
         return 0
-    # The Odds API soccer endpoints that may have data
-    sports = ["soccer_fifa_world_cup", "soccer_uefa_champs_league",
-              "soccer_epl", "soccer_spain_la_liga"]
+
+    sports = ["soccer_fifa_world_cup", "soccer_fifa_club_world_cup",
+              "soccer_uefa_champs_league", "soccer_epl", "soccer_spain_la_liga",
+              "soccer_germany_bundesliga", "soccer_italy_serie_a",
+              "soccer_france_ligue_1", "soccer_portugal_primeira_liga"]
     enriched = 0
     conn = get_connection()
+
+    # Build normalized lookup of all upcoming fixtures in DB
+    existing = conn.execute(
+        "SELECT event_id, home_team, away_team FROM odds_events "
+        "WHERE commence_time > datetime('now', '-1 day')"
+    ).fetchall()
+    fixture_lookup = {}  # (norm_home, norm_away) → event_id
+    for row in existing:
+        key = (_norm_team(row["home_team"]), _norm_team(row["away_team"]))
+        fixture_lookup[key] = row["event_id"]
+
     for sport in sports:
         try:
             r = requests.get(
                 f"https://api.the-odds-api.com/v4/sports/{sport}/odds",
                 params={"apiKey": api_key, "regions": "eu", "markets": "h2h",
-                        "bookmakers": "pinnacle,onexbet", "oddsFormat": "decimal"},
+                        "bookmakers": "pinnacle,onexbet,bet365,unibet_eu",
+                        "oddsFormat": "decimal"},
                 timeout=15
             )
             if r.status_code != 200:
@@ -178,32 +206,54 @@ def add_odds_from_theoddsapi(cb):
                 home = ev.get("home_team", "")
                 away = ev.get("away_team", "")
                 ph = pd = pa = None
+                x1h = x1d = x1a = None
+                best_h = best_d = best_a = None
+
                 for bm in ev.get("bookmakers", []):
                     for mkt in bm.get("markets", []):
                         if mkt.get("key") != "h2h":
                             continue
                         odds = {o["name"]: o["price"] for o in mkt.get("outcomes", [])}
-                        if bm.get("key") == "pinnacle":
-                            ph = odds.get(home)
-                            pa = odds.get(away)
-                            pd = odds.get("Draw")
-                # Update matching fixtures by team names
-                if ph and pa:
+                        bkey = bm.get("key", "")
+                        oh = odds.get(home)
+                        od = odds.get("Draw")
+                        oa = odds.get(away)
+                        if bkey == "pinnacle":
+                            ph, pd, pa = oh, od, oa
+                        elif bkey == "onexbet":
+                            x1h, x1d, x1a = oh, od, oa
+                        # Track best (highest) odd from any bookmaker
+                        if oh: best_h = max(best_h or 0, oh) or None
+                        if od: best_d = max(best_d or 0, od) or None
+                        if oa: best_a = max(best_a or 0, oa) or None
+
+                if not (ph and pa):
+                    continue
+
+                # Match against stored fixtures using normalized names
+                key = (_norm_team(home), _norm_team(away))
+                eid = fixture_lookup.get(key)
+                if eid:
                     conn.execute("""
                         UPDATE odds_events
                         SET pin_home=?, pin_draw=?, pin_away=?,
-                            best_home=?, best_draw=?, best_away=?,
-                            x1_home=?, x1_draw=?, x1_away=?
-                        WHERE home_team LIKE ? AND away_team LIKE ?
-                    """, (ph, pd, pa, ph, pd, pa, ph, pd, pa,
-                          f"%{home[:12]}%", f"%{away[:12]}%"))
+                            best_home=COALESCE(?, best_home),
+                            best_draw=COALESCE(?, best_draw),
+                            best_away=COALESCE(?, best_away),
+                            x1_home=COALESCE(?, x1_home),
+                            x1_draw=COALESCE(?, x1_draw),
+                            x1_away=COALESCE(?, x1_away)
+                        WHERE event_id=?
+                    """, (ph, pd, pa, best_h, best_d, best_a,
+                          x1h, x1d, x1a, eid))
                     enriched += 1
         except Exception as e:
             cb(f"  -> Odds enrich error ({sport}): {e}")
+
     conn.commit()
     conn.close()
     if enriched:
-        cb(f"  -> Enriched {enriched} fixtures with live odds")
+        cb(f"  -> Enriched {enriched} fixtures with live Pinnacle odds")
     return enriched
 
 

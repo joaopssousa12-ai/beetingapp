@@ -802,6 +802,9 @@ def get_value_bets():
 
         # ========== 1X2 — Power devig (more accurate than proportional) ==========
         ph, pd_, pa = d.get("pin_home"), d.get("pin_draw"), d.get("pin_away")
+        if not ph or not pa:
+            print(f"PIN_MISSING: {d.get('home_team')} vs {d.get('away_team')} — "
+                  f"pin_home={ph} pin_away={pa} (falling back to xG model)", flush=True)
         if ph and pa:
             devig = remove_vig_power(ph, pd_, pa)
             if devig:
