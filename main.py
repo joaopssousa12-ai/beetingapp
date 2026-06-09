@@ -29,8 +29,8 @@ from collectors.national_xg import compute_national_xg
 from collectors.understat import collect_understat
 from collectors.elo import collect_elo
 from collectors.odds_collector import collect_odds_multiple_bookmakers, collect_tennis_odds
-from collectors.pinnacle import collect_pinnacle_odds
 from collectors.betfair import collect_betfair_odds
+from collectors.oddspapi import collect_oddspapi
 from collectors.telegram_alerts import send_alerts_for_value_bets
 
 app = FastAPI(title="Betting Intelligence Platform")
@@ -376,20 +376,20 @@ async def run_odds_only():
             cb(f"✓ Collected {len(football_odds)} football odds + {len(tennis_odds)} tennis odds from API")
         except Exception as e:
             cb(f"The-Odds-API ERROR (non-critical): {repr(e)}")
-        # Betfair Exchange — primary reference for true odds (free, PT accessible)
+        # OddsPapi — Pinnacle no-vig via aggregator (free 250 req/month, sharp reference)
+        try:
+            n_opa = await loop.run_in_executor(None, lambda: collect_oddspapi(status_callback=cb))
+            if n_opa > 0:
+                cb(f"✓ OddsPapi (Pinnacle): {n_opa} events updated.")
+        except Exception as e:
+            cb(f"OddsPapi ERROR (non-critical): {repr(e)}")
+        # Betfair Exchange — primary reference for liquid markets (peer-to-peer, 0% margin)
         try:
             n_bf = await loop.run_in_executor(None, lambda: collect_betfair_odds(status_callback=cb))
             if n_bf > 0:
                 cb(f"✓ Betfair Exchange: {n_bf} events updated.")
         except Exception as e:
             cb(f"Betfair ERROR (non-critical): {repr(e)}")
-        # Pinnacle Direct API — secondary reference (if credentials set)
-        try:
-            n_pin = await loop.run_in_executor(None, lambda: collect_pinnacle_odds(status_callback=cb))
-            if n_pin > 0:
-                cb(f"✓ Pinnacle direct: {n_pin} events updated.")
-        except Exception as e:
-            cb(f"Pinnacle direct ERROR (non-critical): {repr(e)}")
         # Auto-capture CLV for past bets
         try:
             n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
@@ -432,6 +432,33 @@ async def api_telegram_test():
         vb = await loop.run_in_executor(None, get_value_bets)
         n = await loop.run_in_executor(None, lambda: send_alerts_for_value_bets(vb))
         return JSONResponse({"ok": True, "msg": f"Test message sent. {n} value bet alert(s) dispatched."})
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": str(e)})
+
+@app.get("/api/oddspapi/test")
+async def api_oddspapi_test():
+    """Test OddsPapi connectivity — returns first event received or error detail."""
+    import os, requests as req
+    key = os.environ.get("ODDSPAPI_KEY", "")
+    if not key:
+        return JSONResponse({"ok": False, "msg": "ODDSPAPI_KEY not set in Render env vars."})
+    try:
+        r = req.get(
+            "https://api.oddspapi.io/v4/sports/soccer_fifa_world_cup/odds",
+            params={"apiKey": key, "regions": "eu,us", "markets": "h2h",
+                    "bookmakers": "pinnacle", "oddsFormat": "decimal"},
+            timeout=15,
+        )
+        remaining = r.headers.get("x-requests-remaining", "?")
+        if r.status_code == 401:
+            return JSONResponse({"ok": False, "msg": "Invalid API key.", "credits": remaining})
+        if r.status_code != 200:
+            return JSONResponse({"ok": False, "msg": f"HTTP {r.status_code}", "body": r.text[:300]})
+        data = r.json()
+        sample = data[0] if data else {}
+        return JSONResponse({"ok": True, "events": len(data), "credits_left": remaining,
+                             "sample_event": sample.get("home_team","") + " vs " + sample.get("away_team",""),
+                             "bookmakers_in_sample": [b["key"] for b in sample.get("bookmakers", [])]})
     except Exception as e:
         return JSONResponse({"ok": False, "msg": str(e)})
 
