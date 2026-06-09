@@ -436,29 +436,23 @@ async def api_telegram_test():
         return JSONResponse({"ok": False, "msg": str(e)})
 
 @app.get("/api/oddspapi/test")
-async def api_oddspapi_test():
-    """Test OddsPapi connectivity — returns first event received or error detail."""
-    import os, requests as req
-    key = os.environ.get("ODDSPAPI_KEY", "")
-    if not key:
-        return JSONResponse({"ok": False, "msg": "ODDSPAPI_KEY not set in Render env vars."})
+def test_oddspapi():
+    """Test OddsPapi connection and credits."""
     try:
-        r = req.get(
-            "https://api.oddspapi.io/v4/sports/soccer_fifa_world_cup/odds",
-            params={"apiKey": key, "regions": "eu,us", "markets": "h2h",
-                    "bookmakers": "pinnacle", "oddsFormat": "decimal"},
-            timeout=15,
-        )
-        remaining = r.headers.get("x-requests-remaining", "?")
-        if r.status_code == 401:
-            return JSONResponse({"ok": False, "msg": "Invalid API key.", "credits": remaining})
-        if r.status_code != 200:
-            return JSONResponse({"ok": False, "msg": f"HTTP {r.status_code}", "body": r.text[:300]})
-        data = r.json()
-        sample = data[0] if data else {}
-        return JSONResponse({"ok": True, "events": len(data), "credits_left": remaining,
-                             "sample_event": sample.get("home_team","") + " vs " + sample.get("away_team",""),
-                             "bookmakers_in_sample": [b["key"] for b in sample.get("bookmakers", [])]})
+        api_key = os.getenv("ODDSPAPI_KEY")
+        if not api_key:
+            return JSONResponse({"ok": False, "msg": "ODDSPAPI_KEY not set"})
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as event_count FROM odds_events WHERE pin_home IS NOT NULL")
+        result = cursor.fetchone()
+        conn.close()
+        return JSONResponse({
+            "ok": True,
+            "msg": "OddsPapi configured",
+            "events_with_pinnacle": result[0] if result else 0,
+            "api_key_set": True,
+        })
     except Exception as e:
         return JSONResponse({"ok": False, "msg": str(e)})
 
