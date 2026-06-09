@@ -409,6 +409,38 @@ async def api_event_detail(event_id: str):
     return JSONResponse(match)
 
 
+@app.get("/api/debug/pin-odds")
+async def api_debug_pin_odds():
+    """Show raw pin_home/draw/away from DB for all upcoming events. Diagnose missing Pinnacle odds."""
+    from collectors.database import get_connection
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT event_id, sport_name, home_team, away_team, commence_time,
+               pin_home, pin_draw, pin_away, best_home, best_away, updated_at
+        FROM odds_events
+        WHERE commence_time > datetime('now', '-1 day')
+        ORDER BY commence_time ASC
+    """).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        result.append({
+            "event_id": r["event_id"],
+            "sport": r["sport_name"],
+            "match": f"{r['home_team']} vs {r['away_team']}",
+            "commence": r["commence_time"],
+            "pin_home": r["pin_home"],
+            "pin_draw": r["pin_draw"],
+            "pin_away": r["pin_away"],
+            "best_home": r["best_home"],
+            "best_away": r["best_away"],
+            "pin_missing": r["pin_home"] is None,
+            "updated_at": r["updated_at"],
+        })
+    missing = [e for e in result if e["pin_missing"]]
+    return JSONResponse({"total": len(result), "missing_pin": len(missing), "events": result})
+
+
 # ========== BET TRACKER ENDPOINTS ==========
 
 @app.post("/api/manual-odds")
