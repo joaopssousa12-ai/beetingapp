@@ -36,9 +36,16 @@ def parse_openfootball(data, league_code, league_name, season):
     rows = []
     for m in matches:
         score = m.get("score", {})
-        ft = score.get("ft", [None, None])
-        home_goals = ft[0] if ft and len(ft) > 0 else None
-        away_goals = ft[1] if ft and len(ft) > 1 else None
+        # openfootball changed format: older = {"ft": [h, a]}, newer = [h, a] directly
+        if isinstance(score, list):
+            home_goals = score[0] if len(score) > 0 else None
+            away_goals = score[1] if len(score) > 1 else None
+        elif isinstance(score, dict):
+            ft = score.get("ft", [None, None])
+            home_goals = ft[0] if ft and len(ft) > 0 else None
+            away_goals = ft[1] if ft and len(ft) > 1 else None
+        else:
+            home_goals = away_goals = None
 
         result = None
         if home_goals is not None and away_goals is not None:
@@ -47,8 +54,11 @@ def parse_openfootball(data, league_code, league_name, season):
             else: result = "D"
 
         date_str = m.get("date", "")
-        home = m.get("team1", "")
-        away = m.get("team2", "")
+        # team1/team2 can be string or {"name": ..., "code": ...} in newer format
+        t1 = m.get("team1", "")
+        t2 = m.get("team2", "")
+        home = t1.get("name", "") if isinstance(t1, dict) else (t1 or "")
+        away = t2.get("name", "") if isinstance(t2, dict) else (t2 or "")
         match_id = f"{date_str}_{home.replace(' ', '_')}_{away.replace(' ', '_')}"
 
         rows.append({
@@ -68,11 +78,11 @@ def insert_rows(rows):
             cols = list(d.keys())
             placeholders = ",".join(["?" for _ in cols])
             col_names = ",".join(cols)
-            conn.execute(
+            cur = conn.execute(
                 f"INSERT OR IGNORE INTO football_matches ({col_names}) VALUES ({placeholders})",
                 list(d.values())
             )
-            inserted += conn.execute("SELECT changes()").fetchone()[0]
+            inserted += max(cur.rowcount, 0)
         except Exception:
             pass
     conn.commit()

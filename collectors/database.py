@@ -49,6 +49,13 @@ def _translate_query(query):
     # we handle the common case by converting OR REPLACE/IGNORE.
     q = re.sub(r"INSERT\s+OR\s+REPLACE\s+INTO", "INSERT INTO", q, flags=re.IGNORECASE)
     q = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", q, flags=re.IGNORECASE)
+    # datetime('now', '-1 day') -> NOW() - INTERVAL '1 day'  etc.
+    def _dt_modifier(m):
+        mod = m.group(1).strip()  # e.g. '-1 day', '+2 hours'
+        sign = '-' if mod.startswith('-') else '+'
+        amount = mod.lstrip('+-').strip()
+        return f"NOW() {sign} INTERVAL '{amount}'"
+    q = re.sub(r"datetime\('now',\s*'([^']+)'\)", _dt_modifier, q, flags=re.IGNORECASE)
     # datetime('now') -> NOW()
     q = re.sub(r"datetime\('now'\)", "NOW()", q, flags=re.IGNORECASE)
     # AUTOINCREMENT -> SERIAL (handled in schema translation)
