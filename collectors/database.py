@@ -842,13 +842,13 @@ def get_value_bets():
                 # Low liquidity flag (applies to both Betfair thin markets and Pinnacle)
                 d["pin_low_liquidity"] = devig["vig_pct"] > PINNACLE_MAX_LIQUID_VIG
 
-                for sel, tp, x1, best, pin_o in [
-                    (d.get("home_team"), true_h, d.get("x1_home"), d.get("best_home"), ph),
-                    ("Draw", true_d, d.get("x1_draw"), d.get("best_draw"), pd_),
-                    (d.get("away_team"), true_a, d.get("x1_away"), d.get("best_away"), pa),
+                for sel, tp, x1, b365, best, pin_o in [
+                    (d.get("home_team"), true_h, d.get("x1_home"), d.get("b365_home"), d.get("best_home"), ph),
+                    ("Draw", true_d, d.get("x1_draw"), d.get("b365_draw"), d.get("best_draw"), pd_),
+                    (d.get("away_team"), true_a, d.get("x1_away"), d.get("b365_away"), d.get("best_away"), pa),
                 ]:
                     if not tp: continue
-                    for book, odd in (("1xBet", x1), ("Best", best)):
+                    for book, odd in (("1xBet", x1), ("Bet365", b365), ("Best", best)):
                         if not odd: continue
                         edge = (odd * tp - 1) * 100
                         picks.append({

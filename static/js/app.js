@@ -792,6 +792,32 @@ function renderCard(b) {
       </div>` : ''}
     </div>
     <div class="vb-your-value vb-pick-block best-value has-value" style="display:none"></div>
+    ${(() => {
+      if (!bv || bv.edge_pct == null || bv.edge_pct <= 0) return '';
+      const sign = bv.edge_pct > 0 ? '+' : '';
+      const edgeCls = bv.edge_pct >= 2 ? 'pos' : 'low';
+      const bookLabel = bv.book === 'Best' ? '🏆 Melhor odd disponível' : bv.book;
+      const oddsSource = b.odds_source === 'betfair' ? '⚡ Betfair Exchange' : b.odds_source === 'pinnacle' ? '📌 Pinnacle' : '🔬 xG Model';
+      const kellyLine = bv.kelly_pct > 0
+        ? `Sugestão: <strong>${bv.kelly_pct.toFixed(1)}% do bankroll</strong> (¼ Kelly)`
+        : 'Edge insuficiente para apostar';
+      return `<div class="vb-value-alert ${edgeCls}">
+        <div class="vb-value-alert-head">
+          <span class="vb-value-tag">💰 Valor detetado</span>
+          <span class="vb-value-source">${oddsSource}</span>
+        </div>
+        <div class="vb-value-body">
+          <span class="vb-value-sel">${bv.selection}</span>
+          <span class="vb-value-mkt">${bv.market}</span>
+        </div>
+        <div class="vb-value-row">
+          <span class="vb-value-book">${bookLabel}</span>
+          <span class="vb-value-odd">${fmtOdd(bv.book_odd)}</span>
+          <span class="vb-value-edge-badge ${edgeCls}">${sign}${bv.edge_pct.toFixed(1)}%</span>
+        </div>
+        <div class="vb-value-kelly">${kellyLine}</div>
+      </div>`;
+    })()}
     <div class="vb-picks">${mlBlock}${bvBlock}</div>
     <div class="vb-card-foot">
       <span class="all-markets-link" onclick="toggleExpand('${b.event_id}')">All markets (${(b.all_picks||[]).filter(p=>p.book==='Best').length})</span>
