@@ -410,35 +410,32 @@ async def api_event_detail(event_id: str):
 
 
 @app.get("/api/debug/pin-odds")
-async def api_debug_pin_odds():
-    """Show raw pin_home/draw/away from DB for all upcoming events. Diagnose missing Pinnacle odds."""
-    from collectors.database import get_connection
+def debug_pin_odds():
+    """Debug endpoint: mostra todos os matches com Pinnacle odds da DB"""
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT event_id, sport_name, home_team, away_team, commence_time,
-               pin_home, pin_draw, pin_away, best_home, best_away, updated_at
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT event_id, home_team, away_team, pin_home, pin_away
         FROM odds_events
-        WHERE commence_time > datetime('now', '-1 day')
-        ORDER BY commence_time ASC
-    """).fetchall()
+        ORDER BY event_id DESC
+        LIMIT 100
+    ''')
+    rows = cursor.fetchall()
     conn.close()
-    result = []
-    for r in rows:
-        result.append({
-            "event_id": r["event_id"],
-            "sport": r["sport_name"],
-            "match": f"{r['home_team']} vs {r['away_team']}",
-            "commence": r["commence_time"],
-            "pin_home": r["pin_home"],
-            "pin_draw": r["pin_draw"],
-            "pin_away": r["pin_away"],
-            "best_home": r["best_home"],
-            "best_away": r["best_away"],
-            "pin_missing": r["pin_home"] is None,
-            "updated_at": r["updated_at"],
-        })
-    missing = [e for e in result if e["pin_missing"]]
-    return JSONResponse({"total": len(result), "missing_pin": len(missing), "events": result})
+    return {
+        "total": len(rows),
+        "data": [
+            {
+                "event_id": r[0],
+                "home_team": r[1],
+                "away_team": r[2],
+                "pin_home": r[3],
+                "pin_away": r[4],
+                "pin_missing": r[3] is None,
+            }
+            for r in rows
+        ]
+    }
 
 
 # ========== BET TRACKER ENDPOINTS ==========
