@@ -397,6 +397,17 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_odds_history_event ON odds_history(event_id, captured_at)")
 
     c.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_alerts_sent (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL,
+            selection TEXT NOT NULL,
+            book TEXT NOT NULL,
+            sent_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tg_alerts ON telegram_alerts_sent(event_id, selection, book, sent_at)")
+
+    c.execute("""
         CREATE TABLE IF NOT EXISTS elo_ratings (
             entity TEXT NOT NULL,
             category TEXT NOT NULL,

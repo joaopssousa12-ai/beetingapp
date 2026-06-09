@@ -31,6 +31,7 @@ from collectors.elo import collect_elo
 from collectors.odds_collector import collect_odds_multiple_bookmakers, collect_tennis_odds
 from collectors.pinnacle import collect_pinnacle_odds
 from collectors.betfair import collect_betfair_odds
+from collectors.telegram_alerts import send_alerts_for_value_bets
 
 app = FastAPI(title="Betting Intelligence Platform")
 
@@ -398,6 +399,13 @@ async def run_odds_only():
             cb(f"CLV capture error: {repr(e)}")
         cb("✓ Odds refresh finished.")
         invalidate_value_bets_cache()
+        # Telegram alerts — send for any new value bets (deduped per 20h)
+        try:
+            loop = asyncio.get_event_loop()
+            vb = await loop.run_in_executor(None, get_value_bets)
+            await loop.run_in_executor(None, lambda: send_alerts_for_value_bets(vb, status_callback=cb))
+        except Exception as e:
+            cb(f"Telegram alerts error (non-critical): {repr(e)}")
     except Exception as e:
         import traceback
         cb(f"ODDS ERROR: {repr(e)}")
@@ -411,6 +419,21 @@ async def api_refresh_odds():
         return JSONResponse({"ok": False, "msg": "Already running."})
     asyncio.create_task(run_odds_only())
     return JSONResponse({"ok": True, "msg": "Odds refresh started."})
+
+@app.post("/api/telegram/test")
+async def api_telegram_test():
+    """Send test Telegram alerts for all current value bets (ignores dedup)."""
+    try:
+        from collectors.telegram_alerts import _send
+        ok = _send("✅ <b>BetIQ</b> — Telegram configurado com sucesso!")
+        if not ok:
+            return JSONResponse({"ok": False, "msg": "Failed — check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in Render env vars."})
+        loop = asyncio.get_event_loop()
+        vb = await loop.run_in_executor(None, get_value_bets)
+        n = await loop.run_in_executor(None, lambda: send_alerts_for_value_bets(vb))
+        return JSONResponse({"ok": True, "msg": f"Test message sent. {n} value bet alert(s) dispatched."})
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": str(e)})
 
 @app.get("/api/value-bets")
 async def api_value_bets():
