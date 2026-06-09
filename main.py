@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from collectors.database import (
-    init_db, get_stats, get_football_summary, get_tennis_summary,
+    init_db, get_connection, get_stats, get_football_summary, get_tennis_summary,
     get_recent_football, get_recent_tennis, get_collection_log, get_value_bets,
     add_bet, update_bet_result, delete_bet, get_bets, get_bet_stats,
     get_bankroll_evolution, capture_pinnacle_close_for_started_events,
