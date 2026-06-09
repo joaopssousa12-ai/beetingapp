@@ -75,7 +75,7 @@ def get_active_sports():
 def fetch_odds(sport_key):
     params = {
         "apiKey": API_KEY,
-        "regions": "eu",
+        "regions": "eu,us",
         "markets": "h2h,totals,btts",
         "bookmakers": BOOKMAKERS,
         "oddsFormat": "decimal",

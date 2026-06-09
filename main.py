@@ -29,6 +29,7 @@ from collectors.national_xg import compute_national_xg
 from collectors.understat import collect_understat
 from collectors.elo import collect_elo
 from collectors.odds_collector import collect_odds_multiple_bookmakers, collect_tennis_odds
+from collectors.pinnacle import collect_pinnacle_odds
 
 app = FastAPI(title="Betting Intelligence Platform")
 
@@ -373,6 +374,13 @@ async def run_odds_only():
             cb(f"✓ Collected {len(football_odds)} football odds + {len(tennis_odds)} tennis odds from API")
         except Exception as e:
             cb(f"The-Odds-API ERROR (non-critical): {repr(e)}")
+        # Pinnacle Direct API — fills gaps left by The Odds API (if credentials set)
+        try:
+            n_pin = await loop.run_in_executor(None, lambda: collect_pinnacle_odds(status_callback=cb))
+            if n_pin > 0:
+                cb(f"✓ Pinnacle direct: {n_pin} events updated.")
+        except Exception as e:
+            cb(f"Pinnacle direct ERROR (non-critical): {repr(e)}")
         # Auto-capture CLV for past bets
         try:
             n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
