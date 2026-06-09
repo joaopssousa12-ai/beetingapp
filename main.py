@@ -413,11 +413,28 @@ async def api_event_detail(event_id: str):
 def debug_pin_odds():
     try:
         conn = get_connection()
+
+        # Count rows in key tables
+        def count(table):
+            try:
+                return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            except Exception as e:
+                return f"ERROR: {e}"
+
+        counts = {
+            "odds_events": count("odds_events"),
+            "football_matches": count("football_matches"),
+            "national_matches": count("national_matches"),
+            "bets": count("bets"),
+        }
+
+        # Sample of odds_events (all rows, no filter)
         rows = conn.execute(
             "SELECT event_id, home_team, away_team, pin_home, pin_draw, pin_away "
-            "FROM odds_events ORDER BY commence_time ASC LIMIT 100"
+            "FROM odds_events LIMIT 20"
         ).fetchall()
         conn.close()
+
         data = []
         for r in rows:
             try:
@@ -432,7 +449,8 @@ def debug_pin_odds():
                 })
             except Exception as row_err:
                 data.append({"row_error": str(row_err), "raw": str(r)})
-        return {"status": "ok", "count": len(data), "data": data}
+
+        return {"status": "ok", "table_counts": counts, "odds_events_sample": data}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
