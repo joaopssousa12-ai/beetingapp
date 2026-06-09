@@ -59,7 +59,7 @@ SPORT_GROUPS = {
     "americanfootball_cfl": "CFL",
 }
 
-BOOKMAKERS = "pinnacle,onexbet,williamhill,betfair_ex_eu,unibet_eu,bet365"
+BOOKMAKERS = "pinnacle,bet365,unibet_eu,williamhill,betfair_ex_eu,bwin,betway,marathonbet,onexbet"
 
 
 def get_active_sports():
@@ -121,12 +121,16 @@ def parse_and_store(events, sport_key, sport_name):
         # --- H2H ---
         pin_h2h = book_odds.get("pinnacle", {}).get("h2h", {})
         x1_h2h = book_odds.get("onexbet", {}).get("h2h", {})
+        b365_h2h = book_odds.get("bet365", {}).get("h2h", {})
         pin_home = pin_h2h.get(home)
         pin_away = pin_h2h.get(away)
         pin_draw = pin_h2h.get("Draw")
         x1_home = x1_h2h.get(home)
         x1_away = x1_h2h.get(away)
         x1_draw = x1_h2h.get("Draw")
+        b365_home = b365_h2h.get(home)
+        b365_away = b365_h2h.get(away)
+        b365_draw = b365_h2h.get("Draw")
 
         def best_of(market_key, outcome):
             vals = []
@@ -174,15 +178,17 @@ def parse_and_store(events, sport_key, sport_name):
                     pin_home, pin_draw, pin_away,
                     best_home, best_draw, best_away,
                     x1_home, x1_draw, x1_away,
+                    b365_home, b365_draw, b365_away,
                     pin_over25, pin_under25, x1_over25, x1_under25, best_over25, best_under25,
                     pin_btts_yes, pin_btts_no, x1_btts_yes, x1_btts_no, best_btts_yes, best_btts_no,
                     updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 event_id, sport_key, sport_name, home, away, commence,
                 pin_home, pin_draw, pin_away,
                 best_home, best_draw, best_away,
                 x1_home, x1_draw, x1_away,
+                b365_home, b365_draw, b365_away,
                 pin_over25, pin_under25, x1_over25, x1_under25, best_over25, best_under25,
                 pin_btts_yes, pin_btts_no, x1_btts_yes, x1_btts_no, best_btts_yes, best_btts_no,
                 datetime.now().strftime("%Y-%m-%d %H:%M")

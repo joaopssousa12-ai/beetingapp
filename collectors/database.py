@@ -336,6 +336,10 @@ def init_db():
         ("pin_btts_yes", "REAL"), ("pin_btts_no", "REAL"),
         ("x1_btts_yes", "REAL"), ("x1_btts_no", "REAL"),
         ("best_btts_yes", "REAL"), ("best_btts_no", "REAL"),
+        # Betfair Exchange back prices — primary reference for true probability
+        ("bf_home", "REAL"), ("bf_draw", "REAL"), ("bf_away", "REAL"),
+        # Bet365 specific odds for edge calculation
+        ("b365_home", "REAL"), ("b365_draw", "REAL"), ("b365_away", "REAL"),
     ]:
         try:
             c.execute(f"ALTER TABLE odds_events ADD COLUMN {col} {typ}")
@@ -800,11 +804,30 @@ def get_value_bets():
         d = dict(r)
         picks = []
 
-        # ========== 1X2 — Power devig (more accurate than proportional) ==========
-        ph, pd_, pa = d.get("pin_home"), d.get("pin_draw"), d.get("pin_away")
-        if not ph or not pa:
-            print(f"PIN_MISSING: {d.get('home_team')} vs {d.get('away_team')} — "
-                  f"pin_home={ph} pin_away={pa} (falling back to xG model)", flush=True)
+        # ========== 1X2 — Reference odds priority: Betfair Exchange > Pinnacle > xG ==========
+        # Betfair Exchange: peer-to-peer market, 0% bookmaker margin, sharpest reference
+        # Pinnacle: sharp bookmaker, ~2% margin, strong secondary reference
+        bf_h = d.get("bf_home")
+        bf_d = d.get("bf_draw")
+        bf_a = d.get("bf_away")
+        ph_raw = d.get("pin_home")
+        pd_raw = d.get("pin_draw")
+        pa_raw = d.get("pin_away")
+
+        if bf_h and bf_a:
+            # Betfair Exchange as primary reference
+            ph, pd_, pa = bf_h, bf_d, bf_a
+            d["odds_source"] = "betfair"
+        elif ph_raw and pa_raw:
+            # Pinnacle as secondary reference
+            ph, pd_, pa = ph_raw, pd_raw, pa_raw
+            d["odds_source"] = "pinnacle"
+        else:
+            ph = pd_ = pa = None
+            d["odds_source"] = "xg_model"
+            print(f"NO_REFERENCE: {d.get('home_team')} vs {d.get('away_team')} "
+                  f"— no Betfair or Pinnacle odds, using xG model", flush=True)
+
         if ph and pa:
             devig = remove_vig_power(ph, pd_, pa)
             if devig:
@@ -816,7 +839,7 @@ def get_value_bets():
                 d["true_away_pct"] = round(true_a * 100, 1)
                 d["pin_vig_pct"] = devig["vig_pct"]
 
-                # Pinnacle liquidity flag — margin > 4% = thin market, less reliable
+                # Low liquidity flag (applies to both Betfair thin markets and Pinnacle)
                 d["pin_low_liquidity"] = devig["vig_pct"] > PINNACLE_MAX_LIQUID_VIG
 
                 for sel, tp, x1, best, pin_o in [

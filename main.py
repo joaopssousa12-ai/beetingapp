@@ -30,6 +30,7 @@ from collectors.understat import collect_understat
 from collectors.elo import collect_elo
 from collectors.odds_collector import collect_odds_multiple_bookmakers, collect_tennis_odds
 from collectors.pinnacle import collect_pinnacle_odds
+from collectors.betfair import collect_betfair_odds
 
 app = FastAPI(title="Betting Intelligence Platform")
 
@@ -374,7 +375,14 @@ async def run_odds_only():
             cb(f"✓ Collected {len(football_odds)} football odds + {len(tennis_odds)} tennis odds from API")
         except Exception as e:
             cb(f"The-Odds-API ERROR (non-critical): {repr(e)}")
-        # Pinnacle Direct API — fills gaps left by The Odds API (if credentials set)
+        # Betfair Exchange — primary reference for true odds (free, PT accessible)
+        try:
+            n_bf = await loop.run_in_executor(None, lambda: collect_betfair_odds(status_callback=cb))
+            if n_bf > 0:
+                cb(f"✓ Betfair Exchange: {n_bf} events updated.")
+        except Exception as e:
+            cb(f"Betfair ERROR (non-critical): {repr(e)}")
+        # Pinnacle Direct API — secondary reference (if credentials set)
         try:
             n_pin = await loop.run_in_executor(None, lambda: collect_pinnacle_odds(status_callback=cb))
             if n_pin > 0:
