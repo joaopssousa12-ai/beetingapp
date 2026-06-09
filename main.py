@@ -414,6 +414,7 @@ async def run_odds_only():
         collection_status["running"] = False
 
 @app.post("/api/odds/refresh")
+@app.get("/api/odds/refresh")
 async def api_refresh_odds():
     if collection_status["running"]:
         return JSONResponse({"ok": False, "msg": "Already running."})
