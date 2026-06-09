@@ -75,14 +75,14 @@ def insert_matches(rows, since_year=2010):
 
             match_id = f"{date}_{home.replace(' ', '_')}_{away.replace(' ', '_')}"
 
-            conn.execute("""
+            cur = conn.execute("""
                 INSERT OR IGNORE INTO national_matches
                   (match_id, date, home_team, away_team, home_goals, away_goals,
                    result, tournament, city, country, neutral)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)
             """, (match_id, date, home, away, home_goals, away_goals,
                   result, tournament, city, country, 1 if neutral else 0))
-            inserted += conn.execute("SELECT changes()").fetchone()[0]
+            inserted += max(cur.rowcount, 0)
         except Exception:
             pass
 

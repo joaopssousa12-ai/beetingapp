@@ -102,11 +102,11 @@ def insert_matches(rows):
             cols = list(d.keys())
             placeholders = ",".join(["?" for _ in cols])
             col_names = ",".join(cols)
-            conn.execute(
+            cur = conn.execute(
                 f"INSERT OR IGNORE INTO tennis_matches ({col_names}) VALUES ({placeholders})",
                 list(d.values())
             )
-            inserted += conn.execute("SELECT changes()").fetchone()[0]
+            inserted += max(cur.rowcount, 0)
         except Exception:
             pass
     conn.commit()
