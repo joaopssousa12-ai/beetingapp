@@ -107,13 +107,27 @@ def collect_oddspapi(status_callback=None):
         cb("OddsPapi: no upcoming events in DB — skipping.")
         return 0
 
-    cb(f"OddsPapi: fetching Pinnacle odds for {len(SOCCER_SPORTS)} sports...")
+    # Only fetch sports that have upcoming events in DB — saves credits
+    active_sports = set()
+    conn_check = get_connection()
+    for row in conn_check.execute(
+        "SELECT DISTINCT sport_key FROM odds_events WHERE commence_time > datetime('now', '-1 day')"
+    ).fetchall():
+        active_sports.add(row["sport_key"])
+    conn_check.close()
 
-    # Collect all Pinnacle odds across sports
+    sports_to_fetch = [s for s in SOCCER_SPORTS if s in active_sports]
+    if not sports_to_fetch:
+        cb("OddsPapi: no active soccer sports in DB — skipping.")
+        return 0
+
+    cb(f"OddsPapi: fetching Pinnacle odds for {len(sports_to_fetch)} active sports (of {len(SOCCER_SPORTS)} configured)...")
+
+    # Collect all Pinnacle odds across active sports
     pin_odds = {}  # (norm_home, norm_away) → {home, draw, away}
     remaining = "?"
 
-    for sport_key in SOCCER_SPORTS:
+    for sport_key in sports_to_fetch:
         events, remaining = _fetch_pinnacle_odds(sport_key)
         if remaining == "invalid_key":
             cb("OddsPapi: invalid API key — check ODDSPAPI_KEY in Render.")
