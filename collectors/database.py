@@ -702,6 +702,20 @@ def remove_vig_power(odds_home, odds_draw, odds_away):
 # Above 4% = Pinnacle doesn't have strong info → trust less.
 PINNACLE_MAX_LIQUID_VIG = 4.0
 
+# Teams with massive public following — market odds often biased downward by casual bettors.
+# When model probability is significantly lower than market-implied, flag as possible public trap.
+POPULAR_CLUBS = {
+    # National teams
+    "brazil", "argentina", "france", "england", "germany", "spain",
+    "portugal", "italy", "netherlands",
+    # Club football
+    "real madrid", "barcelona", "fc barcelona", "manchester united",
+    "manchester city", "liverpool", "chelsea", "arsenal", "tottenham",
+    "paris saint-germain", "psg", "juventus", "inter milan", "ac milan",
+    "bayern munich", "fc bayern", "borussia dortmund", "atletico madrid",
+    "atletico de madrid",
+}
+
 
 def calculate_edge(soft_odd, true_prob_pct):
     """
@@ -1105,6 +1119,39 @@ def get_value_bets():
                 if "Yes" in sel: direction = movement["directions"].get("btts_yes")
             # Odd dropped on our selection = sharp money agrees with us
             d["sharp_confirmation"] = (direction == "down")
+
+        # === PUBLIC BIAS DETECTION ===
+        # Flag when a popular club's market-implied prob is >10% above our model.
+        # Indicates the public is inflating the favourite — value may be on the other side.
+        public_bias = None
+        home_name = (d.get("home_team") or "").strip()
+        away_name = (d.get("away_team") or "").strip()
+        import unicodedata as _ud
+        def _nl(s):
+            return " ".join(_ud.normalize("NFD", s).encode("ascii", "ignore").decode("ascii").lower().split())
+
+        for is_home, team, model_p, market_odd in [
+            (True,  home_name, d.get("true_home_pct"), d.get("x1_home") or d.get("b365_home") or d.get("best_home")),
+            (False, away_name, d.get("true_away_pct"), d.get("x1_away") or d.get("b365_away") or d.get("best_away")),
+        ]:
+            if _nl(team) not in POPULAR_CLUBS:
+                continue
+            if not model_p or not market_odd or market_odd <= 1:
+                continue
+            market_implied_pct = round(100 / market_odd, 1)
+            gap = market_implied_pct - model_p
+            if gap >= 8:
+                other_team = away_name if is_home else home_name
+                public_bias = {
+                    "popular_team": team,
+                    "other_team": other_team,
+                    "market_implied": market_implied_pct,
+                    "model_prob": model_p,
+                    "gap_pct": round(gap, 1),
+                    "severity": "high" if gap >= 15 else "medium",
+                }
+                break
+        d["public_bias"] = public_bias
 
         # Legacy compatibility for old UI
         d["edges"] = {}
@@ -1789,12 +1836,11 @@ def xg_based_probability(home_team, away_team):
 
 def get_line_movement(event_id):
     """
-    Returns movement data for an event:
-    - opening odds (earliest snapshot)
-    - latest odds
-    - movement % per outcome
-    - steam flag if odd moved >5% in <6h
-    - sparkline data (list of (timestamp, pin_home, pin_away))
+    Returns line movement data. Uses best available reference per snapshot:
+    pin_ (Pinnacle/Betfair) → best_ (market best) → x1_ (1xBet).
+
+    Smart Money threshold: absolute odds change >= 0.20 on any outcome.
+    Steam threshold: >5% relative move in last 6 hours.
     """
     conn = get_connection()
     rows = conn.execute("""
@@ -1810,6 +1856,9 @@ def get_line_movement(event_id):
     opening = dict(rows[0])
     latest = dict(rows[-1])
 
+    def best_ref(row, side):
+        return row.get(f"pin_{side}") or row.get(f"best_{side}") or row.get(f"x1_{side}")
+
     def pct_change(old, new):
         if not old or not new or old <= 0:
             return None
@@ -1817,68 +1866,81 @@ def get_line_movement(event_id):
 
     def direction(pct):
         if pct is None: return None
-        if pct < -2: return "down"  # odd dropped = probability went up = money came in
-        if pct > 2: return "up"     # odd rose = money went out
+        if pct < -2: return "down"
+        if pct > 2: return "up"
         return "flat"
 
-    movements = {
-        "home": pct_change(opening.get("pin_home"), latest.get("pin_home")),
-        "draw": pct_change(opening.get("pin_draw"), latest.get("pin_draw")),
-        "away": pct_change(opening.get("pin_away"), latest.get("pin_away")),
-        "over25": pct_change(opening.get("pin_over25"), latest.get("pin_over25")),
-        "btts_yes": pct_change(opening.get("pin_btts_yes"), latest.get("pin_btts_yes")),
-    }
+    sides = ["home", "draw", "away"]
+    movements = {}
+    abs_changes = {}
+    for side in sides:
+        o = best_ref(opening, side)
+        l = best_ref(latest, side)
+        movements[side] = pct_change(o, l)
+        abs_changes[side] = round(l - o, 3) if (o and l) else None
 
-    # Steam detection: >5% move in last 6 hours
+    movements["over25"]  = pct_change(opening.get("pin_over25"),  latest.get("pin_over25"))
+    movements["btts_yes"] = pct_change(opening.get("pin_btts_yes"), latest.get("pin_btts_yes"))
+
+    # Smart Money: absolute odds move >= 0.20 (strong) or >= 0.10 (moderate)
+    smart_money = {}
+    for side in sides:
+        ch = abs_changes.get(side)
+        if ch is not None and abs(ch) >= 0.10:
+            smart_money[side] = {
+                "abs_change": ch,
+                "direction": "in" if ch < 0 else "out",
+                "strength": "strong" if abs(ch) >= 0.20 else "moderate",
+            }
+
+    has_strong_movement = any(v["strength"] == "strong" for v in smart_money.values())
+
+    # Steam: >5% move in last 6 hours
     from datetime import datetime, timedelta
     try:
         latest_dt = datetime.strptime(latest["captured_at"][:19], "%Y-%m-%d %H:%M:%S")
-        six_hours_ago = latest_dt - timedelta(hours=6)
-        recent_rows = [r for r in rows if datetime.strptime(r["captured_at"][:19], "%Y-%m-%d %H:%M:%S") >= six_hours_ago]
+        cutoff = latest_dt - timedelta(hours=6)
+        recent = [r for r in rows
+                  if datetime.strptime(r["captured_at"][:19], "%Y-%m-%d %H:%M:%S") >= cutoff]
     except Exception:
-        recent_rows = rows
+        recent = rows
 
     steam = {}
-    if len(recent_rows) >= 2:
-        first = dict(recent_rows[0])
-        for key in ["home", "draw", "away"]:
-            old = first.get(f"pin_{key}")
-            new = latest.get(f"pin_{key}")
-            change = pct_change(old, new)
-            if change is not None and abs(change) >= 5:
-                steam[key] = {
-                    "direction": "in" if change < 0 else "out",  # money in = odd drops
-                    "pct": change,
-                }
+    if len(recent) >= 2:
+        first = dict(recent[0])
+        for side in sides:
+            old = best_ref(first, side)
+            new = best_ref(latest, side)
+            ch = pct_change(old, new)
+            if ch is not None and abs(ch) >= 5:
+                steam[side] = {"direction": "in" if ch < 0 else "out", "pct": ch}
 
-    # Compact sparkline (max 30 points)
+    # Opening vs latest for display
+    opening_display = {s: best_ref(opening, s) for s in sides}
+    latest_display  = {s: best_ref(latest,  s) for s in sides}
+
+    # Sparkline (max 30 points, using best reference)
     step = max(1, len(rows) // 30)
     sparkline = []
     for i, r in enumerate(rows):
         if i % step == 0 or i == len(rows) - 1:
+            rd = dict(r)
             sparkline.append({
-                "t": r["captured_at"],
-                "pin_home": r["pin_home"],
-                "pin_draw": r["pin_draw"],
-                "pin_away": r["pin_away"],
+                "t": rd["captured_at"],
+                "pin_home": best_ref(rd, "home"),
+                "pin_draw": best_ref(rd, "draw"),
+                "pin_away": best_ref(rd, "away"),
             })
 
     return {
-        "opening": {
-            "captured_at": opening["captured_at"],
-            "pin_home": opening.get("pin_home"),
-            "pin_draw": opening.get("pin_draw"),
-            "pin_away": opening.get("pin_away"),
-        },
-        "latest": {
-            "captured_at": latest["captured_at"],
-            "pin_home": latest.get("pin_home"),
-            "pin_draw": latest.get("pin_draw"),
-            "pin_away": latest.get("pin_away"),
-        },
+        "opening": opening_display,
+        "latest": latest_display,
         "movements": movements,
+        "abs_changes": abs_changes,
         "directions": {k: direction(v) for k, v in movements.items()},
         "steam": steam,
+        "smart_money": smart_money,
+        "has_strong_movement": has_strong_movement,
         "snapshots": len(rows),
         "sparkline": sparkline,
     }

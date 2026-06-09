@@ -560,32 +560,58 @@ function renderCard(b) {
     </div>`;
   }
 
-  // Line movement banner & arrows
+  // Line movement banner & Smart Money detection
   let movementBanner = '';
   let movementSparkline = '';
   if (b.line_movement) {
     const m = b.line_movement;
-    const hasSteam = m.steam && Object.keys(m.steam).length > 0;
     const sharpConfirms = b.sharp_confirmation === true;
+    const hasSmartMoney = m.smart_money && Object.keys(m.smart_money).length > 0;
+    const hasStrongMove = m.has_strong_movement;
+    const hasSteam = m.steam && Object.keys(m.steam).length > 0;
 
     let banners = [];
-    if (sharpConfirms) banners.push(`<span class="movement-tag confirm">✓ Sharp money agrees with our pick</span>`);
-    if (hasSteam) {
+
+    // Smart Money — absolute odds shift >= 0.20 (strong) or >= 0.10 (moderate)
+    if (hasSmartMoney) {
+      for (const [outcome, info] of Object.entries(m.smart_money)) {
+        const teamName = outcome === 'home' ? b.home_team : outcome === 'away' ? b.away_team : 'Draw';
+        const arrow = info.direction === 'in' ? '↘' : '↗';
+        const openOdd = m.opening && m.opening[outcome];
+        const latestOdd = m.latest && m.latest[outcome];
+        const oddsStr = (openOdd && latestOdd) ? ` (${openOdd.toFixed(2)} → ${latestOdd.toFixed(2)})` : '';
+        const absStr = info.abs_change > 0 ? `+${info.abs_change.toFixed(2)}` : info.abs_change.toFixed(2);
+        if (info.strength === 'strong') {
+          banners.push(`<span class="movement-tag smart-money">📊 Smart Money: ${teamName} ${arrow} ${absStr}${oddsStr}</span>`);
+        } else {
+          banners.push(`<span class="movement-tag steam">⚡ Movimento: ${teamName} ${arrow} ${absStr}${oddsStr}</span>`);
+        }
+      }
+    }
+
+    // Steam (% based — 6h window)
+    if (hasSteam && !hasSmartMoney) {
       for (const [outcome, info] of Object.entries(m.steam)) {
         const teamName = outcome === 'home' ? b.home_team : outcome === 'away' ? b.away_team : 'Draw';
         const arrow = info.direction === 'in' ? '↘' : '↗';
         banners.push(`<span class="movement-tag steam">⚡ Steam: ${teamName} ${arrow} ${Math.abs(info.pct).toFixed(1)}% (6h)</span>`);
       }
     }
-    if (banners.length === 0 && m.snapshots >= 2) {
-      // Show subtle indicator that we have history
-      banners.push(`<span class="movement-tag info">📈 ${m.snapshots} snapshots tracked</span>`);
+
+    if (sharpConfirms && banners.length > 0) {
+      banners.push(`<span class="movement-tag confirm">✓ Confirma o nosso pick</span>`);
     }
+
+    // Only show snapshot count if nothing else to say and history is building
+    if (banners.length === 0 && m.snapshots >= 3) {
+      banners.push(`<span class="movement-tag info">📈 ${m.snapshots} snapshots — sem movimento relevante</span>`);
+    }
+
     if (banners.length > 0) {
       movementBanner = `<div class="vb-movement-banner">${banners.join('')}</div>`;
     }
 
-    // Sparkline of pin_home odds over time
+    // Sparkline
     if (m.sparkline && m.sparkline.length >= 3) {
       const points = m.sparkline.filter(s => s.pin_home).map(s => s.pin_home);
       if (points.length >= 3) {
@@ -603,6 +629,21 @@ function renderCard(b) {
         movementSparkline = `<svg class="spark spark-${trend}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><path d="${path}"/></svg>`;
       }
     }
+  }
+
+  // Public Bias Detection banner
+  let biasBanner = '';
+  if (b.public_bias) {
+    const pb = b.public_bias;
+    const sevCls = pb.severity === 'high' ? 'bias-high' : 'bias-med';
+    const gapStr = `+${pb.gap_pct}%`;
+    biasBanner = `<div class="vb-bias-banner ${sevCls}">
+      <span class="bias-icon">⚠️</span>
+      <span class="bias-text">
+        <strong>Possível trap público — ${pb.popular_team}</strong>
+        Mercado implica ${pb.market_implied}% · Modelo diz ${pb.model_prob}% · Diferença: ${gapStr}
+      </span>
+    </div>`;
   }
 
   // BetIQ unified probability block (the fused model — star feature)
@@ -689,6 +730,7 @@ function renderCard(b) {
       </div>
     </div>
     ${movementBanner}
+    ${biasBanner}
     ${betiqBlock}
     ${probStrip}
     ${xgBlock}
