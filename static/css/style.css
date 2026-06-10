@@ -1011,6 +1011,19 @@ tbody tr.value-row td.strong { color: var(--text); }
   margin-bottom: 6px;
   font-weight: 500;
 }
+/* "No value detected today" — neutral grey, informational (not an alarm) */
+.vb-novalue-banner {
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 0.9rem;
+  border-radius: var(--radius);
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-left: 3px solid var(--text3);
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.vb-novalue-banner strong { color: var(--text); }
 
 
 /* xG Signal Strip — independent model in card */

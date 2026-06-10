@@ -891,7 +891,9 @@ def get_value_bets():
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM odds_events ORDER BY commence_time ASC").fetchall()
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"VALUE_BETS_ERROR: failed to load odds_events: {e}\n{traceback.format_exc()}", flush=True)
         conn.close()
         return []
 

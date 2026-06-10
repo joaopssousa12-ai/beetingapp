@@ -59,6 +59,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
     document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
     link.classList.add('active');
     document.getElementById('section-' + sec).classList.add('active');
+    if (sec === 'overview') loadOverviewSummaries();
     if (sec === 'football' && footballData.length === 0) loadFootball();
     if (sec === 'tennis' && tennisData.length === 0) loadTennis();
     if (sec === 'edge') loadEdge();
@@ -68,6 +69,17 @@ document.querySelectorAll('.nav-link').forEach(link => {
     if (sec === 'collector') checkCollectionRunning();
   });
 });
+
+// Overview summaries are secondary (data-collection stats) — load them lazily the
+// first time the user opens Overview, so the landing (Value Bets) stays fast.
+let _overviewLoaded = false;
+function loadOverviewSummaries() {
+  if (_overviewLoaded) return;
+  _overviewLoaded = true;
+  loadFootballSummary();
+  loadTennisSummary();
+  loadCollectionLog();
+}
 
 // Stats
 async function loadStats() {
@@ -593,9 +605,26 @@ function edgeClass(e) {
   return 'edge-neg';
 }
 
+// Rank: value picks on top (by confidence × edge), then positive edge, then the rest.
+// Pros want "best pick of the day" first — never date order.
+function vbRankScore(b) {
+  const bv = b.best_value;
+  if (!bv || bv.edge_pct == null) return -1e9;
+  const edge = bv.edge_pct;
+  const conf = b.best_confidence || 0;
+  const _min = vbState.minEdge ?? 3;
+  const _max = vbState.maxOdds ?? 5.0;
+  const isValue = edge >= _min && edge <= 15 && (!bv.book_odd || bv.book_odd <= _max);
+  if (isValue) return 1e6 + conf * 100 + Math.min(edge, 15); // value: rank by conf×edge
+  if (edge > 15) return -100;                                 // noise/suspect sinks
+  if (edge > 0) return edge;                                  // marginal positive
+  return -1000 + edge;                                        // negative edge at bottom
+}
+
 function renderValueBets() {
   const wrap = document.getElementById('vb-cards');
   let data = applyVbFilters(vbState.raw);
+  data.sort((a, b) => vbRankScore(b) - vbRankScore(a));
 
   const countEl = document.getElementById('vb-count');
   if (countEl) countEl.textContent = `${data.length} match${data.length === 1 ? '' : 'es'} · ${vbState.raw.length} total`;
@@ -628,7 +657,16 @@ function renderValueBets() {
     return;
   }
 
-  wrap.innerHTML = data.map(b => renderCard(b)).join('');
+  // Pro signal: when no pick clears the quality gate, say so plainly.
+  // Showing junk as if it were value destroys trust — pros respect a clean "no".
+  let noValueBanner = '';
+  if (valueCount === 0) {
+    noValueBanner = `<div class="vb-novalue-banner">
+      <strong>No value detected today</strong> — 0 picks passed the quality gate
+      (edge ≥ ${_qMinEdge}%, odds ≤ ${_qMaxOdds}). Matches below are informational only.
+    </div>`;
+  }
+  wrap.innerHTML = noValueBanner + data.map(b => renderCard(b)).join('');
 
   // Trigger edge calculation for any pre-filled manual odds inputs
   setTimeout(() => {
@@ -2003,8 +2041,6 @@ function renderPerfBreakdown(elId, rows, bucketLabel) {
 // INITIAL LOAD — runs when page opens
 // ===========================================================
 window.addEventListener('DOMContentLoaded', () => {
-  loadStats();
-  loadFootballSummary();
-  loadTennisSummary();
-  loadCollectionLog();
+  loadStats();        // cheap — populates sidebar "last update" + overview stat cards
+  loadEdge();         // Value Bets is now the landing section — load the product immediately
 });

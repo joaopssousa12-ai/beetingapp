@@ -81,6 +81,20 @@
   .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border, #2d3748);
     border-top-color: var(--accent, #6366f1); border-radius: 50%; animation: spin 0.6s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Mobile (≤600px): full-width controls, drop Market + Stake columns so rows fit */
+  @media (max-width: 600px) {
+    .bt-wrap { padding: 16px 10px 50px; }
+    .bt-header { flex-wrap: wrap; gap: 8px; }
+    .bt-ctrl { flex: 1 1 132px; }
+    .bt-ctrl input, .bt-ctrl select { width: 100%; box-sizing: border-box; }
+    .bt-run { width: 100%; margin-top: 4px; }
+    .bt-metric-val { font-size: 18px; }
+    .bt-bet-hdrs, .bt-bet-row { grid-template-columns: 62px 1fr 46px 56px 64px; }
+    .bt-bet-hdrs > :nth-child(3), .bt-bet-row > :nth-child(3),
+    .bt-bet-hdrs > :nth-child(6), .bt-bet-row > :nth-child(6) { display: none; }
+    .bt-table th:nth-child(4), .bt-table td:nth-child(4) { display: none; } /* hide Profit€, keep ROI */
+  }
 </style>
 </head>
 <body>
