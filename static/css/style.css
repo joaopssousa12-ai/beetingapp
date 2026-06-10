@@ -858,8 +858,8 @@ tbody tr.value-row td.strong { color: var(--text); }
   border-top: 1px solid var(--border);
 }
 .vb-card.expanded .vb-all-markets { display: block; }
-.vb-card.expanded .all-markets-link::before { content: "▾ "; }
-.vb-card:not(.expanded) .all-markets-link::before { content: "▸ "; }
+.vb-card.expanded .all-markets-link::before { content: ""; }
+.vb-card:not(.expanded) .all-markets-link::before { content: ""; }
 
 /* All-markets table: market | selection | book | fair | edge | kelly | conf */
 .vb-markets-header, .vb-market-row {
@@ -1594,3 +1594,190 @@ tbody tr.value-row td.strong { color: var(--text); }
   .page-header h1 { font-size: 18px; }
   .stat-value { font-size: 20px; }
 }
+
+/* ============================================================
+   REDESIGNED CARD COMPONENTS (2026-06-10)
+   ============================================================ */
+
+/* Card header: sport + edge chip + time on same row */
+.vb-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vb-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.vb-clv-inline {
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+/* Compact probability line (replaces big BetIQ bar chart) */
+.vb-prob-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 18px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.vb-pitem {
+  color: var(--text2);
+  white-space: nowrap;
+}
+.vb-pitem strong {
+  font-family: var(--mono);
+  color: var(--text);
+  font-weight: 700;
+  font-size: 12.5px;
+}
+.vb-pagree {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 10px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.vb-pagree.agree-high { color: var(--green); background: rgba(52,211,153,0.1); }
+.vb-pagree.agree-med  { color: var(--amber); background: rgba(251,191,36,0.1); }
+.vb-pagree.agree-low  { color: var(--red);   background: rgba(248,113,113,0.1); }
+
+/* Redesigned pick blocks: odds grid inside each block */
+.vb-pick-odds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 8px 0 4px;
+}
+.vb-odd-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.vb-odd-lbl {
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text3);
+}
+.vb-odd-val {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.vb-odd-book .vb-odd-val { color: var(--text); }
+.vb-odd-edge .vb-odd-val { color: var(--green); font-size: 13px; }
+[data-theme="dark"] .vb-odd-edge .vb-odd-val { color: var(--green); }
+
+/* Value pick block: green left accent when value passes gate */
+.vb-pick-block.has-value-pick {
+  background: linear-gradient(135deg, rgba(52,211,153,0.06) 0%, transparent 60%);
+  border-left: 3px solid var(--green) !important;
+}
+[data-theme="dark"] .vb-pick-block.has-value-pick {
+  background: linear-gradient(135deg, rgba(52,211,153,0.08) 0%, transparent 60%);
+}
+
+/* Action row inside pick block (Kelly + Track button) */
+.vb-pick-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border2);
+  gap: 8px;
+}
+.vb-kelly-pill {
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--accent);
+  background: rgba(79,156,249,0.1);
+  padding: 3px 9px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.vb-pick-block .add-bet-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 11px;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: var(--font);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vb-pick-block .add-bet-btn:hover { background: var(--accent2); }
+
+/* Goals market confidence label */
+.vb-goals-conf {
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+.vb-goals-conf.high   { color: #27AE60; background: rgba(39,174,96,0.1); }
+.vb-goals-conf.medium { color: #F39C12; background: rgba(243,156,18,0.1); }
+.vb-goals-conf.low    { color: #E74C3C; background: rgba(231,76,60,0.1); }
+
+/* Standalone value block (when bv doesn't match any model pick) */
+.vb-value-standalone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: linear-gradient(135deg, rgba(52,211,153,0.06) 0%, transparent 100%);
+  border-bottom: 1px solid rgba(52,211,153,0.2);
+  flex-wrap: wrap;
+}
+.vb-vs-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 120px;
+}
+.vb-vs-sel { font-size: 13px; font-weight: 600; color: var(--text); }
+.vb-vs-mkt { font-size: 10.5px; color: var(--text3); }
+.vb-vs-odds { font-size: 12px; color: var(--text2); white-space: nowrap; }
+.vb-vs-odds strong { font-family: var(--mono); color: var(--text); }
+.vb-vs-kelly { font-size: 12px; font-weight: 600; font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+.vb-value-standalone .add-bet-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 11px;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: var(--font);
+  cursor: pointer;
+}
+.vb-value-standalone .add-bet-btn:hover { background: var(--accent2); }
+
+/* Card footer: updated for new expand label */
+.vb-card-foot .all-markets-link::before { content: ''; }
+.vb-card.expanded .all-markets-link::before { content: ''; }
+.vb-card:not(.expanded) .all-markets-link::before { content: ''; }
+
+/* Manual odds: always in DOM but only visible when expanded — overrides old rule */
+.vb-manual-odds {
+  display: none !important;
+  border-left: none;
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+}
+.vb-card.expanded .vb-manual-odds { display: block !important; }

@@ -542,10 +542,10 @@ function applyVbFilters(rows) {
         && (!bv.book_odd || bv.book_odd <= maxOdds);
     });
   } else if (vbState.mode === 'confident') {
-    out = out.filter(r => (r.best_confidence || 0) >= 4);
+    out = out.filter(r => Math.max(r.best_confidence || 0, (r.best_pick && r.best_pick.confidence) || 0, (r.safest_pick && r.safest_pick.confidence) || 0) >= 4);
   }
   if (minConf > 0) {
-    out = out.filter(r => (r.best_confidence || 0) >= minConf);
+    out = out.filter(r => Math.max(r.best_confidence || 0, (r.best_pick && r.best_pick.confidence) || 0, (r.safest_pick && r.safest_pick.confidence) || 0) >= minConf);
   }
   return out;
 }
@@ -661,74 +661,147 @@ function renderCard(b) {
     && bv.edge_pct >= _qMinEdge && bv.edge_pct <= 15
     && (!bv.book_odd || bv.book_odd <= _qMaxOdds);
   const isExpanded = vbState.expanded.has(b.event_id);
-  const hasAutoH2H = !!(b.x1_home || b.b365_home);
+  // Bug 3 fix: include best_home so World Cup matches with best odds but no 1xBet/b365 don't show manual form
+  const hasAutoH2H = !!(b.x1_home || b.b365_home || b.best_home);
 
-  // True probability strip
-  let probStrip = '';
-  if (b.true_home_pct != null) {
-    probStrip = `<div class="vb-true-probs">
-      <div class="vb-prob-cell">
-        <div class="vb-prob-label">${b.home_team}</div>
-        <div class="vb-prob-value">${b.true_home_pct}%</div>
-      </div>
-      ${b.true_draw_pct != null ? `<div class="vb-prob-cell">
-        <div class="vb-prob-label">Draw</div>
-        <div class="vb-prob-value">${b.true_draw_pct}%</div>
-      </div>` : ''}
-      <div class="vb-prob-cell">
-        <div class="vb-prob-label">${b.away_team}</div>
-        <div class="vb-prob-value">${b.true_away_pct}%</div>
-      </div>
+  // ── Edge chip for card header ──────────────────────────────────
+  let edgeChipHtml = '';
+  if (bv && bv.edge_pct != null) {
+    const sign = bv.edge_pct > 0 ? '+' : '';
+    const eCls = bv.edge_pct > 15 ? 'noise' : hasValue ? 'pos' : bv.edge_pct >= 1 ? 'flat' : 'neg';
+    edgeChipHtml = `<span class="edge-chip ${eCls}">${sign}${bv.edge_pct.toFixed(1)}%</span>`;
+  }
+
+  // ── Compact time string ─────────────────────────────────────────
+  const _timeStr = (() => {
+    if (!b.commence_time) return '—';
+    const diff = (new Date(b.commence_time) - Date.now()) / 3600000;
+    if (diff < 0) return 'started';
+    if (diff < 24) { const h = Math.floor(diff); const m = Math.floor((diff-h)*60); return `${h}h${m}m`; }
+    return new Date(b.commence_time).toLocaleDateString('en-GB', {day:'2-digit', month:'short'});
+  })();
+
+  // ── Kelly helper ────────────────────────────────────────────────
+  const _br = vbState.bankroll || 0;
+  function _calcKelly(edge, odd) {
+    if (!edge || !odd || edge <= 0 || odd <= 1) return null;
+    const kQ = (edge/100) / (odd - 1) * 0.25;
+    return _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
+  }
+
+  // ── Compact probability line (replaces BetIQ big bar chart) ────
+  let probLineHtml = '';
+  const bq = b.betiq_probs;
+  if (bq && bq.home !== undefined) {
+    const agreeIcon = bq.agreement === 'high' ? '✓' : bq.agreement === 'medium' ? '~' : '⚠';
+    const agreeCls = 'vb-pagree ' + (bq.agreement === 'high' ? 'agree-high' : bq.agreement === 'medium' ? 'agree-med' : 'agree-low');
+    const agreeText = bq.agreement === 'high' ? 'Market confirms' : bq.agreement === 'medium' ? 'Mostly agrees' : 'Models diverge';
+    probLineHtml = `<div class="vb-prob-line">
+      <span class="vb-pitem">${b.home_team} <strong>${bq.home}%</strong></span>
+      ${bq.draw != null ? `<span class="vb-pitem">Draw <strong>${bq.draw}%</strong></span>` : ''}
+      <span class="vb-pitem">${b.away_team} <strong>${bq.away}%</strong></span>
+      <span class="${agreeCls}">${agreeIcon} ${agreeText}</span>
+    </div>`;
+  } else if (b.true_home_pct != null) {
+    probLineHtml = `<div class="vb-prob-line">
+      <span class="vb-pitem">${b.home_team} <strong>${b.true_home_pct}%</strong></span>
+      ${b.true_draw_pct != null ? `<span class="vb-pitem">Draw <strong>${b.true_draw_pct}%</strong></span>` : ''}
+      ${b.true_away_pct != null ? `<span class="vb-pitem">${b.away_team} <strong>${b.true_away_pct}%</strong></span>` : ''}
     </div>`;
   }
 
-  // ============= NEW: Best Pick + Safest Pick blocks =============
+  // ── CLV badge ───────────────────────────────────────────────────
+  let clvBadge = '';
+  const trackedBets = trackedBetsMap[b.event_id] || [];
+  if (trackedBets.length > 0) {
+    const withClv = trackedBets.filter(tb => tb.clv_pct != null);
+    if (withClv.length > 0) {
+      const best = withClv.reduce((a, x) => Math.abs(x.clv_pct) > Math.abs(a.clv_pct) ? x : a);
+      const sign = best.clv_pct >= 0 ? '+' : '';
+      const clvColor = best.clv_pct > 0 ? '#34d399' : best.clv_pct < 0 ? '#f87171' : '#8b90a0';
+      const label = trackedBets.length > 1 ? `${trackedBets.length} bets · CLV` : 'CLV';
+      clvBadge = `<span style="background:${clvColor}18;color:${clvColor};border:1px solid ${clvColor}38;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:600;white-space:nowrap">${label} ${sign}${best.clv_pct}%</span>`;
+    } else {
+      const label = trackedBets.length > 1 ? `${trackedBets.length} bets tracked` : '1 bet tracked';
+      clvBadge = `<span style="background:var(--bg2);color:var(--text3);border:1px solid var(--border);padding:2px 9px;border-radius:12px;font-size:11px;white-space:nowrap">${label} · CLV pending</span>`;
+    }
+  }
+
+  // ── Best Pick + Safest Pick blocks (enhanced with odds data) ───
   const bestPick = b.best_pick;
   const safestPick = b.safest_pick;
+  const bvKelly = bv ? _calcKelly(bv.edge_pct, bv.book_odd) : null;
 
-  function renderModelPickBlock(pick, label, iconHtml, isPrimary) {
+  // Check if bv selection matches any pick (for integrating value data into the pick block)
+  function _makeVI(pick) {
+    if (!hasValue || !bv || !pick) return null;
+    if (pick.selection !== bv.selection) return null;
+    return { book_odd: bv.book_odd, edge_pct: bv.edge_pct, kelly_str: bvKelly, book_label: bv.book === 'Best' ? '🏆 Best' : (bv.book || 'Book') };
+  }
+  const bestVI = _makeVI(bestPick);
+  const safestVI = !bestVI ? _makeVI(safestPick) : null;
+
+  function renderModelPickBlock(pick, label, iconHtml, isPrimary, vi) {
     if (!pick) {
       return `<div class="vb-pick-block ${isPrimary ? 'best-value no-value' : ''}">
-        <div class="vb-pick-label">${label}</div>
-        <div style="color:var(--text3);font-size:12px">Not enough data</div>
+        <div class="vb-pick-label">${iconHtml}${label}</div>
+        <div style="color:var(--text3);font-size:12px;padding:6px 0">Not enough data</div>
       </div>`;
     }
     const stars = pick.confidence || 0;
     const starsRow = Array.from({length:5}, (_,i) => `<span class="vb-star${i >= stars ? ' empty' : ''}">★</span>`).join('');
-    const cls = isPrimary ? 'best-value' : '';
     const isGoalsMarket = pick.market && (pick.market.includes("Over/Under") || pick.market.includes("BTTS"));
-    let confidenceHtml = '';
-    if (isGoalsMarket) {
-      const confLabel = pick.goals_confidence || 'MEDIUM';
-      const confColor = confLabel === 'HIGH' ? '#27AE60' : confLabel === 'MEDIUM' ? '#F39C12' : '#E74C3C';
-      confidenceHtml = `<span style="font-size:11px; color:${confColor}; font-weight:600; margin-left:auto">${confLabel}</span>`;
-    } else {
-      confidenceHtml = `<span class="vb-stars">${starsRow}</span>`;
+    const confHtml = isGoalsMarket
+      ? `<span class="vb-goals-conf ${(pick.goals_confidence||'medium').toLowerCase()}">${pick.goals_confidence||'MEDIUM'}</span>`
+      : `<span class="vb-stars">${starsRow}</span>`;
+    const fairStr = pick.fair_odd ? pick.fair_odd.toFixed(2) : '—';
+    const targetStr = pick.target_odd_5pct ? pick.target_odd_5pct.toFixed(2) : null;
+    // Odds grid
+    let oddsItems = `<span class="vb-odd-item"><span class="vb-odd-lbl">Prob</span><span class="vb-odd-val">${pick.model_prob != null ? pick.model_prob + '%' : '—'}</span></span>`;
+    oddsItems += `<span class="vb-odd-item"><span class="vb-odd-lbl">Fair</span><span class="vb-odd-val">${fairStr}</span></span>`;
+    if (targetStr) oddsItems += `<span class="vb-odd-item"><span class="vb-odd-lbl">Target</span><span class="vb-odd-val">≥${targetStr}</span></span>`;
+    if (vi) {
+      oddsItems += `<span class="vb-odd-item vb-odd-book"><span class="vb-odd-lbl">${vi.book_label}</span><span class="vb-odd-val">${fmtOdd(vi.book_odd)}</span></span>`;
+      const eSign = vi.edge_pct > 0 ? '+' : '';
+      oddsItems += `<span class="vb-odd-item vb-odd-edge"><span class="vb-odd-lbl">Edge</span><span class="vb-odd-val">${eSign}${vi.edge_pct.toFixed(1)}%</span></span>`;
     }
-    return `<div class="vb-pick-block ${cls}">
-      <div class="vb-pick-label">
-        ${iconHtml}
-        ${label}
-        ${confidenceHtml}
-      </div>
+    // Action row only when value + primary
+    let actionHtml = '';
+    if (vi && isPrimary) {
+      actionHtml = `<div class="vb-pick-action">
+        <span class="vb-kelly-pill">¼ Kelly: ${vi.kelly_str || '—'}</span>
+        <button class="add-bet-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track</button>
+      </div>`;
+    }
+    const blockCls = `vb-pick-block${isPrimary ? ' best-value' : ''}${vi ? ' has-value-pick' : ''}`;
+    return `<div class="${blockCls}">
+      <div class="vb-pick-label">${iconHtml}${label}${confHtml}</div>
       <div class="vb-pick-selection">${pick.selection}</div>
-      <div class="vb-pick-market">${pick.market} · ${pick.model_prob}% probability</div>
-      <div class="vb-pick-row">
-        <span class="label">Fair odd</span>
-        <span class="val">${pick.fair_odd ? pick.fair_odd.toFixed(2) : '—'}</span>
-        <span class="val edge-pos">→ ${pick.target_odd_5pct ? pick.target_odd_5pct.toFixed(2) : '—'}</span>
-      </div>
-      <div style="font-size:10.5px;color:var(--text3);margin-top:6px;line-height:1.4">
-        ${isGoalsMarket ? `Based on historical goals (${pick.volatility || 'standard'} volatility)` : `Bet if 1xBet pays ≥ ${pick.target_odd_5pct ? pick.target_odd_5pct.toFixed(2) : '—'} (5% edge)`}
-      </div>
+      <div class="vb-pick-market">${pick.market}${!isGoalsMarket && pick.model_prob != null ? ' · ' + pick.model_prob + '% prob' : ''}</div>
+      <div class="vb-pick-odds">${oddsItems}</div>
+      ${actionHtml}
     </div>`;
   }
 
   const trophyIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h12v6c0 3-3 6-6 6s-6-3-6-6V2z"/><path d="M9 18h6v3H9z"/></svg>';
   const shieldIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-4 9-8 10-4-1-8-5-8-10V6l8-4z"/></svg>';
 
-  const mlBlock = renderModelPickBlock(bestPick, 'Best Pick', trophyIcon, true);
-  const bvBlock = renderModelPickBlock(safestPick, 'Safest Pick', shieldIcon, false);
+  const mlBlock = renderModelPickBlock(bestPick, 'Best Pick', trophyIcon, true, bestVI);
+  const bvBlock = renderModelPickBlock(safestPick, 'Safest Pick', shieldIcon, false, safestVI);
+
+  // Standalone value block when bv doesn't match either pick selection
+  let standaloneValueHtml = '';
+  if (hasValue && bv && !bestVI && !safestVI) {
+    const sign = bv.edge_pct > 0 ? '+' : '';
+    const bookLabel = bv.book === 'Best' ? '🏆 Best' : (bv.book || 'Book');
+    standaloneValueHtml = `<div class="vb-value-standalone">
+      <span class="edge-chip pos">${sign}${bv.edge_pct.toFixed(1)}%</span>
+      <span class="vb-vs-content"><span class="vb-vs-sel">${bv.selection}</span><span class="vb-vs-mkt">${bv.market}</span></span>
+      <span class="vb-vs-odds">${bookLabel} <strong>${fmtOdd(bv.book_odd)}</strong></span>
+      ${bvKelly ? `<span class="vb-vs-kelly">Kelly: ${bvKelly}</span>` : ''}
+      <button class="add-bet-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track</button>
+    </div>`;
+  }
 
   // All-markets expanded view — with no-vig (fair) odds + Kelly stake
   const allMarketsHTML = (() => {
@@ -892,269 +965,162 @@ function renderCard(b) {
     </div>`;
   }
 
-  // BetIQ unified probability block (the fused model — star feature)
-  let betiqBlock = '';
-  if (b.betiq_probs && b.betiq_probs.home !== undefined) {
-    const bq = b.betiq_probs;
-    const agreeCls = bq.agreement === 'high' ? 'betiq-high' : bq.agreement === 'medium' ? 'betiq-med' : 'betiq-low';
-    
-    // NEW: reflect industry-standard approach (Pinnacle = ground truth)
-    let labelText, agreeText;
-    if (bq.primary_source === 'pinnacle') {
-      labelText = '⬡ BetIQ · Pinnacle No-Vig (Industry Standard)';
-      if (bq.agreement === 'high') agreeText = '✓ Models confirm market';
-      else if (bq.agreement === 'medium') agreeText = '~ Models mostly confirm';
-      else if (bq.agreement === 'low') agreeText = '⚠ Models diverge from market';
-      else if (bq.agreement === 'single') agreeText = 'Pinnacle only';
-      else agreeText = bq.agreement;
-      
-      // Show mismatch flag if present
-      if (bq.mismatch_flag === 'xg_diverges_strongly') {
-        agreeText += ' (xG outlier — may indicate data quality issue)';
-      }
-    } else {
-      // Fallback path: no Pinnacle available
-      labelText = '⬡ BetIQ · Model Estimate (no Pinnacle data)';
-      agreeText = 'xG + Elo fallback';
-    }
-    
-    betiqBlock = `<div class="vb-betiq-strip ${agreeCls}">
-      <div class="vb-betiq-header">
-        <span class="vb-betiq-label">${labelText}</span>
-        <span class="vb-betiq-agree">${agreeText}</span>
-      </div>
-      <div class="vb-betiq-probs">
-        <div class="vb-betiq-prob">
-          <span class="lab">${b.home_team}</span>
-          <span class="bar"><span class="fill" style="width:${bq.home}%"></span></span>
-          <span class="val">${bq.home}%</span>
-        </div>
-        ${bq.draw != null ? `<div class="vb-betiq-prob">
-          <span class="lab">Draw</span>
-          <span class="bar"><span class="fill" style="width:${bq.draw}%"></span></span>
-          <span class="val">${bq.draw}%</span>
-        </div>` : ''}
-        <div class="vb-betiq-prob">
-          <span class="lab">${b.away_team}</span>
-          <span class="bar"><span class="fill" style="width:${bq.away}%"></span></span>
-          <span class="val">${bq.away}%</span>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  // CLV badge — shown when user has a tracked bet for this event
-  let clvBadge = '';
-  const trackedBets = trackedBetsMap[b.event_id] || [];
-  if (trackedBets.length > 0) {
-    const withClv = trackedBets.filter(tb => tb.clv_pct != null);
-    if (withClv.length > 0) {
-      // Show the highest-magnitude CLV among tracked bets for this event
-      const best = withClv.reduce((a, x) => Math.abs(x.clv_pct) > Math.abs(a.clv_pct) ? x : a);
-      const sign = best.clv_pct >= 0 ? '+' : '';
-      const clvColor = best.clv_pct > 0 ? '#34d399' : best.clv_pct < 0 ? '#f87171' : '#8b90a0';
-      const label = trackedBets.length > 1 ? `${trackedBets.length} bets · best CLV` : 'CLV';
-      clvBadge = `<span style="background:${clvColor}18;color:${clvColor};border:1px solid ${clvColor}38;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:600;white-space:nowrap">${label} ${sign}${best.clv_pct}%</span>`;
-    } else {
-      const label = trackedBets.length > 1 ? `${trackedBets.length} bets tracked` : '1 bet tracked';
-      clvBadge = `<span style="background:var(--bg2);color:var(--text3);border:1px solid var(--border);padding:2px 9px;border-radius:12px;font-size:11px;white-space:nowrap">${label} · CLV pending</span>`;
-    }
-  }
-
+  const cardAgreement = (b.betiq_probs && b.betiq_probs.agreement) || 'high';
   const cardCls = `vb-card${hasValue ? ' has-value' : ''}${isExpanded ? ' expanded' : ''}`;
+  const detailsCount = (b.all_picks||[]).filter(p=>p.book==='Best').length;
 
-  return `<div class="${cardCls}" data-id="${b.event_id}">
+  // ── Build auto-odds HTML (used in collapsed details) ───────────
+  const autoOddsHtml = hasAutoH2H ? (() => {
+    const hasDraw = b.true_draw_pct != null || (b.betiq_probs && b.betiq_probs.draw != null);
+    const cols = [b.home_team, ...(hasDraw ? ['Draw'] : []), b.away_team];
+    function aoRow(book, h, d, a) {
+      if (!h && !a) return '';
+      const vals = [h, ...(hasDraw ? [d] : []), a];
+      return `<div class="ao-row">
+        <span class="ao-book">${book}</span>
+        ${vals.map(v => `<span class="ao-val${v ? '' : ' ao-miss'}">${v ? v.toFixed(2) : '—'}</span>`).join('')}
+      </div>`;
+    }
+    return `<div class="vb-auto-odds">
+      <div class="ao-header">
+        <span class="ao-title">📊 Odds automáticas</span>
+        <div class="ao-cols">${cols.map(c => `<span>${c}</span>`).join('')}</div>
+      </div>
+      ${aoRow('1xBet', b.x1_home, b.x1_draw, b.x1_away)}
+      ${aoRow('Bet365', b.b365_home, b.b365_draw, b.b365_away)}
+      ${aoRow('🏆 Best', b.best_home, b.best_draw, b.best_away)}
+    </div>`;
+  })() : '';
+
+  // ── Manual odds entry (kept in DOM for dynamic updateYourBestValue) ──
+  const manualOddsHtml = `<div class="vb-manual-odds" id="manual-${b.event_id}">
+    <div class="vb-manual-header">
+      <span class="vb-manual-title">⊕ Enter odds to find real value (auto-saved)</span>
+    </div>
+    <div class="vb-manual-section">
+      <div class="vb-manual-section-label">Match Result</div>
+      <div class="vb-manual-inputs">
+        <div class="vb-manual-field">
+          <label>${b.home_team}</label>
+          <input type="number" step="0.01" placeholder="odd"
+                 value="${(b.manual_odds && b.manual_odds[b.home_team]) || ''}"
+                 data-prob="${b.true_home_pct || (b.betiq_probs && b.betiq_probs.home) || 0}"
+                 data-event-id="${b.event_id}"
+                 data-selection="${b.home_team}"
+                 data-market="Match Result"
+                 oninput="calcManualEdge(this)">
+          <span class="vb-manual-edge"></span>
+        </div>
+        ${(b.true_draw_pct != null || (b.betiq_probs && b.betiq_probs.draw)) ? `
+        <div class="vb-manual-field">
+          <label>Draw</label>
+          <input type="number" step="0.01" placeholder="odd"
+                 value="${(b.manual_odds && b.manual_odds['Draw']) || ''}"
+                 data-prob="${b.true_draw_pct || (b.betiq_probs && b.betiq_probs.draw) || 0}"
+                 data-event-id="${b.event_id}"
+                 data-selection="Draw"
+                 data-market="Match Result"
+                 oninput="calcManualEdge(this)">
+          <span class="vb-manual-edge"></span>
+        </div>` : ''}
+        <div class="vb-manual-field">
+          <label>${b.away_team}</label>
+          <input type="number" step="0.01" placeholder="odd"
+                 value="${(b.manual_odds && b.manual_odds[b.away_team]) || ''}"
+                 data-prob="${b.true_away_pct || (b.betiq_probs && b.betiq_probs.away) || 0}"
+                 data-event-id="${b.event_id}"
+                 data-selection="${b.away_team}"
+                 data-market="Match Result"
+                 oninput="calcManualEdge(this)">
+          <span class="vb-manual-edge"></span>
+        </div>
+      </div>
+    </div>
+    ${b.true_over25_pct != null ? `
+    <div class="vb-manual-section">
+      <div class="vb-manual-section-label">Over / Under 2.5</div>
+      <div class="vb-manual-inputs">
+        <div class="vb-manual-field">
+          <label>Over 2.5</label>
+          <input type="number" step="0.01" placeholder="odd"
+                 value="${(b.manual_odds && b.manual_odds['Over 2.5 goals']) || ''}"
+                 data-prob="${b.true_over25_pct}"
+                 data-event-id="${b.event_id}"
+                 data-selection="Over 2.5 goals"
+                 data-market="Over/Under 2.5"
+                 oninput="calcManualEdge(this)">
+          <span class="vb-manual-edge"></span>
+        </div>
+        <div class="vb-manual-field">
+          <label>Under 2.5</label>
+          <input type="number" step="0.01" placeholder="odd"
+                 value="${(b.manual_odds && b.manual_odds['Under 2.5 goals']) || ''}"
+                 data-prob="${b.true_under25_pct}"
+                 data-event-id="${b.event_id}"
+                 data-selection="Under 2.5 goals"
+                 data-market="Over/Under 2.5"
+                 oninput="calcManualEdge(this)">
+          <span class="vb-manual-edge"></span>
+        </div>
+      </div>
+    </div>` : ''}
+    ${b.true_btts_yes_pct != null ? `
+    <div class="vb-manual-section">
+      <div class="vb-manual-section-label">Both Teams To Score</div>
+      <div class="vb-manual-inputs">
+        <div class="vb-manual-field">
+          <label>BTTS Yes</label>
+          <input type="number" step="0.01" placeholder="odd"
+                 value="${(b.manual_odds && b.manual_odds['BTTS Yes']) || ''}"
+                 data-prob="${b.true_btts_yes_pct}"
+                 data-event-id="${b.event_id}"
+                 data-selection="BTTS Yes"
+                 data-market="Both Teams To Score"
+                 oninput="calcManualEdge(this)">
+          <span class="vb-manual-edge"></span>
+        </div>
+        <div class="vb-manual-field">
+          <label>BTTS No</label>
+          <input type="number" step="0.01" placeholder="odd"
+                 value="${(b.manual_odds && b.manual_odds['BTTS No']) || ''}"
+                 data-prob="${b.true_btts_no_pct}"
+                 data-event-id="${b.event_id}"
+                 data-selection="BTTS No"
+                 data-market="Both Teams To Score"
+                 oninput="calcManualEdge(this)">
+          <span class="vb-manual-edge"></span>
+        </div>
+      </div>
+    </div>` : ''}
+  </div>`;
+
+  return `<div class="${cardCls}" data-id="${b.event_id}" data-agreement="${cardAgreement}">
     <div class="vb-card-head">
       <div class="vb-card-meta">
         <span class="vb-sport">${b.sport_name || ''}</span>
-        <span class="vb-time">${fmtTime(b.commence_time)}${movementSparkline ? ' · ' + movementSparkline : ''}</span>
-        ${clvBadge ? clvBadge : ''}
+        <div class="vb-head-right">
+          ${edgeChipHtml}
+          <span class="vb-time">${_timeStr}${movementSparkline ? ' ' + movementSparkline : ''}</span>
+        </div>
       </div>
-      <div class="vb-match-name" onclick="window.location.href='/match/${b.event_id}'" style="cursor:pointer; transition: color 0.2s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color=''">
+      <div class="vb-match-name" onclick="window.location.href='/match/${b.event_id}'" style="cursor:pointer; transition:color 0.2s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color=''">
         ${b.home_team} <span class="vs">vs</span> ${b.away_team}
-        <span style="font-size:11px; color: var(--text3); margin-left: 8px; font-weight: normal;">→ ver detalhes</span>
+        ${clvBadge ? `<span class="vb-clv-inline">${clvBadge}</span>` : ''}
       </div>
     </div>
     ${movementBanner}
     ${biasBanner}
-    ${betiqBlock}
-    ${probStrip}
-    ${xgBlock}
-    ${hasAutoH2H ? (() => {
-      const hasDraw = b.true_draw_pct != null || (b.betiq_probs && b.betiq_probs.draw != null);
-      const cols = [b.home_team, ...(hasDraw ? ['Draw'] : []), b.away_team];
-      function aoRow(book, h, d, a) {
-        if (!h && !a) return '';
-        const vals = [h, ...(hasDraw ? [d] : []), a];
-        return `<div class="ao-row">
-          <span class="ao-book">${book}</span>
-          ${vals.map(v => `<span class="ao-val${v ? '' : ' ao-miss'}">${v ? v.toFixed(2) : '—'}</span>`).join('')}
-        </div>`;
-      }
-      return `<div class="vb-auto-odds">
-        <div class="ao-header">
-          <span class="ao-title">📊 Odds automáticas</span>
-          <div class="ao-cols">${cols.map(c => `<span>${c}</span>`).join('')}</div>
-        </div>
-        ${aoRow('1xBet', b.x1_home, b.x1_draw, b.x1_away)}
-        ${aoRow('Bet365', b.b365_home, b.b365_draw, b.b365_away)}
-        ${aoRow('🏆 Best', b.best_home, b.best_draw, b.best_away)}
-      </div>`;
-    })() : ''}
-    <div class="vb-manual-odds" id="manual-${b.event_id}"${hasAutoH2H ? ' style="display:none"' : ''}>
-      <div class="vb-manual-header">
-        <span class="vb-manual-title">⊕ Enter 1xBet odds to find real value (auto-saved)</span>
-      </div>
-      <div class="vb-manual-section">
-        <div class="vb-manual-section-label">Match Result</div>
-        <div class="vb-manual-inputs">
-          <div class="vb-manual-field">
-            <label>${b.home_team}</label>
-            <input type="number" step="0.01" placeholder="odd"
-                   value="${(b.manual_odds && b.manual_odds[b.home_team]) || ''}"
-                   data-prob="${b.true_home_pct || (b.betiq_probs && b.betiq_probs.home) || 0}"
-                   data-event-id="${b.event_id}"
-                   data-selection="${b.home_team}"
-                   data-market="Match Result"
-                   oninput="calcManualEdge(this)">
-            <span class="vb-manual-edge"></span>
-          </div>
-          ${(b.true_draw_pct != null || (b.betiq_probs && b.betiq_probs.draw)) ? `
-          <div class="vb-manual-field">
-            <label>Draw</label>
-            <input type="number" step="0.01" placeholder="odd"
-                   value="${(b.manual_odds && b.manual_odds['Draw']) || ''}"
-                   data-prob="${b.true_draw_pct || (b.betiq_probs && b.betiq_probs.draw) || 0}"
-                   data-event-id="${b.event_id}"
-                   data-selection="Draw"
-                   data-market="Match Result"
-                   oninput="calcManualEdge(this)">
-            <span class="vb-manual-edge"></span>
-          </div>` : ''}
-          <div class="vb-manual-field">
-            <label>${b.away_team}</label>
-            <input type="number" step="0.01" placeholder="odd"
-                   value="${(b.manual_odds && b.manual_odds[b.away_team]) || ''}"
-                   data-prob="${b.true_away_pct || (b.betiq_probs && b.betiq_probs.away) || 0}"
-                   data-event-id="${b.event_id}"
-                   data-selection="${b.away_team}"
-                   data-market="Match Result"
-                   oninput="calcManualEdge(this)">
-            <span class="vb-manual-edge"></span>
-          </div>
-        </div>
-      </div>
-      ${b.true_over25_pct != null ? `
-      <div class="vb-manual-section">
-        <div class="vb-manual-section-label">Over / Under 2.5</div>
-        <div class="vb-manual-inputs">
-          <div class="vb-manual-field">
-            <label>Over 2.5</label>
-            <input type="number" step="0.01" placeholder="odd"
-                   value="${(b.manual_odds && b.manual_odds['Over 2.5 goals']) || ''}"
-                   data-prob="${b.true_over25_pct}"
-                   data-event-id="${b.event_id}"
-                   data-selection="Over 2.5 goals"
-                   data-market="Over/Under 2.5"
-                   oninput="calcManualEdge(this)">
-            <span class="vb-manual-edge"></span>
-          </div>
-          <div class="vb-manual-field">
-            <label>Under 2.5</label>
-            <input type="number" step="0.01" placeholder="odd"
-                   value="${(b.manual_odds && b.manual_odds['Under 2.5 goals']) || ''}"
-                   data-prob="${b.true_under25_pct}"
-                   data-event-id="${b.event_id}"
-                   data-selection="Under 2.5 goals"
-                   data-market="Over/Under 2.5"
-                   oninput="calcManualEdge(this)">
-            <span class="vb-manual-edge"></span>
-          </div>
-        </div>
-      </div>` : ''}
-      ${b.true_btts_yes_pct != null ? `
-      <div class="vb-manual-section">
-        <div class="vb-manual-section-label">Both Teams To Score</div>
-        <div class="vb-manual-inputs">
-          <div class="vb-manual-field">
-            <label>BTTS Yes</label>
-            <input type="number" step="0.01" placeholder="odd"
-                   value="${(b.manual_odds && b.manual_odds['BTTS Yes']) || ''}"
-                   data-prob="${b.true_btts_yes_pct}"
-                   data-event-id="${b.event_id}"
-                   data-selection="BTTS Yes"
-                   data-market="Both Teams To Score"
-                   oninput="calcManualEdge(this)">
-            <span class="vb-manual-edge"></span>
-          </div>
-          <div class="vb-manual-field">
-            <label>BTTS No</label>
-            <input type="number" step="0.01" placeholder="odd"
-                   value="${(b.manual_odds && b.manual_odds['BTTS No']) || ''}"
-                   data-prob="${b.true_btts_no_pct}"
-                   data-event-id="${b.event_id}"
-                   data-selection="BTTS No"
-                   data-market="Both Teams To Score"
-                   oninput="calcManualEdge(this)">
-            <span class="vb-manual-edge"></span>
-          </div>
-        </div>
-      </div>` : ''}
-    </div>
-    <div class="vb-your-value vb-pick-block best-value has-value" style="display:none"></div>
-    ${(() => {
-      if (!bv || bv.edge_pct == null || bv.edge_pct <= 0) return '';
-      const qMinEdge = vbState.minEdge ?? 3;
-      const qMaxOdds = vbState.maxOdds ?? 5.0;
-      const edgeOk = bv.edge_pct >= qMinEdge;
-      const oddsOk = !bv.book_odd || bv.book_odd <= qMaxOdds;
-      // Quality gate — show the block even when filtered but with a "blocked" state
-      const sign = bv.edge_pct > 0 ? '+' : '';
-      const edgeCls = edgeOk ? 'pos' : 'low';
-      const bookLabel = bv.book === 'Best' ? '🏆 Melhor odd disponível' : bv.book;
-      const oddsSource = b.odds_source === 'betfair' ? '⚡ Betfair Exchange' : b.odds_source === 'pinnacle' ? '📌 Pinnacle' : '🔬 xG Model';
-      if (!edgeOk || !oddsOk) {
-        // Show a muted "edge below threshold" notice instead of treating as real value
-        let reason = !oddsOk
-          ? `Odd ${fmtOdd(bv.book_odd)} demasiado alta (max ${qMaxOdds.toFixed(1)})`
-          : `Edge ${sign}${bv.edge_pct.toFixed(1)}% abaixo do mínimo de ${qMinEdge}%`;
-        return `<div class="vb-value-alert low">
-          <div class="vb-value-alert-head">
-            <span class="vb-value-tag" style="opacity:0.6">Edge insuficiente</span>
-            <span class="vb-value-source">${oddsSource}</span>
-          </div>
-          <div class="vb-value-body">
-            <span class="vb-value-sel" style="opacity:0.7">${bv.selection} · ${fmtOdd(bv.book_odd)}</span>
-            <span class="vb-value-mkt">${reason}</span>
-          </div>
-        </div>`;
-      }
-      const kellyLine = bv.kelly_pct > 0
-        ? `Sugestão: <strong>${bv.kelly_pct.toFixed(1)}% do bankroll</strong> (¼ Kelly)`
-        : 'Edge insuficiente para apostar';
-      return `<div class="vb-value-alert ${edgeCls}">
-        <div class="vb-value-alert-head">
-          <span class="vb-value-tag">💰 Valor detetado</span>
-          <span class="vb-value-source">${oddsSource}</span>
-        </div>
-        <div class="vb-value-body">
-          <span class="vb-value-sel">${bv.selection}</span>
-          <span class="vb-value-mkt">${bv.market}</span>
-        </div>
-        <div class="vb-value-row">
-          <span class="vb-value-book">${bookLabel}</span>
-          <span class="vb-value-odd">${fmtOdd(bv.book_odd)}</span>
-          <span class="vb-value-edge-badge ${edgeCls}">${sign}${bv.edge_pct.toFixed(1)}%</span>
-        </div>
-        <div class="vb-value-kelly">${kellyLine}</div>
-      </div>`;
-    })()}
+    ${probLineHtml}
+    ${standaloneValueHtml}
     <div class="vb-picks">${mlBlock}${bvBlock}</div>
+    <div class="vb-your-value vb-pick-block best-value has-value" style="display:none"></div>
+    ${manualOddsHtml}
     <div class="vb-card-foot">
-      <span class="all-markets-link" onclick="toggleExpand('${b.event_id}')">All markets (${(b.all_picks||[]).filter(p=>p.book==='Best').length})</span>
-      ${bv && bv.edge_pct > 0 ? `<button class="add-bet-btn" onclick='quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track</button>` : ''}
+      <span class="all-markets-link" onclick="toggleExpand('${b.event_id}')">
+        ${isExpanded ? '▲' : '▾'} xG · Odds · Markets (${detailsCount})
+      </span>
     </div>
-    <div class="vb-all-markets">${allMarketsHTML}</div>
+    <div class="vb-all-markets">${isExpanded ? (xgBlock + autoOddsHtml + allMarketsHTML) : ''}</div>
   </div>`;
 }
 
@@ -1236,11 +1202,10 @@ function updateYourBestValue(card, eventId) {
     if (!odd || odd <= 1 || !prob) return;
     const edge = (odd * (prob/100) - 1) * 100;
 
-    // Get agreement level from BetIQ strip
+    // Get agreement level from card data attribute (set at render time)
     const card = inp.closest('.vb-card');
-    const betiqStrip = card ? card.querySelector('.vb-betiq-strip') : null;
-    let maxAllowedEdge = 12;  // default for high agreement
-    if (betiqStrip && betiqStrip.classList.contains('betiq-low')) maxAllowedEdge = 5;
+    const agreement = card ? (card.dataset.agreement || 'high') : 'high';
+    let maxAllowedEdge = agreement === 'low' ? 5 : 12;
 
     // HARD RULES: edge must be between 2% and 15%
     if (edge < 2) {
@@ -1254,7 +1219,7 @@ function updateYourBestValue(card, eventId) {
 
     // Soft filter: edge above agreement threshold (but still 2-15%)
     if (edge > maxAllowedEdge) {
-      if (bestEdge === null) filterReason = `Edge ${edge.toFixed(1)}% exceeds safe threshold for ${betiqStrip?.classList.contains('betiq-low') ? 'diverging' : 'agreeing'} models`;
+      if (bestEdge === null) filterReason = `Edge ${edge.toFixed(1)}% exceeds safe threshold for ${agreement === 'low' ? 'diverging' : 'agreeing'} models`;
       return;
     }
 
@@ -1312,11 +1277,9 @@ function updateYourBestValue(card, eventId) {
     else if (bestProb >= 50) stars += 1;
   }
 
-  const betiqStrip = card.querySelector('.vb-betiq-strip');
-  if (betiqStrip) {
-    if (betiqStrip.classList.contains('betiq-low')) stars = Math.min(2, stars);
-    else if (!betiqStrip.classList.contains('betiq-high')) stars = Math.min(4, stars);
-  }
+  const agreement2 = card.dataset.agreement || 'high';
+  if (agreement2 === 'low') stars = Math.min(2, stars);
+  else if (agreement2 !== 'high') stars = Math.min(4, stars);
 
   stars = Math.max(0, Math.min(5, stars));
 
@@ -1417,7 +1380,15 @@ async function refreshOdds() {
     const data = await resp.json();
     if (!data.ok) { log.innerHTML = `<div style="color:var(--amber)">${data.msg}</div>`; btn.disabled=false; btn.textContent='↻ Refresh'; return; }
     if (oddsPoller) clearInterval(oddsPoller);
+    let oddsPollCount = 0;
     oddsPoller = setInterval(async () => {
+      oddsPollCount++;
+      if (oddsPollCount > 90) { // 3-minute timeout for odds refresh
+        clearInterval(oddsPoller); oddsPoller = null;
+        btn.disabled = false; btn.textContent = '↻ Refresh';
+        log.innerHTML += '<div style="color:var(--amber)">Timed out — try again</div>';
+        return;
+      }
       const s = await fetchJSON('/api/collection/status');
       if (!s) return;
       log.innerHTML = s.messages.map(m => {
@@ -1787,7 +1758,16 @@ async function startCollection() {
 
 function _pollCollectionStatus(btn, box, log, title) {
   if (collectionPoller) clearInterval(collectionPoller);
+  let collectPollCount = 0;
   collectionPoller = setInterval(async () => {
+    collectPollCount++;
+    if (collectPollCount > 300) { // 10-minute timeout
+      clearInterval(collectionPoller); collectionPoller = null;
+      title.textContent = '⚠ Timed out';
+      btn.disabled = false; btn.textContent = '▶ Run Now';
+      log.innerHTML += '<div style="color:var(--amber);font-size:12px">Timed out after 10 min. Check Render logs.</div>';
+      return;
+    }
     const s = await fetchJSON('/api/collection/status');
     if (!s) return;
     log.innerHTML = s.messages.map(m => {

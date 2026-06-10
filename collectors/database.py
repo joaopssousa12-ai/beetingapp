@@ -1436,6 +1436,15 @@ def get_value_bets():
 
         d["all_market_picks"] = market_picks
 
+        # Update best_confidence to max across best_pick, safest_pick, and best_value
+        # (best_value confidence may be low even when model picks are high-confidence)
+        conf_vals = [
+            (d.get("best_pick") or {}).get("confidence", 0),
+            (d.get("safest_pick") or {}).get("confidence", 0),
+            d.get("best_confidence", 0),
+        ]
+        d["best_confidence"] = max(conf_vals)
+
         # === MANUAL ODDS — persisted user-entered odds ===
         eid = d.get("event_id")
         d["manual_odds"] = manual_odds_map.get(eid, {})
