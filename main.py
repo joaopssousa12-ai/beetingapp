@@ -459,11 +459,14 @@ def test_oddspapi():
 
 @app.get("/api/value-bets")
 async def api_value_bets():
-    return JSONResponse(get_value_bets())
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, get_value_bets)
+    return JSONResponse(result)
 
 @app.get("/api/value-bets/{event_id}")
 async def api_event_detail(event_id: str):
-    all_bets = get_value_bets()
+    loop = asyncio.get_event_loop()
+    all_bets = await loop.run_in_executor(None, get_value_bets)
     match = next((b for b in all_bets if b.get("event_id") == event_id), None)
     if not match:
         return JSONResponse({"error": "not found"}, status_code=404)

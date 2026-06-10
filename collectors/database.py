@@ -21,6 +21,12 @@ except ImportError as e:
 _vb_cache = {"data": None, "ts": 0.0}
 _VB_CACHE_TTL = 300  # 5 minutes
 
+# Per-call session caches: populated once at start of get_value_bets(), None when inactive.
+# Eliminates 250+ individual Neon connections per call (N+1 problem).
+_session_elo = None   # (entity_lower, category, surface) -> rating dict
+_session_xg = None    # team_lower -> xg dict
+_session_hist = None  # event_id -> [history rows]
+
 def invalidate_value_bets_cache():
     _vb_cache["data"] = None
     _vb_cache["ts"] = 0.0
@@ -823,6 +829,7 @@ def confidence_score(edge_pct, pin_implied, sport_name, agreement=None):
 
 def get_value_bets():
     """Full analysis engine across 1X2, O/U 2.5, BTTS markets."""
+    global _session_elo, _session_xg, _session_hist
     # --- TTL cache ---
     now = time.time()
     if _vb_cache["data"] is not None and (now - _vb_cache["ts"]) < _VB_CACHE_TTL:
@@ -834,6 +841,34 @@ def get_value_bets():
     except Exception:
         conn.close()
         return []
+
+    # Bulk pre-load all session data in one connection (eliminates N+1 Neon round-trips)
+    event_ids = [r["event_id"] for r in rows]
+    try:
+        elo_rows = conn.execute("SELECT * FROM elo_ratings").fetchall()
+        _session_elo = {(r["entity"].lower(), r["category"], r.get("surface")): dict(r) for r in elo_rows}
+    except Exception:
+        _session_elo = {}
+    try:
+        xg_rows = conn.execute("SELECT * FROM team_xg").fetchall()
+        _session_xg = {r["team"].lower(): dict(r) for r in xg_rows}
+    except Exception:
+        _session_xg = {}
+    try:
+        if event_ids:
+            placeholders = ",".join(["?" for _ in event_ids])
+            hist_rows = conn.execute(
+                f"SELECT * FROM odds_history WHERE event_id IN ({placeholders}) ORDER BY event_id, captured_at ASC",
+                event_ids
+            ).fetchall()
+            _session_hist = {}
+            for r in hist_rows:
+                eid = r["event_id"]
+                _session_hist.setdefault(eid, []).append(r)
+        else:
+            _session_hist = {}
+    except Exception:
+        _session_hist = {}
     conn.close()
 
     # Load manual odds once
@@ -1388,6 +1423,10 @@ def get_value_bets():
     # Store in cache
     _vb_cache["data"] = results
     _vb_cache["ts"] = time.time()
+    # Clear session caches — data is now in _vb_cache
+    _session_elo = None
+    _session_xg = None
+    _session_hist = None
     return results
 
 
@@ -1763,6 +1802,19 @@ def get_team_xg(team_name):
     """Lookup xG stats for a team (fuzzy match on name)."""
     if not team_name:
         return None
+
+    # Use pre-loaded session cache if available (avoids new Neon connection per call)
+    if _session_xg is not None:
+        key = team_name.lower()
+        row = _session_xg.get(key)
+        if not row:
+            normalized = team_name.replace("FC ", "").replace(" FC", "").strip().lower()
+            for k, v in _session_xg.items():
+                if normalized in k or k.startswith(normalized):
+                    row = v
+                    break
+        return row
+
     conn = get_connection()
     # Exact match first
     row = conn.execute("SELECT * FROM team_xg WHERE team = ?", (team_name,)).fetchone()
@@ -1857,13 +1909,17 @@ def get_line_movement(event_id):
     Smart Money threshold: absolute odds change >= 0.20 on any outcome.
     Steam threshold: >5% relative move in last 6 hours.
     """
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT * FROM odds_history
-        WHERE event_id = ?
-        ORDER BY captured_at ASC
-    """, (event_id,)).fetchall()
-    conn.close()
+    # Use pre-loaded session cache if available (avoids new Neon connection per event)
+    if _session_hist is not None:
+        rows = _session_hist.get(event_id, [])
+    else:
+        conn = get_connection()
+        rows = conn.execute("""
+            SELECT * FROM odds_history
+            WHERE event_id = ?
+            ORDER BY captured_at ASC
+        """, (event_id,)).fetchall()
+        conn.close()
 
     if len(rows) < 2:
         return None
@@ -2151,6 +2207,19 @@ def get_elo_rating(entity, category, surface=None):
     """Lookup Elo rating with fuzzy name matching."""
     if not entity:
         return None
+
+    # Use pre-loaded session cache if available (avoids new Neon connection per call)
+    if _session_elo is not None:
+        key = (entity.lower(), category, surface)
+        row = _session_elo.get(key)
+        if not row:
+            norm = entity.replace("FC ", "").replace(" FC", "").strip().lower()
+            for (e, c, s), v in _session_elo.items():
+                if c == category and s == surface and norm in e:
+                    row = v
+                    break
+        return row
+
     conn = get_connection()
     if surface:
         row = conn.execute(
