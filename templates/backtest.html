@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="/static/css/style.css?v=20260610e">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<script src="/static/js/chart.umd.min.js"></script>
+<script src="/static/js/chart.umd.min.js?v=20260610f"></script>
 <style>
   body { font-family: var(--font-sans, 'DM Sans', sans-serif); background: var(--bg, #0f1117); color: var(--text, #e2e8f0); margin: 0; }
   .bt-wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 60px; }
@@ -130,6 +130,9 @@
     <button class="bt-run" id="btnRun" onclick="runBacktest()">▶ Run Simulation</button>
   </div>
 
+  <!-- Data scope -->
+  <div id="btScope" style="font-size:12px;color:var(--text3,#64748b);margin:-6px 0 16px;font-family:var(--mono,'DM Mono',monospace)"></div>
+
   <!-- Metrics -->
   <div id="btMetrics" style="display:none">
     <div class="bt-metrics">
@@ -248,15 +251,26 @@ async function runBacktest() {
 
   try {
     const r = await fetch('/api/backtest?' + params);
-    const d = await r.json();
+    let d;
+    try { d = await r.json(); }
+    catch (_) { throw new Error(`Server returned ${r.status} (não-JSON). Verifica os logs do Render.`); }
+    if (!r.ok || d.error) {
+      throw new Error(d.error || `HTTP ${r.status}`);
+    }
     renderResults(d);
   } catch(e) {
-    document.getElementById('btEmpty').style.display = 'block';
-    document.getElementById('btEmpty').textContent = 'Erro: ' + e.message;
+    document.getElementById('btMetrics').style.display = 'none';
+    document.getElementById('btChartWrap').style.display = 'none';
+    document.getElementById('btLeagueWrap').style.display = 'none';
+    document.getElementById('btBetsWrap').style.display = 'none';
+    const empty = document.getElementById('btEmpty');
+    empty.style.display = 'block';
+    empty.innerHTML = `<div style="color:#f87171;font-weight:600">⚠ Simulation failed</div>
+      <div style="margin-top:8px;font-size:13px">${e.message}</div>`;
+  } finally {
+    document.getElementById('btLoading').style.display = 'none';
+    btn.disabled = false; btn.textContent = '▶ Run Simulation';
   }
-
-  document.getElementById('btLoading').style.display = 'none';
-  btn.disabled = false; btn.textContent = '▶ Run Simulation';
 }
 
 function fmt(n, dec=1) { return n == null ? '—' : Number(n).toFixed(dec); }
@@ -264,11 +278,19 @@ function fmtSign(n, dec=1) { const v = Number(n); return (v >= 0 ? '+' : '') + v
 
 function renderResults(d) {
   const s = d.summary;
+  const scanned = (s && s.matches_scanned != null) ? s.matches_scanned.toLocaleString() : '?';
+  const withOdds = (s && s.matches_with_odds != null) ? s.matches_with_odds.toLocaleString() : '?';
   if (!s || s.total_bets === 0) {
-    document.getElementById('btEmpty').style.display = 'block';
-    document.getElementById('btEmpty').textContent = 'Nenhum bet encontrado com esses filtros.';
+    const empty = document.getElementById('btEmpty');
+    empty.style.display = 'block';
+    empty.innerHTML = `<div style="font-weight:600">No value detected — 0 picks passed the quality gate</div>
+      <div style="margin-top:8px;font-size:13px">Scanned <strong>${scanned}</strong> historical matches
+      (${withOdds} had usable odds). Try lowering Min Edge or widening Max Odds.</div>`;
     return;
   }
+  // Data-scope line — always tell the user what was simulated
+  document.getElementById('btScope').textContent =
+    `Simulating over ${withOdds} matches with odds (of ${scanned} scanned) · ${s.total_bets.toLocaleString()} bets placed`;
 
   // Metrics
   const roi = Number(s.roi);

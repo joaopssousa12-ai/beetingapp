@@ -50,8 +50,11 @@ async function fetchJSON(url) {
 // Navigation
 document.querySelectorAll('.nav-link').forEach(link => {
   link.addEventListener('click', e => {
-    e.preventDefault();
     const sec = link.dataset.section;
+    // Real navigation links (e.g. /backtest) have no data-section — let the
+    // browser follow the href instead of swallowing the click with preventDefault.
+    if (!sec) return;
+    e.preventDefault();
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
     link.classList.add('active');

@@ -301,6 +301,9 @@ def init_db():
             collected_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    # Index for the backtest engine: it scans settled matches ordered by date.
+    c.execute("CREATE INDEX IF NOT EXISTS idx_fm_date ON football_matches(date)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_fm_league ON football_matches(league_name)")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS tennis_matches (

@@ -65,12 +65,15 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
     """, params).fetchall()
     conn.close()
 
+    matches_scanned = len(rows)
+    matches_with_odds = 0   # had usable reference + book odds for the chosen market
     bets = []
     current_bankroll = bankroll
 
     for r in rows:
         r = dict(r)
         date_str = r['date'] or ''
+        match_had_odds = False
 
         # --- Match Result (H2H) ---
         if market_filter in ('all', 'h2h'):
@@ -79,6 +82,7 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
             true_h, true_d, true_a = _devig_3way(ph, pd_, pa)
 
             if true_h is not None and bh and bd and ba:
+                match_had_odds = True
                 for sel, true_p, book_odd in [
                     (r['home_team'], true_h, bh),
                     ('Draw', true_d, bd),
@@ -120,6 +124,7 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
             true_o, true_u = _devig_2way(op, up)
 
             if true_o is not None and ob:
+                match_had_odds = True
                 for sel, true_p, book_odd in [('Over 2.5', true_o, ob)]:
                     if not book_odd or book_odd > max_odds:
                         continue
@@ -150,8 +155,18 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
                         'bankroll': current_bankroll,
                     })
 
+        if match_had_odds:
+            matches_with_odds += 1
+
     if not bets:
-        return {'summary': {'total_bets': 0}, 'bets': [], 'by_league': [], 'pnl_series': []}
+        return {
+            'summary': {
+                'total_bets': 0,
+                'matches_scanned': matches_scanned,
+                'matches_with_odds': matches_with_odds,
+            },
+            'bets': [], 'by_league': [], 'pnl_series': [],
+        }
 
     total_bets = len(bets)
     wins = sum(1 for b in bets if b['won'])
@@ -187,12 +202,16 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
         by_league.append(d)
     by_league.sort(key=lambda x: x['profit'], reverse=True)
 
-    # P&L series
+    # P&L series — downsample to keep the chart payload small and fast.
+    # A 92k-match run can emit tens of thousands of bets; sending them all
+    # bloats the JSON and makes Chart.js lag. Cap at ~400 evenly-spaced points
+    # (always including the final point so the ending bankroll is shown).
+    MAX_POINTS = 400
     cumulative = 0.0
-    pnl_series = []
+    full_series = []
     for b in bets:
         cumulative += b['profit']
-        pnl_series.append({
+        full_series.append({
             'date': b['date'],
             'profit': b['profit'],
             'cumulative': round(cumulative, 2),
@@ -202,10 +221,18 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
             'odds': b['odds'],
             'edge_pct': b['edge_pct'],
         })
+    if len(full_series) <= MAX_POINTS:
+        pnl_series = full_series
+    else:
+        step = len(full_series) / MAX_POINTS
+        idxs = sorted({int(i * step) for i in range(MAX_POINTS)} | {len(full_series) - 1})
+        pnl_series = [full_series[i] for i in idxs]
 
     return {
         'summary': {
             'total_bets': total_bets,
+            'matches_scanned': matches_scanned,
+            'matches_with_odds': matches_with_odds,
             'wins': wins,
             'losses': total_bets - wins,
             'win_rate': round(wins / total_bets * 100, 1),

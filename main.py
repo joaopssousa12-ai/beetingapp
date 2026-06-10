@@ -678,27 +678,45 @@ async def api_backtest(
 ):
     from collectors.backtest import run_backtest
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, lambda: run_backtest(
-        min_edge=min_edge,
-        max_odds=max_odds,
-        bankroll=bankroll,
-        kelly_frac=kelly,
-        league=league if league else None,
-        season=season if season else None,
-        market_filter=market,
-    ))
-    return JSONResponse(result)
+    try:
+        result = await loop.run_in_executor(None, lambda: run_backtest(
+            min_edge=min_edge,
+            max_odds=max_odds,
+            bankroll=bankroll,
+            kelly_frac=kelly,
+            league=league if league else None,
+            season=season if season else None,
+            market_filter=market,
+        ))
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"BACKTEST_ERROR: {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse(
+            {"error": f"{type(e).__name__}: {e}", "summary": {"total_bets": 0}},
+            status_code=500,
+        )
 
 @app.get("/api/backtest/clv")
 async def api_backtest_clv():
     from collectors.backtest import get_clv_analysis
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, get_clv_analysis)
-    return JSONResponse(result)
+    try:
+        result = await loop.run_in_executor(None, get_clv_analysis)
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"BACKTEST_ERROR (clv): {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": str(e), "count": 0, "records": []}, status_code=500)
 
 @app.get("/api/backtest/meta")
 async def api_backtest_meta():
     from collectors.backtest import get_backtest_meta
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, get_backtest_meta)
-    return JSONResponse(result)
+    try:
+        result = await loop.run_in_executor(None, get_backtest_meta)
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"BACKTEST_ERROR (meta): {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": str(e), "leagues": [], "seasons": []}, status_code=500)
