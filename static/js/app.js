@@ -63,6 +63,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
     if (sec === 'mybets') loadMyBets();
     if (sec === 'performance') loadPerformance();
     if (sec === 'national' && nationalData.length === 0) loadNational();
+    if (sec === 'collector') checkCollectionRunning();
   });
 });
 
@@ -1424,19 +1425,91 @@ function renderNationalTable(data) {
 
 let perfStartingBankroll = 1000;
 
+let collectionPoller = null;
+
+async function checkCollectionRunning() {
+  const s = await fetchJSON('/api/collection/status');
+  if (!s) return;
+  const btn = document.getElementById('collect-btn');
+  const box = document.getElementById('status-box');
+  const log = document.getElementById('status-log');
+  const title = document.getElementById('status-title');
+  if (s.running || s.messages.length > 0) {
+    box.style.display = 'block';
+    title.textContent = s.running ? 'Running...' : (s.messages.some(m => m.includes('ERROR')) ? '⚠ Finished with errors' : '✓ Done');
+    log.innerHTML = s.messages.map(m => {
+      const c = m.startsWith('✓') ? 'var(--green)' : m.includes('ERROR') ? 'var(--red)' : m.includes('WARN') ? 'var(--amber)' : 'var(--text3)';
+      return `<div style="color:${c};font-size:12px;line-height:1.5">${m}</div>`;
+    }).join('');
+    log.scrollTop = log.scrollHeight;
+    if (s.running) {
+      btn.disabled = true;
+      btn.textContent = '⏳ Running...';
+      _pollCollectionStatus(btn, box, log, title);
+    }
+  }
+}
+
 async function startCollection() {
+  const btn = document.getElementById('collect-btn');
+  const box = document.getElementById('status-box');
+  const log = document.getElementById('status-log');
+  const title = document.getElementById('status-title');
+
+  // Check if already running — show live status without starting new
+  const current = await fetchJSON('/api/collection/status');
+  if (current && current.running) {
+    box.style.display = 'block';
+    title.textContent = 'Running...';
+    btn.disabled = true;
+    btn.textContent = '⏳ Running...';
+    _pollCollectionStatus(btn, box, log, title);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Starting...';
+  box.style.display = 'block';
+  log.innerHTML = '<div style="color:var(--text3)">Starting full data collection...</div>';
+  title.textContent = 'Running...';
+
   try {
     const resp = await fetch('/api/collection/start', { method: 'POST' });
     const data = await resp.json();
-    if (data.ok) {
-      alert('✓ Collection started! This may take 3-5 minutes. Check Data Collector or Overview for progress.');
-      setTimeout(() => window.location.reload(), 3000);
-    } else {
-      alert('Error: ' + (data.msg || 'Unknown error'));
+    if (!data.ok) {
+      // Already running — still show live status
+      log.innerHTML = `<div style="color:var(--amber)">${data.msg || 'Already running'}</div>`;
     }
+    _pollCollectionStatus(btn, box, log, title);
   } catch (e) {
-    alert('Error: ' + e.message);
+    log.innerHTML = `<div style="color:var(--red)">Error: ${e.message}</div>`;
+    btn.disabled = false;
+    btn.textContent = '▶ Run Now';
   }
+}
+
+function _pollCollectionStatus(btn, box, log, title) {
+  if (collectionPoller) clearInterval(collectionPoller);
+  collectionPoller = setInterval(async () => {
+    const s = await fetchJSON('/api/collection/status');
+    if (!s) return;
+    log.innerHTML = s.messages.map(m => {
+      const c = m.startsWith('✓') ? 'var(--green)' : m.includes('ERROR') ? 'var(--red)' : m.includes('WARN') ? 'var(--amber)' : 'var(--text3)';
+      return `<div style="color:${c};font-size:12px;line-height:1.5">${m}</div>`;
+    }).join('');
+    log.scrollTop = log.scrollHeight;
+    if (!s.running) {
+      clearInterval(collectionPoller);
+      collectionPoller = null;
+      title.textContent = '✓ Done';
+      btn.disabled = false;
+      btn.textContent = '▶ Run Now';
+      loadStats();
+      loadFootballSummary();
+      loadTennisSummary();
+      loadCollectionLog();
+    }
+  }, 2000);
 }
 
 async function loadPerformance() {
