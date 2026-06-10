@@ -167,10 +167,34 @@
             </select>
             <select id="vb-mode" class="vb-select">
               <option value="all" selected>All matches</option>
-              <option value="value">Only value bets (2-15% edge)</option>
+              <option value="value">Value bets only (≥ min edge &amp; ≤ max odds)</option>
               <option value="confident">High confidence (4+ stars)</option>
             </select>
-            <input id="vb-bankroll" type="number" placeholder="Bankroll €" value="1000" class="vb-input" style="width:130px" title="Set bankroll to see Kelly stake suggestions">
+          </div>
+          <div class="vb-toolbar-group vb-quality-filters" title="Quality gate: controls which picks are highlighted as value bets">
+            <label class="vb-filter-label">Min edge</label>
+            <select id="vb-minedge" class="vb-select vb-select-sm">
+              <option value="0">Any</option>
+              <option value="2">2%</option>
+              <option value="3" selected>3% ✓</option>
+              <option value="5">5%</option>
+              <option value="8">8%</option>
+            </select>
+            <label class="vb-filter-label">Max odds</label>
+            <select id="vb-maxodds" class="vb-select vb-select-sm">
+              <option value="3">3.0</option>
+              <option value="5" selected>5.0 ✓</option>
+              <option value="8">8.0</option>
+              <option value="999">Any</option>
+            </select>
+            <label class="vb-filter-label">Confidence</label>
+            <select id="vb-minconf" class="vb-select vb-select-sm">
+              <option value="0" selected>Any</option>
+              <option value="2">2+ ★</option>
+              <option value="3">3+ ★</option>
+              <option value="4">4+ ★</option>
+            </select>
+            <input id="vb-bankroll" type="number" placeholder="Bankroll €" value="1000" class="vb-input" style="width:120px" title="Set bankroll to see Kelly stake suggestions">
           </div>
           <div class="vb-toolbar-group">
             <span id="vb-count" class="vb-count">—</span>

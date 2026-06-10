@@ -266,6 +266,9 @@ let vbState = {
   whenFilter: 'all',
   mode: 'all',
   bankroll: 0,
+  minEdge: 3,    // default 3% — blocks Qatar at +0.2%
+  maxOdds: 5.0,  // default 5.0 — blocks longshots (Qatar at 15.0)
+  minConf: 0,
   expanded: new Set(),
 };
 
@@ -312,6 +315,38 @@ function wireFilters() {
   document.getElementById('vb-mode').addEventListener('change', e => {
     vbState.mode = e.target.value; renderValueBets();
   });
+  const minEdgeEl = document.getElementById('vb-minedge');
+  if (minEdgeEl) {
+    try {
+      const saved = localStorage.getItem('vb-minedge');
+      if (saved) { minEdgeEl.value = saved; vbState.minEdge = parseFloat(saved); }
+      else minEdgeEl.value = String(vbState.minEdge);
+    } catch(e) {}
+    minEdgeEl.addEventListener('change', e => {
+      vbState.minEdge = parseFloat(e.target.value) || 0;
+      try { localStorage.setItem('vb-minedge', e.target.value); } catch(e) {}
+      renderValueBets();
+    });
+  }
+  const maxOddsEl = document.getElementById('vb-maxodds');
+  if (maxOddsEl) {
+    try {
+      const saved = localStorage.getItem('vb-maxodds');
+      if (saved) { maxOddsEl.value = saved; vbState.maxOdds = parseFloat(saved); }
+      else maxOddsEl.value = String(vbState.maxOdds);
+    } catch(e) {}
+    maxOddsEl.addEventListener('change', e => {
+      vbState.maxOdds = parseFloat(e.target.value) || 999;
+      try { localStorage.setItem('vb-maxodds', e.target.value); } catch(e) {}
+      renderValueBets();
+    });
+  }
+  const minConfEl = document.getElementById('vb-minconf');
+  if (minConfEl) {
+    minConfEl.addEventListener('change', e => {
+      vbState.minConf = parseInt(e.target.value) || 0; renderValueBets();
+    });
+  }
   const bankrollEl = document.getElementById('vb-bankroll');
   if (bankrollEl) {
     try {
@@ -328,6 +363,10 @@ function wireFilters() {
 
 function applyVbFilters(rows) {
   let out = rows.slice();
+  const minEdge = vbState.minEdge ?? 0;
+  const maxOdds = vbState.maxOdds ?? 999;
+  const minConf = vbState.minConf ?? 0;
+
   if (vbState.sportFilter) out = out.filter(r => r.sport_name === vbState.sportFilter);
   if (vbState.whenFilter !== 'all') {
     const now = Date.now();
@@ -340,9 +379,18 @@ function applyVbFilters(rows) {
     });
   }
   if (vbState.mode === 'value') {
-    out = out.filter(r => r.best_edge != null && r.best_edge >= 2 && r.best_edge <= 15);
+    // Show only cards where the best pick meets the quality gate
+    out = out.filter(r => {
+      const bv = r.best_value;
+      if (!bv || bv.edge_pct == null) return false;
+      return bv.edge_pct >= minEdge && bv.edge_pct <= 15
+        && (!bv.book_odd || bv.book_odd <= maxOdds);
+    });
   } else if (vbState.mode === 'confident') {
     out = out.filter(r => (r.best_confidence || 0) >= 4);
+  }
+  if (minConf > 0) {
+    out = out.filter(r => (r.best_confidence || 0) >= minConf);
   }
   return out;
 }
@@ -382,8 +430,8 @@ function starsHTML(n) {
 function edgeClass(e) {
   if (e == null) return 'edge-neg';
   if (e > 15) return 'edge-noise';
-  if (e >= 2) return 'edge-pos';
-  if (e >= 0) return 'edge-flat';
+  if (e >= 3) return 'edge-pos';
+  if (e >= 1) return 'edge-flat';
   return 'edge-neg';
 }
 
@@ -439,7 +487,11 @@ function renderValueBets() {
 function renderCard(b) {
   const ml = b.most_likely;
   const bv = b.best_value;
-  const hasValue = bv && bv.edge_pct != null && bv.edge_pct >= 2 && bv.edge_pct <= 15;
+  const _qMinEdge = vbState.minEdge ?? 3;
+  const _qMaxOdds = vbState.maxOdds ?? 5.0;
+  const hasValue = bv && bv.edge_pct != null
+    && bv.edge_pct >= _qMinEdge && bv.edge_pct <= 15
+    && (!bv.book_odd || bv.book_odd <= _qMaxOdds);
   const isExpanded = vbState.expanded.has(b.event_id);
   const hasAutoH2H = !!(b.x1_home || b.b365_home);
 
@@ -517,7 +569,8 @@ function renderCard(b) {
     .map(p => {
       let eCls = 'neg';
       if (p.edge_pct > 15) eCls = 'noise';
-      else if (p.edge_pct >= 2) eCls = 'pos';
+      else if (p.edge_pct >= 3) eCls = 'pos';
+      else if (p.edge_pct >= 1) eCls = 'flat';
       const sign = p.edge_pct > 0 ? '+' : '';
       return `<div class="vb-market-row">
         <span class="m-market">${p.market}</span>
@@ -859,10 +912,31 @@ function renderCard(b) {
     <div class="vb-your-value vb-pick-block best-value has-value" style="display:none"></div>
     ${(() => {
       if (!bv || bv.edge_pct == null || bv.edge_pct <= 0) return '';
+      const qMinEdge = vbState.minEdge ?? 3;
+      const qMaxOdds = vbState.maxOdds ?? 5.0;
+      const edgeOk = bv.edge_pct >= qMinEdge;
+      const oddsOk = !bv.book_odd || bv.book_odd <= qMaxOdds;
+      // Quality gate — show the block even when filtered but with a "blocked" state
       const sign = bv.edge_pct > 0 ? '+' : '';
-      const edgeCls = bv.edge_pct >= 2 ? 'pos' : 'low';
+      const edgeCls = edgeOk ? 'pos' : 'low';
       const bookLabel = bv.book === 'Best' ? '🏆 Melhor odd disponível' : bv.book;
       const oddsSource = b.odds_source === 'betfair' ? '⚡ Betfair Exchange' : b.odds_source === 'pinnacle' ? '📌 Pinnacle' : '🔬 xG Model';
+      if (!edgeOk || !oddsOk) {
+        // Show a muted "edge below threshold" notice instead of treating as real value
+        let reason = !oddsOk
+          ? `Odd ${fmtOdd(bv.book_odd)} demasiado alta (max ${qMaxOdds.toFixed(1)})`
+          : `Edge ${sign}${bv.edge_pct.toFixed(1)}% abaixo do mínimo de ${qMinEdge}%`;
+        return `<div class="vb-value-alert low">
+          <div class="vb-value-alert-head">
+            <span class="vb-value-tag" style="opacity:0.6">Edge insuficiente</span>
+            <span class="vb-value-source">${oddsSource}</span>
+          </div>
+          <div class="vb-value-body">
+            <span class="vb-value-sel" style="opacity:0.7">${bv.selection} · ${fmtOdd(bv.book_odd)}</span>
+            <span class="vb-value-mkt">${reason}</span>
+          </div>
+        </div>`;
+      }
       const kellyLine = bv.kelly_pct > 0
         ? `Sugestão: <strong>${bv.kelly_pct.toFixed(1)}% do bankroll</strong> (¼ Kelly)`
         : 'Edge insuficiente para apostar';

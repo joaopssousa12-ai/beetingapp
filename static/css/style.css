@@ -530,9 +530,9 @@ tbody tr.value-row td.strong { color: var(--text); }
 
 .vb-toolbar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.6rem;
   flex-wrap: wrap;
   padding: 0.85rem 0;
   margin-bottom: 1rem;
@@ -541,9 +541,24 @@ tbody tr.value-row td.strong { color: var(--text); }
 .vb-toolbar-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex-wrap: wrap;
 }
+.vb-quality-filters {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  gap: 6px;
+}
+.vb-filter-label {
+  font-size: 11px;
+  color: var(--text3);
+  font-weight: 500;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+.vb-filter-label:first-child { margin-left: 0; }
 .vb-select, .vb-input {
   background: var(--bg2);
   border: 1px solid var(--border2);
@@ -555,6 +570,11 @@ tbody tr.value-row td.strong { color: var(--text); }
   cursor: pointer;
   min-width: 100px;
   transition: border-color 0.15s;
+}
+.vb-select-sm {
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 12px;
 }
 .vb-input { width: 110px; cursor: text; }
 .vb-input::placeholder { color: var(--text3); }
