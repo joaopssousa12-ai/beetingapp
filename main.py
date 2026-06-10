@@ -12,6 +12,7 @@ from collectors.database import (
     get_recent_football, get_recent_tennis, get_collection_log, get_value_bets,
     add_bet, update_bet_result, delete_bet, get_bets, get_bet_stats,
     get_bankroll_evolution, capture_pinnacle_close_for_started_events,
+    auto_grade_pending_bets,
     get_performance_breakdown, get_bankroll_advanced,
     get_national_summary, get_national_recent,
     get_xg_summary, get_team_xg,
@@ -397,6 +398,13 @@ async def run_odds_only():
                 cb(f"✓ Captured Pinnacle closing line for {n} past bet(s).")
         except Exception as e:
             cb(f"CLV capture error: {repr(e)}")
+        # Auto-grade pending bets from historical results
+        try:
+            n_ag = await loop.run_in_executor(None, auto_grade_pending_bets)
+            if n_ag > 0:
+                cb(f"✓ Auto-graded {n_ag} pending bet(s) from match results.")
+        except Exception as e:
+            cb(f"Auto-grade error: {repr(e)}")
         cb("✓ Odds refresh finished.")
         invalidate_value_bets_cache()
         # Telegram alerts — send for any new value bets (deduped per 20h)
@@ -577,6 +585,16 @@ async def api_capture_clv():
     try:
         n = capture_pinnacle_close_for_started_events()
         return JSONResponse({"ok": True, "captured": n})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": repr(e)}, status_code=500)
+
+@app.post("/api/bets/auto-grade")
+async def api_auto_grade():
+    """Auto-settle pending bets by looking up results in historical match data."""
+    loop = asyncio.get_event_loop()
+    try:
+        n = await loop.run_in_executor(None, auto_grade_pending_bets)
+        return JSONResponse({"ok": True, "graded": n})
     except Exception as e:
         return JSONResponse({"ok": False, "error": repr(e)}, status_code=500)
 

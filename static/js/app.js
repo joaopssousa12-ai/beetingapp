@@ -75,6 +75,13 @@ async function loadStats() {
   document.getElementById('s-leagues').textContent = s.football_leagues;
   document.getElementById('s-last').textContent = s.last_collection;
   document.getElementById('last-update').textContent = 'Last: ' + s.last_collection;
+  const vbEl = document.getElementById('s-value-bets');
+  if (vbEl) vbEl.textContent = s.value_bets_today ?? '—';
+  const pbEl = document.getElementById('s-pending-bets');
+  if (pbEl) {
+    pbEl.textContent = s.pending_bets ?? '—';
+    if (s.pending_bets > 0) pbEl.style.color = 'var(--amber)';
+  }
 }
 
 // Football summary
@@ -1390,6 +1397,9 @@ function quickAddBet(b) {
     if (vbState.bankroll > 0 && b.best_value.kelly_pct > 0 && !stakeField.value) {
       stakeField.value = (vbState.bankroll * b.best_value.kelly_pct / 100).toFixed(2);
     }
+    // Store edge for later analysis
+    const edgeField = document.getElementById('bet-edge-pct');
+    if (edgeField) edgeField.value = b.best_value.edge_pct || '';
   }, 100);
 }
 
@@ -1475,10 +1485,18 @@ async function loadBetsTable() {
     wrap.innerHTML = '<div style="padding:2rem 1.25rem;color:#555b6e;font-size:13px">No bets yet. Click "+ New bet" to register your first one.</div>';
     return;
   }
-  wrap.innerHTML = `<table>
+  const pendingCount = bets.filter(b => b.status === 'pending').length;
+  const autoGradeBtn = pendingCount > 0
+    ? `<div style="margin-bottom:0.75rem;display:flex;align-items:center;gap:0.75rem">
+         <button class="btn-refresh" id="auto-grade-btn" onclick="autoGrade()">🔄 Auto-grade (${pendingCount} pending)</button>
+         <span style="font-size:12px;color:var(--text3)">Checks match results and settles bets automatically</span>
+       </div>`
+    : '';
+
+  wrap.innerHTML = autoGradeBtn + `<table>
     <thead><tr>
       <th>Placed</th><th>Match</th><th>Selection</th><th>Book</th>
-      <th>Odds</th><th>Stake</th><th>Status</th><th>P/L</th><th>CLV</th><th></th>
+      <th>Odds</th><th>Edge</th><th>Stake</th><th>Status</th><th>P/L</th><th>CLV</th><th></th>
     </tr></thead>
     <tbody>` +
     bets.map(b => {
@@ -1487,9 +1505,11 @@ async function loadBetsTable() {
       const statusTxt = b.status === 'pending' ? 'PENDING' : (b.result || '').toUpperCase();
       const statusCls = 'bet-status-' + (b.status === 'pending' ? 'pending' : (b.result || ''));
       const profit = b.profit != null ? (b.profit >= 0 ? '+' : '') + '€' + b.profit.toFixed(2) : '—';
-      const profitCol = b.profit > 0 ? '#34d399' : b.profit < 0 ? '#f87171' : '#8b90a0';
+      const profitCol = b.profit > 0 ? 'var(--green)' : b.profit < 0 ? 'var(--red)' : 'var(--text3)';
       const clv = b.clv_pct != null ? (b.clv_pct >= 0 ? '+' : '') + b.clv_pct + '%' : '—';
-      const clvCol = b.clv_pct > 0 ? '#34d399' : b.clv_pct < 0 ? '#f87171' : '#555b6e';
+      const clvCol = b.clv_pct > 0 ? 'var(--green)' : b.clv_pct < 0 ? 'var(--red)' : 'var(--text3)';
+      const edgeStr = b.edge_pct != null ? (b.edge_pct >= 0 ? '+' : '') + b.edge_pct.toFixed(1) + '%' : '—';
+      const edgeCol = b.edge_pct > 0 ? 'var(--green)' : 'var(--text3)';
       const actions = b.status === 'pending'
         ? `<div class="bet-actions">
              <button class="btn-won" onclick="settleBet(${b.id},'won')">W</button>
@@ -1500,10 +1520,11 @@ async function loadBetsTable() {
         : `<div class="bet-actions"><button class="btn-delete" onclick="deleteBet(${b.id})">×</button></div>`;
       return `<tr>
         <td class="mono">${placed}</td>
-        <td>${match}<div style="font-size:11px;color:#555b6e">${b.sport_name||''}</div></td>
+        <td>${match}<div style="font-size:11px;color:var(--text3)">${b.sport_name||''}</div></td>
         <td class="strong">${b.selection || ''}</td>
-        <td style="font-size:12px;color:#8b90a0">${b.bookmaker || '—'}</td>
+        <td style="font-size:12px;color:var(--text3)">${b.bookmaker || '—'}</td>
         <td class="mono">${b.odds ? b.odds.toFixed(2) : '—'}</td>
+        <td class="mono" style="color:${edgeCol}">${edgeStr}</td>
         <td class="mono">€${(b.stake||0).toFixed(2)}</td>
         <td><span class="${statusCls}">${statusTxt}</span></td>
         <td class="mono" style="color:${profitCol}">${profit}</td>
@@ -1576,6 +1597,7 @@ async function submitBet() {
     stake: parseFloat(document.getElementById('bet-stake').value),
     pin_implied_prob: pinImplied,
     notes: document.getElementById('bet-notes').value.trim() || null,
+    edge_pct: parseFloat(document.getElementById('bet-edge-pct')?.value) || null,
   };
   if (!data.selection || !data.odds || !data.stake) {
     alert('Please fill in at least Selection, Odds, and Stake.');
@@ -1589,12 +1611,28 @@ async function submitBet() {
   const result = await resp.json();
   if (result.ok) {
     // Clear form
-    ['bet-sport','bet-home','bet-away','bet-commence','bet-selection','bet-odds','bet-stake','bet-notes'].forEach(id => {
-      document.getElementById(id).value = '';
+    ['bet-sport','bet-home','bet-away','bet-commence','bet-selection','bet-odds','bet-stake','bet-notes','bet-edge-pct'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
     });
     document.getElementById('bet-event-select').value = '';
     toggleBetForm();
     loadMyBets();
+  }
+}
+
+async function autoGrade() {
+  const btn = document.getElementById('auto-grade-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Checking results...'; }
+  try {
+    const r = await fetch('/api/bets/auto-grade', { method: 'POST' });
+    const data = await r.json();
+    if (data.graded > 0) {
+      loadMyBets();
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = `🔄 Auto-grade (no matches found yet)`; }
+    }
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Auto-grade (error)'; }
   }
 }
 
@@ -1865,44 +1903,68 @@ function renderPerfChart(b) {
     return;
   }
 
-  const w = 800, h = 220, pad = { top: 20, right: 30, bottom: 30, left: 60 };
+  const w = 800, h = 240, pad = { top: 24, right: 70, bottom: 36, left: 64 };
   const innerW = w - pad.left - pad.right;
   const innerH = h - pad.top - pad.bottom;
 
-  const data = [{date: '', bankroll: b.starting_bankroll}, ...b.series];
+  const data = [{date: '', bankroll: b.starting_bankroll, result: null, selection: '', profit: 0}, ...b.series];
   const values = data.map(d => d.bankroll);
-  const min = Math.min(...values, b.starting_bankroll);
-  const max = Math.max(...values, b.starting_bankroll);
-  const range = (max - min) || 1;
-  const pad_v = range * 0.1;
-  const yMin = min - pad_v;
-  const yMax = max + pad_v;
+  const yMin = Math.min(...values) * 0.97;
+  const yMax = Math.max(...values) * 1.03;
 
   const xStep = data.length > 1 ? innerW / (data.length - 1) : 0;
+  const xFor = i => pad.left + i * xStep;
   const yFor = v => pad.top + innerH - ((v - yMin) / (yMax - yMin)) * innerH;
 
-  const linePath = data.map((d, i) => `${i === 0 ? 'M' : 'L'} ${pad.left + i * xStep},${yFor(d.bankroll)}`).join(' ');
-  const fillPath = `${linePath} L ${pad.left + (data.length - 1) * xStep},${pad.top + innerH} L ${pad.left},${pad.top + innerH} Z`;
+  const linePath = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${xFor(i).toFixed(1)},${yFor(d.bankroll).toFixed(1)}`).join(' ');
+  const fillPath = `${linePath} L${xFor(data.length-1).toFixed(1)},${(pad.top+innerH).toFixed(1)} L${xFor(0).toFixed(1)},${(pad.top+innerH).toFixed(1)} Z`;
 
-  // Y-axis labels (start, mid, max)
-  const yTicks = [yMin, (yMin + yMax) / 2, yMax];
-
-  // Baseline (starting bankroll)
+  // 5 y-axis ticks
+  const yTicks = Array.from({length: 5}, (_, i) => yMin + (yMax - yMin) * i / 4);
   const baselineY = yFor(b.starting_bankroll);
-  // Peak line
   const peakY = yFor(b.peak_bankroll);
 
-  wrap.innerHTML = `<svg class="perf-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-    ${yTicks.map((v, i) => `
-      <line class="axis-line" x1="${pad.left}" x2="${w - pad.right}" y1="${yFor(v)}" y2="${yFor(v)}"/>
-      <text class="axis-label" x="${pad.left - 8}" y="${yFor(v) + 4}" text-anchor="end">€${v.toFixed(0)}</text>
+  // Bet markers — skip first point (starting bankroll, no bet)
+  const markers = data.slice(1).map((d, i) => {
+    const cx = xFor(i + 1).toFixed(1);
+    const cy = yFor(d.bankroll).toFixed(1);
+    const color = d.result === 'won' ? 'var(--green)' : d.result === 'lost' ? 'var(--red)' : 'var(--text3)';
+    const sign = d.profit >= 0 ? '+' : '';
+    const dateStr = d.date ? d.date.slice(0, 16) : '';
+    const tipText = `${dateStr} | ${d.selection || ''} | ${sign}€${(d.profit||0).toFixed(2)} | BK: €${d.bankroll.toFixed(2)}`.replace(/"/g, "'");
+    return `<circle cx="${cx}" cy="${cy}" r="4" fill="${color}" stroke="var(--bg2)" stroke-width="1.5" opacity="0.9">
+      <title>${tipText}</title>
+    </circle>`;
+  }).join('');
+
+  // X-axis date labels — show ~5 evenly spaced
+  const labelStep = Math.max(1, Math.floor((data.length - 1) / 5));
+  const xLabels = data.map((d, i) => {
+    if (i === 0 || i % labelStep !== 0) return '';
+    const label = d.date ? d.date.slice(5, 10) : 'start';
+    return `<text class="axis-label" x="${xFor(i).toFixed(1)}" y="${pad.top + innerH + 18}" text-anchor="middle">${label}</text>`;
+  }).join('');
+
+  wrap.innerHTML = `<svg class="perf-chart" viewBox="0 0 ${w} ${h}">
+    <defs>
+      <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--green)" stop-opacity="0.18"/>
+        <stop offset="100%" stop-color="var(--green)" stop-opacity="0.01"/>
+      </linearGradient>
+    </defs>
+    ${yTicks.map(v => `
+      <line class="axis-line" x1="${pad.left}" x2="${w - pad.right}" y1="${yFor(v).toFixed(1)}" y2="${yFor(v).toFixed(1)}"/>
+      <text class="axis-label" x="${pad.left - 8}" y="${(yFor(v)+4).toFixed(1)}" text-anchor="end">€${v.toFixed(0)}</text>
     `).join('')}
-    <line class="baseline" x1="${pad.left}" x2="${w - pad.right}" y1="${baselineY}" y2="${baselineY}"/>
-    <text class="axis-label" x="${w - pad.right + 5}" y="${baselineY + 4}" fill="var(--text3)">start</text>
-    <line class="peak-line" x1="${pad.left}" x2="${w - pad.right}" y1="${peakY}" y2="${peakY}"/>
-    <text class="axis-label" x="${w - pad.right + 5}" y="${peakY + 4}" fill="var(--green)">peak</text>
-    <path class="area-fill" d="${fillPath}"/>
+    <line class="baseline" x1="${pad.left}" x2="${w-pad.right}" y1="${baselineY.toFixed(1)}" y2="${baselineY.toFixed(1)}"/>
+    <text class="axis-label" x="${w-pad.right+6}" y="${(baselineY+4).toFixed(1)}" fill="var(--text3)" font-size="10">start</text>
+    ${b.peak_bankroll > b.starting_bankroll ? `
+    <line class="peak-line" x1="${pad.left}" x2="${w-pad.right}" y1="${peakY.toFixed(1)}" y2="${peakY.toFixed(1)}"/>
+    <text class="axis-label" x="${w-pad.right+6}" y="${(peakY+4).toFixed(1)}" fill="var(--green)" font-size="10">peak</text>` : ''}
+    ${xLabels}
+    <path class="area-fill" d="${fillPath}" fill="url(#chartFill)"/>
     <path class="area-line" d="${linePath}"/>
+    ${markers}
   </svg>`;
 }
 

@@ -536,6 +536,12 @@ def init_db():
         )
     """)
 
+    # Migrate: add edge_pct column to bets if not present
+    try:
+        c.execute("ALTER TABLE bets ADD COLUMN edge_pct REAL")
+    except Exception:
+        pass  # already exists
+
     if USE_POSTGRES:
         conn._conn.autocommit = False
     else:
@@ -629,11 +635,27 @@ def get_stats():
         national_count = conn.execute("SELECT COUNT(*) FROM national_matches").fetchone()[0]
     except Exception:
         national_count = 0
+    try:
+        # Events with odds updated in the last 24h — proxy for "live" coverage today
+        value_bets_today = conn.execute("""
+            SELECT COUNT(*) FROM odds_events
+            WHERE commence_time > datetime('now')
+        """).fetchone()[0]
+    except Exception:
+        value_bets_today = 0
+    try:
+        pending_bets = conn.execute(
+            "SELECT COUNT(*) FROM bets WHERE status='pending'"
+        ).fetchone()[0]
+    except Exception:
+        pending_bets = 0
     conn.close()
     return {
         "football_matches": football_count,
         "tennis_matches": tennis_count,
         "football_leagues": football_leagues,
+        "value_bets_today": value_bets_today,
+        "pending_bets": pending_bets,
         "odds_events": odds_count,
         "national_matches": national_count,
         "last_collection": last_collection[0] if last_collection else "Never"
@@ -1522,12 +1544,19 @@ def add_bet(bet_data):
     if bet_data.get("pin_implied_prob"):
         pin_implied = bet_data["pin_implied_prob"]
 
+    edge_pct = None
+    if bet_data.get("edge_pct") is not None:
+        try:
+            edge_pct = float(bet_data["edge_pct"])
+        except (ValueError, TypeError):
+            pass
+
     cur.execute("""
         INSERT INTO bets (
             placed_at, event_id, sport_name, home_team, away_team, commence_time,
             market, selection, bookmaker, odds, stake,
-            pin_implied_prob, notes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            pin_implied_prob, edge_pct, notes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         bet_data.get("placed_at") or datetime.now().strftime("%Y-%m-%d %H:%M"),
         bet_data.get("event_id"),
@@ -1541,6 +1570,7 @@ def add_bet(bet_data):
         float(bet_data.get("odds", 0)),
         float(bet_data.get("stake", 0)),
         pin_implied,
+        edge_pct,
         bet_data.get("notes"),
     ))
     bet_id = cur.lastrowid
@@ -1679,10 +1709,10 @@ def get_bet_stats():
 
 
 def get_bankroll_evolution():
-    """Return list of (date, cumulative_profit) for charting."""
+    """Return list of settled bets for bankroll chart, with result + selection for markers."""
     conn = get_connection()
     rows = conn.execute("""
-        SELECT settled_at, profit FROM bets
+        SELECT settled_at, profit, result, selection, home_team, away_team FROM bets
         WHERE status='settled' AND settled_at IS NOT NULL
         ORDER BY settled_at ASC
     """).fetchall()
@@ -1694,6 +1724,9 @@ def get_bankroll_evolution():
         cumulative += r["profit"] or 0
         series.append({
             "date": r["settled_at"],
+            "result": r["result"],
+            "selection": r["selection"] or '',
+            "profit": round(r["profit"] or 0, 2),
             "cumulative": round(cumulative, 2),
             "delta": round(r["profit"] or 0, 2),
         })
@@ -1792,6 +1825,130 @@ def capture_pinnacle_close_for_started_events():
     conn.commit()
     conn.close()
     return updated
+
+
+def auto_grade_pending_bets():
+    """
+    Auto-settle pending bets by matching against stored match results
+    (football_matches, national_matches). Supports Match Result, O/U 2.5, BTTS.
+    Returns number of bets graded.
+    """
+    import re as _re
+    from datetime import datetime as _dt, timedelta as _td
+
+    conn = get_connection()
+    # Only attempt bets where commence_time is > 2.5h in the past
+    cutoff = (_dt.utcnow() - _td(hours=2, minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = conn.execute("""
+        SELECT id, event_id, sport_name, home_team, away_team, commence_time,
+               market, selection, odds, stake
+        FROM bets
+        WHERE status = 'pending'
+          AND commence_time IS NOT NULL
+          AND commence_time < ?
+    """, (cutoff,)).fetchall()
+
+    graded = 0
+    for bet in rows:
+        try:
+            market = (bet["market"] or "h2h").lower()
+            selection = (bet["selection"] or "").strip().lower()
+            home = (bet["home_team"] or "").strip()
+            away = (bet["away_team"] or "").strip()
+            date_str = (bet["commence_time"] or "")[:10]
+            if not home or not away or not date_str:
+                continue
+
+            # Date window: same day ± 1 day to handle timezone differences
+            try:
+                d0 = _dt.strptime(date_str, "%Y-%m-%d")
+                d1 = (d0 + _td(days=2)).strftime("%Y-%m-%d")
+                d_from = (d0 - _td(days=1)).strftime("%Y-%m-%d")
+            except Exception:
+                d1 = date_str
+                d_from = date_str
+
+            match_row = None
+            # Try football_matches
+            match_row = conn.execute("""
+                SELECT home_goals, away_goals FROM football_matches
+                WHERE LOWER(home_team) = LOWER(?) AND LOWER(away_team) = LOWER(?)
+                  AND date >= ? AND date <= ? AND home_goals IS NOT NULL
+                ORDER BY date DESC LIMIT 1
+            """, (home, away, d_from, d1)).fetchone()
+
+            # Try national_matches
+            if not match_row:
+                match_row = conn.execute("""
+                    SELECT home_goals, away_goals FROM national_matches
+                    WHERE LOWER(home_team) = LOWER(?) AND LOWER(away_team) = LOWER(?)
+                      AND date >= ? AND date <= ? AND home_goals IS NOT NULL
+                    ORDER BY date DESC LIMIT 1
+                """, (home, away, d_from, d1)).fetchone()
+
+            if not match_row:
+                continue
+
+            hg = match_row["home_goals"] if hasattr(match_row, "keys") else match_row[0]
+            ag = match_row["away_goals"] if hasattr(match_row, "keys") else match_row[1]
+            if hg is None or ag is None:
+                continue
+
+            # Determine bet outcome
+            outcome = None
+            home_lower = home.lower()
+            away_lower = away.lower()
+
+            if market in ("h2h", "match result", "1x2"):
+                actual = "H" if hg > ag else ("D" if hg == ag else "A")
+                if selection in (home_lower, "home", "1", "h"):
+                    outcome = "won" if actual == "H" else "lost"
+                elif selection in (away_lower, "away", "2", "a"):
+                    outcome = "won" if actual == "A" else "lost"
+                elif selection in ("draw", "x", "d", "empate"):
+                    outcome = "won" if actual == "D" else "lost"
+
+            elif market in ("over_under", "over/under 2.5", "totals"):
+                total = hg + ag
+                line = 2.5
+                m = _re.search(r'(\d+\.?\d*)', selection)
+                if m:
+                    line = float(m.group(1))
+                if "over" in selection:
+                    outcome = "won" if total > line else ("push" if total == line else "lost")
+                elif "under" in selection:
+                    outcome = "won" if total < line else ("push" if total == line else "lost")
+
+            elif market in ("btts", "both teams to score"):
+                btts = (hg > 0 and ag > 0)
+                if "yes" in selection or "sim" in selection:
+                    outcome = "won" if btts else "lost"
+                elif "no" in selection or "nao" in selection or "não" in selection:
+                    outcome = "won" if not btts else "lost"
+
+            if outcome is None:
+                continue
+
+            odds = bet["odds"] or 0
+            stake = bet["stake"] or 0
+            profit = round(stake * (odds - 1), 2) if outcome == "won" else (-stake if outcome == "lost" else 0.0)
+
+            conn.execute("""
+                UPDATE bets
+                SET status='settled', result=?, profit=?, settled_at=datetime('now'),
+                    notes=CASE WHEN notes IS NULL THEN '[auto-graded]'
+                               ELSE notes || ' [auto-graded]' END
+                WHERE id=?
+            """, (outcome, profit, bet["id"]))
+            graded += 1
+
+        except Exception as e:
+            print(f"auto_grade error bet {bet['id']}: {e}", flush=True)
+
+    if graded:
+        conn.commit()
+    conn.close()
+    return graded
 
 
 def get_national_summary():

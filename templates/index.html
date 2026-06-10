@@ -72,6 +72,8 @@
           <div class="stat-card"><div class="stat-label">Football Matches</div><div class="stat-value" id="s-football">—</div></div>
           <div class="stat-card"><div class="stat-label">Tennis Matches</div><div class="stat-value" id="s-tennis">—</div></div>
           <div class="stat-card"><div class="stat-label">Leagues Covered</div><div class="stat-value" id="s-leagues">—</div></div>
+          <div class="stat-card"><div class="stat-label">Live Events (odds)</div><div class="stat-value" id="s-value-bets">—</div></div>
+          <div class="stat-card"><div class="stat-label">Pending Bets</div><div class="stat-value" id="s-pending-bets">—</div></div>
           <div class="stat-card"><div class="stat-label">Last Collection</div><div class="stat-value small" id="s-last">—</div></div>
         </div>
 
@@ -287,6 +289,7 @@
                 <label>Notes</label>
                 <input id="bet-notes" placeholder="Optional">
               </div>
+              <input type="hidden" id="bet-edge-pct">
             </div>
             <div style="display:flex;gap:0.75rem;margin-top:1rem">
               <button class="btn-primary" onclick="submitBet()">Save bet</button>
