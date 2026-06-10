@@ -658,3 +658,47 @@ async def api_football_edge(limit: int = 100):
         results.append({**dict(r), "implied_home_pct": true_home,
                         "implied_draw_pct": true_draw, "implied_away_pct": true_away})
     return JSONResponse(results)
+
+
+# ── Backtesting ──────────────────────────────────────────────────────────────
+
+@app.get("/backtest", response_class=HTMLResponse)
+async def backtest_page(request: Request):
+    return templates.TemplateResponse("backtest.html", {"request": request})
+
+@app.get("/api/backtest")
+async def api_backtest(
+    min_edge: float = 3.0,
+    max_odds: float = 5.0,
+    bankroll: float = 1000.0,
+    kelly: float = 0.25,
+    league: str = None,
+    season: str = None,
+    market: str = "all",
+):
+    from collectors.backtest import run_backtest
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, lambda: run_backtest(
+        min_edge=min_edge,
+        max_odds=max_odds,
+        bankroll=bankroll,
+        kelly_frac=kelly,
+        league=league if league else None,
+        season=season if season else None,
+        market_filter=market,
+    ))
+    return JSONResponse(result)
+
+@app.get("/api/backtest/clv")
+async def api_backtest_clv():
+    from collectors.backtest import get_clv_analysis
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, get_clv_analysis)
+    return JSONResponse(result)
+
+@app.get("/api/backtest/meta")
+async def api_backtest_meta():
+    from collectors.backtest import get_backtest_meta
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, get_backtest_meta)
+    return JSONResponse(result)

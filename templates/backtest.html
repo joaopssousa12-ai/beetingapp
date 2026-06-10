@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BetIQ — Backtesting</title>
+<link rel="stylesheet" href="/static/css/style.css?v=20260610e">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: var(--font-sans, 'DM Sans', sans-serif); background: var(--bg, #0f1117); color: var(--text, #e2e8f0); margin: 0; }
+  .bt-wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 60px; }
+  .bt-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+  .bt-title { font-size: 22px; font-weight: 700; }
+  .bt-subtitle { font-size: 13px; color: var(--text3, #64748b); }
+  .bt-nav { font-size: 13px; color: var(--accent, #6366f1); text-decoration: none; }
+  .bt-nav:hover { text-decoration: underline; }
+
+  /* Controls */
+  .bt-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; align-items: flex-end; }
+  .bt-ctrl { display: flex; flex-direction: column; gap: 4px; }
+  .bt-ctrl label { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text3, #64748b); }
+  .bt-ctrl input, .bt-ctrl select {
+    background: var(--bg2, #1a1f2e); border: 1px solid var(--border, #2d3748);
+    color: var(--text, #e2e8f0); border-radius: 6px; padding: 6px 10px;
+    font-size: 13px; font-family: var(--mono, 'DM Mono', monospace); width: 110px;
+  }
+  .bt-ctrl select { width: 160px; }
+  .bt-run { background: var(--accent, #6366f1); color: #fff; border: none; border-radius: 6px;
+    padding: 8px 20px; font-size: 13px; font-weight: 600; cursor: pointer; align-self: flex-end; }
+  .bt-run:hover { opacity: 0.85; }
+  .bt-run:disabled { opacity: 0.5; cursor: default; }
+
+  /* Summary metrics */
+  .bt-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .bt-metric { background: var(--bg2, #1a1f2e); border: 1px solid var(--border, #2d3748);
+    border-radius: 10px; padding: 14px 16px; }
+  .bt-metric-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; color: var(--text3, #64748b); margin-bottom: 6px; }
+  .bt-metric-val { font-family: var(--mono, 'DM Mono', monospace); font-size: 22px; font-weight: 700; }
+  .bt-metric-val.pos { color: #34d399; }
+  .bt-metric-val.neg { color: #f87171; }
+  .bt-metric-val.neu { color: var(--text, #e2e8f0); }
+  .bt-metric-sub { font-size: 11px; color: var(--text3, #64748b); margin-top: 2px; }
+
+  /* Chart */
+  .bt-chart-wrap { background: var(--bg2, #1a1f2e); border: 1px solid var(--border, #2d3748);
+    border-radius: 10px; padding: 16px; margin-bottom: 24px; }
+  .bt-chart-title { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text3, #64748b); }
+  #btChart { max-height: 280px; }
+
+  /* League table */
+  .bt-section-title { font-size: 14px; font-weight: 600; margin: 0 0 10px; color: var(--text2, #94a3b8); }
+  .bt-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 28px; }
+  .bt-table th { text-align: left; padding: 7px 10px; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; color: var(--text3, #64748b); border-bottom: 1px solid var(--border, #2d3748); }
+  .bt-table td { padding: 7px 10px; border-bottom: 1px solid var(--border2, #1e2535); }
+  .bt-table tr:last-child td { border-bottom: none; }
+  .bt-table td.pos { color: #34d399; font-family: var(--mono, 'DM Mono', monospace); }
+  .bt-table td.neg { color: #f87171; font-family: var(--mono, 'DM Mono', monospace); }
+  .bt-table td.mono { font-family: var(--mono, 'DM Mono', monospace); }
+
+  /* Bets table */
+  .bt-bets-wrap { background: var(--bg2, #1a1f2e); border: 1px solid var(--border, #2d3748);
+    border-radius: 10px; overflow: hidden; }
+  .bt-bets-head { padding: 12px 16px; border-bottom: 1px solid var(--border, #2d3748);
+    font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  .bt-bets-scroll { max-height: 400px; overflow-y: auto; }
+  .bt-bet-row { display: grid; grid-template-columns: 90px 1fr 90px 60px 50px 60px 70px;
+    padding: 6px 16px; border-bottom: 1px solid var(--border2, #1e2535); font-size: 12px; align-items: center; }
+  .bt-bet-row:last-child { border-bottom: none; }
+  .bt-bet-row.win { border-left: 3px solid #34d399; }
+  .bt-bet-row.loss { border-left: 3px solid #f87171; }
+  .bt-bet-hdrs { display: grid; grid-template-columns: 90px 1fr 90px 60px 50px 60px 70px;
+    padding: 6px 16px; background: var(--bg3, #141824); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; color: var(--text3, #64748b); }
+
+  /* State */
+  .bt-empty { text-align: center; padding: 60px 20px; color: var(--text3, #64748b); font-size: 14px; }
+  .bt-loading { text-align: center; padding: 60px 20px; color: var(--text3, #64748b); }
+  .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border, #2d3748);
+    border-top-color: var(--accent, #6366f1); border-radius: 50%; animation: spin 0.6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="bt-wrap">
+  <div class="bt-header">
+    <div>
+      <div class="bt-title">📊 Backtesting Engine</div>
+      <div class="bt-subtitle">Simula estratégia de value betting em dados históricos usando Pinnacle close como true prob</div>
+    </div>
+    <a href="/" class="bt-nav" style="margin-left:auto">← Dashboard</a>
+  </div>
+
+  <!-- Controls -->
+  <div class="bt-controls">
+    <div class="bt-ctrl">
+      <label>Min Edge %</label>
+      <input type="number" id="ctrlMinEdge" value="3" step="0.5" min="0" max="20">
+    </div>
+    <div class="bt-ctrl">
+      <label>Max Odds</label>
+      <input type="number" id="ctrlMaxOdds" value="5.0" step="0.5" min="1.01" max="20">
+    </div>
+    <div class="bt-ctrl">
+      <label>Bankroll (€)</label>
+      <input type="number" id="ctrlBankroll" value="1000" step="100" min="100">
+    </div>
+    <div class="bt-ctrl">
+      <label>Kelly Fraction</label>
+      <input type="number" id="ctrlKelly" value="0.25" step="0.05" min="0.05" max="1">
+    </div>
+    <div class="bt-ctrl">
+      <label>Market</label>
+      <select id="ctrlMarket">
+        <option value="all">All Markets</option>
+        <option value="h2h">Match Result only</option>
+        <option value="ou25">Over/Under 2.5 only</option>
+      </select>
+    </div>
+    <div class="bt-ctrl">
+      <label>League</label>
+      <select id="ctrlLeague"><option value="">All Leagues</option></select>
+    </div>
+    <div class="bt-ctrl">
+      <label>Season</label>
+      <select id="ctrlSeason"><option value="">All Seasons</option></select>
+    </div>
+    <button class="bt-run" id="btnRun" onclick="runBacktest()">▶ Run Simulation</button>
+  </div>
+
+  <!-- Metrics -->
+  <div id="btMetrics" style="display:none">
+    <div class="bt-metrics">
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">Win Rate</div>
+        <div class="bt-metric-val neu" id="mWinRate">—</div>
+        <div class="bt-metric-sub" id="mWins">— / — bets</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">ROI</div>
+        <div class="bt-metric-val" id="mRoi">—</div>
+        <div class="bt-metric-sub" id="mProfit">€— profit</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">Sharpe Ratio</div>
+        <div class="bt-metric-val" id="mSharpe">—</div>
+        <div class="bt-metric-sub">Risk-adjusted return</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">Bankroll Growth</div>
+        <div class="bt-metric-val" id="mGrowth">—</div>
+        <div class="bt-metric-sub" id="mFinalBankroll">€— final</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">Total Bets</div>
+        <div class="bt-metric-val neu" id="mBets">—</div>
+        <div class="bt-metric-sub" id="mStaked">€— staked</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">Avg Edge</div>
+        <div class="bt-metric-val pos" id="mAvgEdge">—</div>
+        <div class="bt-metric-sub" id="mAvgOdds">avg odds —</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart -->
+  <div class="bt-chart-wrap" id="btChartWrap" style="display:none">
+    <div class="bt-chart-title">P&L Cumulative (€)</div>
+    <canvas id="btChart"></canvas>
+  </div>
+
+  <!-- League breakdown -->
+  <div id="btLeagueWrap" style="display:none">
+    <div class="bt-section-title">Performance by League</div>
+    <table class="bt-table">
+      <thead>
+        <tr>
+          <th>League</th>
+          <th style="text-align:right">Bets</th>
+          <th style="text-align:right">Win Rate</th>
+          <th style="text-align:right">Profit €</th>
+          <th style="text-align:right">ROI %</th>
+        </tr>
+      </thead>
+      <tbody id="leagueBody"></tbody>
+    </table>
+  </div>
+
+  <!-- Recent bets -->
+  <div class="bt-bets-wrap" id="btBetsWrap" style="display:none">
+    <div class="bt-bets-head">
+      <span>Recent Simulated Bets</span>
+      <span id="betsCount" style="font-size:12px;color:var(--text3)"></span>
+    </div>
+    <div class="bt-bet-hdrs">
+      <span>Date</span><span>Match / Selection</span><span>Market</span>
+      <span style="text-align:right">Odds</span><span style="text-align:right">Edge</span>
+      <span style="text-align:right">Stake €</span><span style="text-align:right">Profit €</span>
+    </div>
+    <div class="bt-bets-scroll" id="betsBody"></div>
+  </div>
+
+  <div id="btLoading" class="bt-loading" style="display:none">
+    <div class="spinner"></div>
+    <div style="margin-top:12px;font-size:13px">Simulando… pode demorar alguns segundos</div>
+  </div>
+  <div id="btEmpty" class="bt-empty">
+    Configure os parâmetros e clica <strong>Run Simulation</strong>
+  </div>
+</div>
+
+<script>
+let btChart = null;
+
+async function loadMeta() {
+  try {
+    const r = await fetch('/api/backtest/meta');
+    const d = await r.json();
+    const lg = document.getElementById('ctrlLeague');
+    d.leagues.forEach(l => { const o = document.createElement('option'); o.value = l; o.textContent = l; lg.appendChild(o); });
+    const sn = document.getElementById('ctrlSeason');
+    d.seasons.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; sn.appendChild(o); });
+  } catch(e) {}
+}
+
+async function runBacktest() {
+  const btn = document.getElementById('btnRun');
+  btn.disabled = true; btn.textContent = '⏳ Running…';
+  document.getElementById('btEmpty').style.display = 'none';
+  document.getElementById('btLoading').style.display = 'block';
+  document.getElementById('btMetrics').style.display = 'none';
+  document.getElementById('btChartWrap').style.display = 'none';
+  document.getElementById('btLeagueWrap').style.display = 'none';
+  document.getElementById('btBetsWrap').style.display = 'none';
+
+  const params = new URLSearchParams({
+    min_edge: document.getElementById('ctrlMinEdge').value,
+    max_odds: document.getElementById('ctrlMaxOdds').value,
+    bankroll: document.getElementById('ctrlBankroll').value,
+    kelly: document.getElementById('ctrlKelly').value,
+    market: document.getElementById('ctrlMarket').value,
+    league: document.getElementById('ctrlLeague').value,
+    season: document.getElementById('ctrlSeason').value,
+  });
+
+  try {
+    const r = await fetch('/api/backtest?' + params);
+    const d = await r.json();
+    renderResults(d);
+  } catch(e) {
+    document.getElementById('btEmpty').style.display = 'block';
+    document.getElementById('btEmpty').textContent = 'Erro: ' + e.message;
+  }
+
+  document.getElementById('btLoading').style.display = 'none';
+  btn.disabled = false; btn.textContent = '▶ Run Simulation';
+}
+
+function fmt(n, dec=1) { return n == null ? '—' : Number(n).toFixed(dec); }
+function fmtSign(n, dec=1) { const v = Number(n); return (v >= 0 ? '+' : '') + v.toFixed(dec); }
+
+function renderResults(d) {
+  const s = d.summary;
+  if (!s || s.total_bets === 0) {
+    document.getElementById('btEmpty').style.display = 'block';
+    document.getElementById('btEmpty').textContent = 'Nenhum bet encontrado com esses filtros.';
+    return;
+  }
+
+  // Metrics
+  const roi = Number(s.roi);
+  const sharpe = Number(s.sharpe);
+  const growth = Number(s.bankroll_growth);
+
+  document.getElementById('mWinRate').textContent = fmt(s.win_rate) + '%';
+  document.getElementById('mWins').textContent = `${s.wins} / ${s.total_bets} bets`;
+  document.getElementById('mRoi').textContent = fmtSign(s.roi) + '%';
+  document.getElementById('mRoi').className = 'bt-metric-val ' + (roi >= 0 ? 'pos' : 'neg');
+  document.getElementById('mProfit').textContent = `€${fmtSign(s.total_profit, 0)} profit`;
+  document.getElementById('mSharpe').textContent = fmt(s.sharpe, 2);
+  document.getElementById('mSharpe').className = 'bt-metric-val ' + (sharpe >= 0.5 ? 'pos' : sharpe >= 0 ? 'neu' : 'neg');
+  document.getElementById('mGrowth').textContent = fmtSign(s.bankroll_growth) + '%';
+  document.getElementById('mGrowth').className = 'bt-metric-val ' + (growth >= 0 ? 'pos' : 'neg');
+  document.getElementById('mFinalBankroll').textContent = `€${fmt(s.final_bankroll, 0)} final`;
+  document.getElementById('mBets').textContent = s.total_bets.toLocaleString();
+  document.getElementById('mStaked').textContent = `€${fmt(s.total_staked, 0)} staked`;
+  document.getElementById('mAvgEdge').textContent = '+' + fmt(s.avg_edge) + '%';
+  document.getElementById('mAvgOdds').textContent = 'avg odds ' + fmt(s.avg_odds, 2);
+  document.getElementById('btMetrics').style.display = 'block';
+
+  // Chart
+  renderChart(d.pnl_series);
+
+  // League table
+  const tbody = document.getElementById('leagueBody');
+  tbody.innerHTML = '';
+  (d.by_league || []).slice(0, 20).forEach(lg => {
+    const profitCls = lg.profit >= 0 ? 'pos' : 'neg';
+    const roiCls = lg.roi >= 0 ? 'pos' : 'neg';
+    tbody.innerHTML += `<tr>
+      <td>${lg.league}</td>
+      <td style="text-align:right" class="mono">${lg.bets}</td>
+      <td style="text-align:right" class="mono">${lg.win_rate}%</td>
+      <td style="text-align:right" class="${profitCls}">${lg.profit >= 0 ? '+' : ''}€${lg.profit}</td>
+      <td style="text-align:right" class="${roiCls}">${lg.roi >= 0 ? '+' : ''}${lg.roi}%</td>
+    </tr>`;
+  });
+  document.getElementById('btLeagueWrap').style.display = 'block';
+
+  // Bets table (last 200, reversed)
+  const betsBody = document.getElementById('betsBody');
+  betsBody.innerHTML = '';
+  const bets = (d.bets || []).slice().reverse();
+  document.getElementById('betsCount').textContent = `Últimos ${bets.length} de ${s.total_bets}`;
+  bets.forEach(b => {
+    const cls = b.won ? 'win' : 'loss';
+    const profitCls = b.profit >= 0 ? 'color:#34d399' : 'color:#f87171';
+    betsBody.innerHTML += `<div class="bt-bet-row ${cls}">
+      <span style="color:var(--text3)">${(b.date||'').slice(0,10)}</span>
+      <span>${b.match}<br><span style="color:var(--text3);font-size:11px">${b.selection}</span></span>
+      <span style="color:var(--text3);font-size:11px">${b.market}</span>
+      <span style="text-align:right;font-family:var(--mono)">${Number(b.odds).toFixed(2)}</span>
+      <span style="text-align:right;color:#34d399;font-family:var(--mono)">+${b.edge_pct}%</span>
+      <span style="text-align:right;font-family:var(--mono)">€${b.stake}</span>
+      <span style="text-align:right;font-family:var(--mono);${profitCls}">${b.profit >= 0 ? '+' : ''}€${b.profit}</span>
+    </div>`;
+  });
+  document.getElementById('btBetsWrap').style.display = 'block';
+}
+
+function renderChart(series) {
+  if (!series || !series.length) return;
+
+  const labels = series.map(p => p.date ? p.date.slice(0, 10) : '');
+  const cumulative = series.map(p => p.cumulative);
+  const dotColors = series.map(p => p.won ? '#34d399' : '#f87171');
+  const dotRadii = series.map(() => 3);
+
+  document.getElementById('btChartWrap').style.display = 'block';
+
+  if (btChart) { btChart.destroy(); btChart = null; }
+
+  const ctx = document.getElementById('btChart').getContext('2d');
+  btChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: cumulative,
+        borderColor: '#6366f1',
+        borderWidth: 1.5,
+        pointBackgroundColor: dotColors,
+        pointBorderColor: dotColors,
+        pointRadius: dotRadii,
+        pointHoverRadius: 5,
+        fill: false,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const p = series[ctx.dataIndex];
+              return [
+                `P&L: €${ctx.raw >= 0 ? '+' : ''}${ctx.raw}`,
+                `${p.won ? '✓ Win' : '✗ Loss'}: ${p.selection} @ ${p.odds}`,
+                `${p.match}`,
+              ];
+            },
+          },
+          backgroundColor: '#1a1f2e',
+          borderColor: '#2d3748',
+          borderWidth: 1,
+          titleColor: '#94a3b8',
+          bodyColor: '#e2e8f0',
+          padding: 10,
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: '#64748b', font: { size: 10 }, maxTicksLimit: 10 },
+          grid: { color: '#1e2535' },
+        },
+        y: {
+          ticks: { color: '#64748b', callback: v => '€' + v },
+          grid: { color: '#1e2535' },
+        },
+      },
+    },
+  });
+}
+
+// Init
+loadMeta();
+</script>
+</body>
+</html>
