@@ -101,7 +101,7 @@ def compute_football_elo(status_callback=None):
         if games_count.get(team, 0) >= 5:  # min games for reliability
             conn.execute("""
                 INSERT OR REPLACE INTO elo_ratings (entity, category, surface, rating, games, updated_at)
-                VALUES (?, 'football_club', NULL, ?, ?, datetime('now'))
+                VALUES (?, 'football_club', '', ?, ?, datetime('now'))
             """, (team, round(rating, 1), games_count[team]))
     conn.commit()
     conn.close()
@@ -160,7 +160,7 @@ def compute_national_elo(status_callback=None):
         if games_count.get(team, 0) >= 5:
             conn.execute("""
                 INSERT OR REPLACE INTO elo_ratings (entity, category, surface, rating, games, updated_at)
-                VALUES (?, 'national', NULL, ?, ?, datetime('now'))
+                VALUES (?, 'national', '', ?, ?, datetime('now'))
             """, (team, round(rating, 1), games_count[team]))
     conn.commit()
     conn.close()

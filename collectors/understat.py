@@ -34,15 +34,19 @@ def fetch_league_data(league_key, season):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
         if r.status_code != 200:
+            print(f"Understat {league_key}/{season}: HTTP {r.status_code}", flush=True)
             return None
 
         # Understat embeds data as: var datesData = JSON.parse('...');
         match = re.search(r"var datesData\s*=\s*JSON\.parse\('([^']+)'\)", r.text)
         if not match:
+            print(f"Understat {league_key}/{season}: datesData pattern not found (page format may have changed)", flush=True)
             return None
 
-        # Decode the embedded JSON (it has escaped chars like \x22 for ")
-        raw = match.group(1).encode("utf-8").decode("unicode_escape")
+        raw = match.group(1)
+        # Convert JS \xNN hex escapes (e.g. \x22 for ") to \uNNNN that json.loads() understands.
+        # The old .encode("utf-8").decode("unicode_escape") approach corrupts non-ASCII names.
+        raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: '\\u00' + m.group(1), raw)
         data = json.loads(raw)
         return data
     except Exception as e:
@@ -193,16 +197,20 @@ def collect_understat(status_callback=None):
 
     cb("Fetching Understat xG data...")
     total = 0
+    no_data_count = 0
     for season in SEASONS:
         for lkey, lname in UNDERSTAT_LEAGUES.items():
             cb(f"  Fetching {lname} {season}/{int(season)+1}...")
             data = fetch_league_data(lkey, season)
             if not data:
-                cb(f"    -> no data")
+                no_data_count += 1
+                cb(f"    -> no data (check Render logs for details)")
                 continue
             n = parse_and_store(data, lkey, lname, season)
             total += n
             cb(f"    -> {n} matches stored")
+    if no_data_count > 0 and total == 0:
+        cb(f"  WARNING: All {no_data_count} league fetches returned no data. Understat may be blocking or changed format.")
 
     cb("Computing rolling 10-game xG averages per team...")
     teams = compute_team_rolling_xg(window=10)

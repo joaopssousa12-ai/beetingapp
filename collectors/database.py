@@ -49,12 +49,37 @@ def _translate_query(query):
     q = query
     # Placeholders: ? -> %s
     q = q.replace("?", "%s")
-    # INSERT OR REPLACE -> INSERT ... ON CONFLICT DO UPDATE (simplified to upsert)
-    # We convert to "INSERT ... ON CONFLICT DO NOTHING" fallback won't update;
-    # better: use ON CONFLICT with primary key. But since schemas vary,
-    # we handle the common case by converting OR REPLACE/IGNORE.
-    q = re.sub(r"INSERT\s+OR\s+REPLACE\s+INTO", "INSERT INTO", q, flags=re.IGNORECASE)
-    q = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", q, flags=re.IGNORECASE)
+
+    # INSERT OR IGNORE -> INSERT INTO ... ON CONFLICT DO NOTHING
+    has_ignore = bool(re.search(r"INSERT\s+OR\s+IGNORE\s+INTO\b", q, re.IGNORECASE))
+    q = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", q, flags=re.IGNORECASE)
+    if has_ignore:
+        q = q.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+
+    # INSERT OR REPLACE -> INSERT INTO ... ON CONFLICT (pk) DO UPDATE SET ...
+    # Capture table name + column list BEFORE removing OR REPLACE so we can generate
+    # the proper ON CONFLICT clause from TABLE_PRIMARY_KEYS.
+    replace_m = re.search(
+        r"INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\(([^)]+)\)",
+        q, re.IGNORECASE
+    )
+    q = re.sub(r"INSERT\s+OR\s+REPLACE\s+INTO\b", "INSERT INTO", q, flags=re.IGNORECASE)
+    if replace_m:
+        table = replace_m.group(1)
+        cols_raw = replace_m.group(2)
+        cols = [c.strip() for c in cols_raw.split(',')]
+        pk = TABLE_PRIMARY_KEYS.get(table)
+        if pk:
+            pk_cols = {c.strip() for c in pk.split(',')}
+            update_cols = [c for c in cols if c not in pk_cols]
+            if update_cols:
+                set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+                q = q.rstrip().rstrip(";") + f" ON CONFLICT ({pk}) DO UPDATE SET {set_clause}"
+            else:
+                q = q.rstrip().rstrip(";") + f" ON CONFLICT ({pk}) DO NOTHING"
+        else:
+            q = q.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+
     # datetime('now', '-1 day') -> NOW() - INTERVAL '1 day'  etc.
     def _dt_modifier(m):
         mod = m.group(1).strip()  # e.g. '-1 day', '+2 hours'
@@ -97,6 +122,9 @@ TABLE_PRIMARY_KEYS = {
     "odds_events": "event_id",
     "elo_ratings": "entity, category, surface",
     "bets": "id",
+    "national_xg": "team",
+    "national_xg_meta": "key",
+    "manual_odds": "event_id, selection",
 }
 
 
@@ -846,7 +874,7 @@ def get_value_bets():
     event_ids = [r["event_id"] for r in rows]
     try:
         elo_rows = conn.execute("SELECT * FROM elo_ratings").fetchall()
-        _session_elo = {(r["entity"].lower(), r["category"], r.get("surface")): dict(r) for r in elo_rows}
+        _session_elo = {(r["entity"].lower(), r["category"], r.get("surface") or ''): dict(r) for r in elo_rows}
     except Exception:
         _session_elo = {}
     try:
@@ -2210,40 +2238,30 @@ def get_elo_rating(entity, category, surface=None):
 
     # Use pre-loaded session cache if available (avoids new Neon connection per call)
     if _session_elo is not None:
-        key = (entity.lower(), category, surface)
+        eff_surface = surface if surface else ''
+        key = (entity.lower(), category, eff_surface)
         row = _session_elo.get(key)
         if not row:
             norm = entity.replace("FC ", "").replace(" FC", "").strip().lower()
             for (e, c, s), v in _session_elo.items():
-                if c == category and s == surface and norm in e:
+                if c == category and (s or '') == eff_surface and norm in e:
                     row = v
                     break
         return row
 
+    # PostgreSQL PRIMARY KEY makes surface NOT NULL; we store '' for categories without surface
+    eff_surface = surface if surface else ''
     conn = get_connection()
-    if surface:
-        row = conn.execute(
-            "SELECT * FROM elo_ratings WHERE entity = ? AND category = ? AND surface = ?",
-            (entity, category, surface)
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT * FROM elo_ratings WHERE entity = ? AND category = ? AND surface IS NULL",
-            (entity, category)
-        ).fetchone()
+    row = conn.execute(
+        "SELECT * FROM elo_ratings WHERE entity = ? AND category = ? AND COALESCE(surface,'') = ?",
+        (entity, category, eff_surface)
+    ).fetchone()
     if not row:
-        # Fuzzy
         norm = entity.replace("FC ", "").replace(" FC", "").strip()
-        if surface:
-            row = conn.execute(
-                "SELECT * FROM elo_ratings WHERE entity LIKE ? AND category = ? AND surface = ?",
-                (f"%{norm}%", category, surface)
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT * FROM elo_ratings WHERE entity LIKE ? AND category = ? AND surface IS NULL",
-                (f"%{norm}%", category)
-            ).fetchone()
+        row = conn.execute(
+            "SELECT * FROM elo_ratings WHERE entity LIKE ? AND category = ? AND COALESCE(surface,'') = ?",
+            (f"%{norm}%", category, eff_surface)
+        ).fetchone()
     conn.close()
     return dict(row) if row else None
 
