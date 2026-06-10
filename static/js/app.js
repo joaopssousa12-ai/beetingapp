@@ -34,9 +34,8 @@ function toggleTheme() {
 (function initTheme() {
   try {
     const saved = localStorage.getItem('theme');
-    if (saved === 'dark') applyTheme('dark');
-    else updateThemeLabel(); // ensure label is correct on load
-  } catch(e) {}
+    applyTheme(saved || 'dark'); // dark by default
+  } catch(e) { applyTheme('dark'); }
 })();
 
 async function fetchJSON(url) {
@@ -270,7 +269,9 @@ let vbState = {
   maxOdds: 5.0,  // default 5.0 — blocks longshots (Qatar at 15.0)
   minConf: 0,
   expanded: new Set(),
+  viewMode: 'cards',  // 'cards' or 'table'
 };
+let _prevValueBetCount = -1;
 
 async function loadEdge() {
   const [rows, bets] = await Promise.all([
@@ -359,6 +360,153 @@ function wireFilters() {
       renderValueBets();
     });
   }
+  updatePresetButtons();
+}
+
+// ============================================================
+// FILTER PRESETS — save / load named filter configurations
+// ============================================================
+function saveCurrentPreset() {
+  const slot = prompt('Guardar em slot (1, 2 ou 3):', '1');
+  if (!['1','2','3'].includes(String(slot).trim())) return;
+  const name = prompt('Nome para este preset:', `Preset ${slot}`) || `Preset ${slot}`;
+  const state = {
+    _name: name,
+    sportFilter: vbState.sportFilter || '',
+    whenFilter: vbState.whenFilter,
+    mode: vbState.mode,
+    minEdge: vbState.minEdge,
+    maxOdds: vbState.maxOdds,
+    minConf: vbState.minConf,
+    bankroll: vbState.bankroll,
+  };
+  try { localStorage.setItem(`vb-preset-${slot}`, JSON.stringify(state)); } catch(e) {}
+  updatePresetButtons();
+}
+
+function loadPreset(slot) {
+  try {
+    const raw = localStorage.getItem(`vb-preset-${slot}`);
+    if (!raw) { alert(`Slot ${slot} vazio — use "💾 Guardar" para gravar os filtros actuais.`); return; }
+    const s = JSON.parse(raw);
+    const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.value = String(val); };
+    if (s.sportFilter !== undefined) { vbState.sportFilter = s.sportFilter; setEl('vb-sport', s.sportFilter || ''); }
+    if (s.whenFilter !== undefined) { vbState.whenFilter = s.whenFilter; setEl('vb-when', s.whenFilter); }
+    if (s.mode !== undefined) { vbState.mode = s.mode; setEl('vb-mode', s.mode); }
+    if (s.minEdge !== undefined) { vbState.minEdge = s.minEdge; setEl('vb-minedge', s.minEdge); try { localStorage.setItem('vb-minedge', s.minEdge); } catch(e) {} }
+    if (s.maxOdds !== undefined) { vbState.maxOdds = s.maxOdds; setEl('vb-maxodds', s.maxOdds); try { localStorage.setItem('vb-maxodds', s.maxOdds); } catch(e) {} }
+    if (s.minConf !== undefined) { vbState.minConf = s.minConf; setEl('vb-minconf', s.minConf); }
+    if (s.bankroll > 0) { vbState.bankroll = s.bankroll; setEl('vb-bankroll', s.bankroll); try { localStorage.setItem('bankroll', s.bankroll); } catch(e) {} }
+    renderValueBets();
+  } catch(e) {}
+}
+
+function updatePresetButtons() {
+  for (let s = 1; s <= 3; s++) {
+    const btn = document.querySelector(`.vb-preset-btn[data-slot="${s}"]`);
+    if (!btn) continue;
+    try {
+      const raw = localStorage.getItem(`vb-preset-${s}`);
+      if (raw) {
+        const st = JSON.parse(raw);
+        btn.textContent = st._name || `P${s}`;
+        btn.title = `${st._name || 'Preset ' + s} — clique para aplicar`;
+        btn.classList.add('has-preset');
+      } else {
+        btn.textContent = `P${s}`;
+        btn.title = `Slot ${s} vazio`;
+        btn.classList.remove('has-preset');
+      }
+    } catch(e) {}
+  }
+}
+
+// ============================================================
+// SOUND NOTIFICATION — plays a double-beep via Web Audio API
+// ============================================================
+function playNewBetSound() {
+  const toggle = document.getElementById('vb-sound');
+  if (toggle && !toggle.checked) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [[880, 0], [1100, 0.18]].forEach(([freq, t]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.22, ctx.currentTime + t);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.22);
+      osc.start(ctx.currentTime + t);
+      osc.stop(ctx.currentTime + t + 0.25);
+    });
+  } catch(e) {}
+}
+
+// ============================================================
+// COMPACT TABLE VIEW — dense row-per-event alternative to cards
+// ============================================================
+function renderTableView(data) {
+  const wrap = document.getElementById('vb-cards');
+  if (!data.length) { wrap.innerHTML = '<div class="vb-empty"><div class="vb-empty-title">No matches match your filters</div></div>'; return; }
+  const _br = vbState.bankroll || 0;
+  const _qMinEdge = vbState.minEdge ?? 3;
+  const _qMaxOdds = vbState.maxOdds ?? 5.0;
+  const header = `<div class="vb-table-header">
+    <span class="vbt-edge">Edge</span>
+    <span class="vbt-event">Match</span>
+    <span class="vbt-pick">Best Pick</span>
+    <span class="vbt-book">Book</span>
+    <span class="vbt-fair">Fair</span>
+    <span class="vbt-kelly">Kelly</span>
+    <span class="vbt-conf">★</span>
+    <span class="vbt-time">Time</span>
+  </div>`;
+  const rows = data.map(b => {
+    const bv = b.best_value;
+    const isValue = bv && bv.edge_pct != null && bv.edge_pct >= _qMinEdge && bv.edge_pct <= 15 && (!bv.book_odd || bv.book_odd <= _qMaxOdds);
+    const edgePct = bv?.edge_pct ?? null;
+    let eCls = 'neg';
+    if (edgePct != null) {
+      if (edgePct > 15) eCls = 'noise';
+      else if (edgePct >= _qMinEdge) eCls = isValue ? 'pos' : 'flat';
+      else if (edgePct >= 1) eCls = 'flat';
+    }
+    const sign = edgePct > 0 ? '+' : '';
+    const fairOdd = bv?.fair_odd
+      ? bv.fair_odd.toFixed(2)
+      : (bv?.book_odd && edgePct != null ? (bv.book_odd / (1 + edgePct / 100)).toFixed(2) : '—');
+    let kellyStr = '—';
+    if (bv && edgePct > 0 && bv.book_odd > 1) {
+      const kQ = ((edgePct / 100) / (bv.book_odd - 1)) * 0.25;
+      kellyStr = _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
+    }
+    const conf = b.best_confidence || 0;
+    const timeStr = (() => {
+      if (!b.commence_time) return '—';
+      const diff = (new Date(b.commence_time) - Date.now()) / 3600000;
+      if (diff < 0) return 'started';
+      if (diff < 24) { const h = Math.floor(diff); const m = Math.floor((diff-h)*60); return `${h}h${m}m`; }
+      return new Date(b.commence_time).toLocaleDateString('en-GB', {day:'2-digit', month:'short'});
+    })();
+    return `<div class="vb-table-row${isValue ? ' is-value' : ''}" onclick="window.location.href='/match/${b.event_id}'" title="Ver detalhes">
+      <span class="vbt-edge"><span class="edge-chip ${eCls}">${edgePct != null ? sign + edgePct.toFixed(1)+'%' : '—'}</span></span>
+      <span class="vbt-event"><span class="vbt-sport">${b.sport_name||''}</span>${b.home_team} <em>v</em> ${b.away_team}</span>
+      <span class="vbt-pick">${bv?.selection || '—'}<span class="vbt-mkt">${bv?.market || ''}</span></span>
+      <span class="vbt-book">${fmtOdd(bv?.book_odd)}</span>
+      <span class="vbt-fair">${fairOdd}</span>
+      <span class="vbt-kelly">${kellyStr}</span>
+      <span class="vbt-conf">${'★'.repeat(conf)}<span class="empty">${'★'.repeat(5-conf)}</span></span>
+      <span class="vbt-time">${timeStr}</span>
+    </div>`;
+  }).join('');
+  wrap.innerHTML = `<div class="vb-table-wrap">${header}${rows}</div>`;
+}
+
+function toggleViewMode() {
+  vbState.viewMode = vbState.viewMode === 'cards' ? 'table' : 'cards';
+  const btn = document.getElementById('vb-view-toggle');
+  if (btn) btn.textContent = vbState.viewMode === 'cards' ? '☰ Table' : '▦ Cards';
+  renderValueBets();
 }
 
 function applyVbFilters(rows) {
@@ -441,6 +589,19 @@ function renderValueBets() {
 
   const countEl = document.getElementById('vb-count');
   if (countEl) countEl.textContent = `${data.length} match${data.length === 1 ? '' : 'es'} · ${vbState.raw.length} total`;
+
+  // Sound notification — fire when new value bets appear
+  const _qMinEdge = vbState.minEdge ?? 3;
+  const _qMaxOdds = vbState.maxOdds ?? 5.0;
+  const valueCount = data.filter(b => {
+    const bv = b.best_value;
+    return bv && bv.edge_pct >= _qMinEdge && bv.edge_pct <= 15 && (!bv.book_odd || bv.book_odd <= _qMaxOdds);
+  }).length;
+  if (_prevValueBetCount >= 0 && valueCount > _prevValueBetCount) playNewBetSound();
+  _prevValueBetCount = valueCount;
+
+  // Compact table view
+  if (vbState.viewMode === 'table') { renderTableView(data); return; }
 
   if (data.length === 0) {
     if (vbState.raw.length === 0) {
@@ -562,24 +723,48 @@ function renderCard(b) {
   const mlBlock = renderModelPickBlock(bestPick, 'Best Pick', trophyIcon, true);
   const bvBlock = renderModelPickBlock(safestPick, 'Safest Pick', shieldIcon, false);
 
-  // All-markets expanded view
-  const allMarketsHTML = (b.all_picks || [])
-    .filter(p => p.book === 'Best')
-    .sort((a, b) => b.edge_pct - a.edge_pct)
-    .map(p => {
+  // All-markets expanded view — with no-vig (fair) odds + Kelly stake
+  const allMarketsHTML = (() => {
+    const picks = (b.all_picks || [])
+      .filter(p => p.book === 'Best')
+      .sort((a, b) => b.edge_pct - a.edge_pct);
+    if (!picks.length) return '';
+    const header = `<div class="vb-markets-header">
+      <span class="m-market">Market</span>
+      <span class="m-selection">Selection</span>
+      <span class="m-odd">Book</span>
+      <span class="m-novigo">Fair</span>
+      <span class="m-edge">Edge</span>
+      <span class="m-kelly">Kelly</span>
+      <span class="m-conf">★</span>
+    </div>`;
+    const _br = vbState.bankroll || 0;
+    const rows = picks.map(p => {
       let eCls = 'neg';
       if (p.edge_pct > 15) eCls = 'noise';
       else if (p.edge_pct >= 3) eCls = 'pos';
       else if (p.edge_pct >= 1) eCls = 'flat';
       const sign = p.edge_pct > 0 ? '+' : '';
+      const fairOdd = p.fair_odd
+        ? p.fair_odd.toFixed(2)
+        : (p.book_odd && p.edge_pct != null ? (p.book_odd / (1 + p.edge_pct / 100)).toFixed(2) : '—');
+      let kellyStr = '—';
+      if (p.edge_pct > 0 && p.book_odd > 1) {
+        const kQ = ((p.edge_pct / 100) / (p.book_odd - 1)) * 0.25;
+        kellyStr = _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
+      }
       return `<div class="vb-market-row">
         <span class="m-market">${p.market}</span>
         <span class="m-selection">${p.selection}</span>
         <span class="m-odd">${fmtOdd(p.book_odd)}</span>
+        <span class="m-novigo">${fairOdd}</span>
         <span class="m-edge ${eCls}">${sign}${p.edge_pct.toFixed(1)}%</span>
+        <span class="m-kelly">${kellyStr}</span>
         <span class="m-conf">${'★'.repeat(p.confidence || 0)}</span>
       </div>`;
     }).join('');
+    return header + rows;
+  })();
 
   // xG signal block (only shows when we have xG data for both teams)
   let xgBlock = '';

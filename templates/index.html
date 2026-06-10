@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BetIQ — Betting Intelligence</title>
-<link rel="stylesheet" href="/static/css/style.css?v=20260608a">
+<link rel="stylesheet" href="/static/css/style.css?v=20260610a">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -196,7 +196,18 @@
             </select>
             <input id="vb-bankroll" type="number" placeholder="Bankroll €" value="1000" class="vb-input" style="width:120px" title="Set bankroll to see Kelly stake suggestions">
           </div>
+          <div class="vb-toolbar-group vb-presets-group">
+            <label class="vb-filter-label">Presets</label>
+            <button class="vb-preset-btn" data-slot="1" onclick="loadPreset(1)">P1</button>
+            <button class="vb-preset-btn" data-slot="2" onclick="loadPreset(2)">P2</button>
+            <button class="vb-preset-btn" data-slot="3" onclick="loadPreset(3)">P3</button>
+            <button class="vb-preset-save-btn" onclick="saveCurrentPreset()" title="Guardar filtros actuais num preset">💾 Guardar</button>
+          </div>
           <div class="vb-toolbar-group">
+            <label class="vb-sound-label" title="Notificação sonora quando aparecem novas value bets">
+              <input type="checkbox" id="vb-sound" checked> 🔔
+            </label>
+            <button class="btn-secondary vb-view-btn" id="vb-view-toggle" onclick="toggleViewMode()">☰ Table</button>
             <span id="vb-count" class="vb-count">—</span>
             <button class="btn-refresh" id="refresh-odds-btn" onclick="refreshOdds()">↻ Refresh</button>
           </div>
