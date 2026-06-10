@@ -71,21 +71,42 @@ def parse_openfootball(data, league_code, league_name, season):
 
 
 def insert_rows(rows):
+    if not rows:
+        return 0
+    from collectors.database import USE_POSTGRES
     conn = get_connection()
+    cols = list(rows[0].keys())
+    col_names = ", ".join(cols)
     inserted = 0
-    for d in rows:
+
+    if USE_POSTGRES:
+        import psycopg2.extras
+        sql = f"INSERT INTO football_matches ({col_names}) VALUES %s ON CONFLICT DO NOTHING"
+        values = [tuple(d.get(c) for c in cols) for d in rows]
         try:
-            cols = list(d.keys())
-            placeholders = ",".join(["?" for _ in cols])
-            col_names = ",".join(cols)
-            cur = conn.execute(
-                f"INSERT OR IGNORE INTO football_matches ({col_names}) VALUES ({placeholders})",
-                list(d.values())
-            )
-            inserted += max(cur.rowcount, 0)
-        except Exception:
-            pass
-    conn.commit()
+            raw_cur = conn._conn.cursor()
+            psycopg2.extras.execute_values(raw_cur, sql, values, page_size=500)
+            inserted = len(rows)
+            conn._conn.commit()
+        except Exception as e:
+            print(f"Football batch insert error: {e}", flush=True)
+            try:
+                conn._conn.rollback()
+            except Exception:
+                pass
+    else:
+        placeholders = "(" + ",".join(["?"] * len(cols)) + ")"
+        for d in rows:
+            try:
+                cur = conn.execute(
+                    f"INSERT OR IGNORE INTO football_matches ({col_names}) VALUES {placeholders}",
+                    list(d.values())
+                )
+                inserted += max(cur.rowcount, 0)
+            except Exception:
+                pass
+        conn.commit()
+
     conn.close()
     return inserted
 

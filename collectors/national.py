@@ -40,53 +40,73 @@ def fetch_csv(url):
 def insert_matches(rows, since_year=2010):
     if not rows:
         return 0
-    conn = get_connection()
-    inserted = 0
+    from collectors.database import USE_POSTGRES
 
+    # Build cleaned list first
+    cleaned = []
     for r in rows:
         try:
             date = r.get("date", "")
             if not date or len(date) < 4:
                 continue
-            year = int(date[:4])
-            if year < since_year:
+            if int(date[:4]) < since_year:
                 continue
-
             home = (r.get("home_team") or "").strip()
             away = (r.get("away_team") or "").strip()
             if not home or not away:
                 continue
-
             hs = r.get("home_score")
             as_ = r.get("away_score")
             home_goals = int(hs) if hs and hs.isdigit() else None
             away_goals = int(as_) if as_ and as_.isdigit() else None
-
             result = None
             if home_goals is not None and away_goals is not None:
                 if home_goals > away_goals: result = "H"
                 elif home_goals < away_goals: result = "A"
                 else: result = "D"
-
             tournament = (r.get("tournament") or "Friendly").strip()
             city = (r.get("city") or "").strip()
             country = (r.get("country") or "").strip()
-            neutral = (r.get("neutral") or "FALSE").strip().upper() == "TRUE"
-
+            neutral = 1 if (r.get("neutral") or "FALSE").strip().upper() == "TRUE" else 0
             match_id = f"{date}_{home.replace(' ', '_')}_{away.replace(' ', '_')}"
-
-            cur = conn.execute("""
-                INSERT OR IGNORE INTO national_matches
-                  (match_id, date, home_team, away_team, home_goals, away_goals,
-                   result, tournament, city, country, neutral)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
-            """, (match_id, date, home, away, home_goals, away_goals,
-                  result, tournament, city, country, 1 if neutral else 0))
-            inserted += max(cur.rowcount, 0)
+            cleaned.append((match_id, date, home, away, home_goals, away_goals,
+                             result, tournament, city, country, neutral))
         except Exception:
             pass
 
-    conn.commit()
+    if not cleaned:
+        return 0
+
+    conn = get_connection()
+    inserted = 0
+    cols = "match_id,date,home_team,away_team,home_goals,away_goals,result,tournament,city,country,neutral"
+
+    if USE_POSTGRES:
+        import psycopg2.extras
+        sql = f"INSERT INTO national_matches ({cols}) VALUES %s ON CONFLICT DO NOTHING"
+        try:
+            raw_cur = conn._conn.cursor()
+            psycopg2.extras.execute_values(raw_cur, sql, cleaned, page_size=500)
+            inserted = len(cleaned)
+            conn._conn.commit()
+        except Exception as e:
+            print(f"National batch insert error: {e}", flush=True)
+            try:
+                conn._conn.rollback()
+            except Exception:
+                pass
+    else:
+        for row in cleaned:
+            try:
+                cur = conn.execute(
+                    f"INSERT OR IGNORE INTO national_matches ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    row
+                )
+                inserted += max(cur.rowcount, 0)
+            except Exception:
+                pass
+        conn.commit()
+
     conn.close()
     return inserted
 
