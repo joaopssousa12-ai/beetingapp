@@ -864,7 +864,16 @@ function renderCard(b) {
 
   // ── Market odds bar (always visible — no click needed) ─────────
   const oddsBarHtml = (() => {
-    const bestPicks = (b.all_picks || []).filter(p => p.book === 'Best');
+    // Best available odd per market+selection (prefer Best book, else highest odd)
+    const byKey = {};
+    for (const p of (b.all_picks || [])) {
+      const key = `${p.market}|||${p.selection}`;
+      if (!byKey[key]) { byKey[key] = p; continue; }
+      const ex = byKey[key];
+      if (p.book === 'Best' && ex.book !== 'Best') byKey[key] = p;
+      else if (ex.book !== 'Best' && p.book_odd > ex.book_odd) byKey[key] = p;
+    }
+    const bestPicks = Object.values(byKey);
     if (!bestPicks.length) return '';
     // Group by market type
     const h2h = bestPicks.filter(p => p.market === 'Match Result');
@@ -907,9 +916,15 @@ function renderCard(b) {
 
   // All-markets expanded view — with no-vig (fair) odds + Kelly stake
   const allMarketsHTML = (() => {
-    const picks = (b.all_picks || [])
-      .filter(p => p.book === 'Best')
-      .sort((a, b) => b.edge_pct - a.edge_pct);
+    const byKey = {};
+    for (const p of (b.all_picks || [])) {
+      const key = `${p.market}|||${p.selection}`;
+      if (!byKey[key]) { byKey[key] = p; continue; }
+      const ex = byKey[key];
+      if (p.book === 'Best' && ex.book !== 'Best') byKey[key] = p;
+      else if (ex.book !== 'Best' && p.book_odd > ex.book_odd) byKey[key] = p;
+    }
+    const picks = Object.values(byKey).sort((a, b) => b.edge_pct - a.edge_pct);
     if (!picks.length) return '';
     const header = `<div class="vb-markets-header">
       <span class="m-market">Market</span>
@@ -1069,7 +1084,11 @@ function renderCard(b) {
 
   const cardAgreement = (b.betiq_probs && b.betiq_probs.agreement) || 'high';
   const cardCls = `vb-card${hasValue ? ' has-value' : ''}${isExpanded ? ' expanded' : ''}`;
-  const detailsCount = (b.all_picks||[]).filter(p=>p.book==='Best').length;
+  const detailsCount = (() => {
+    const seen = new Set();
+    for (const p of (b.all_picks||[])) seen.add(`${p.market}|||${p.selection}`);
+    return seen.size;
+  })();
 
   // ── Build auto-odds HTML (used in collapsed details) ───────────
   const autoOddsHtml = hasAutoH2H ? (() => {
@@ -1094,107 +1113,6 @@ function renderCard(b) {
     </div>`;
   })() : '';
 
-  // ── Manual odds entry (kept in DOM for dynamic updateYourBestValue) ──
-  const manualOddsHtml = `<div class="vb-manual-odds" id="manual-${b.event_id}">
-    <div class="vb-manual-header">
-      <span class="vb-manual-title">⊕ Enter odds to find real value (auto-saved)</span>
-    </div>
-    <div class="vb-manual-section">
-      <div class="vb-manual-section-label">Match Result</div>
-      <div class="vb-manual-inputs">
-        <div class="vb-manual-field">
-          <label>${b.home_team}</label>
-          <input type="number" step="0.01" placeholder="odd"
-                 value="${(b.manual_odds && b.manual_odds[b.home_team]) || ''}"
-                 data-prob="${b.true_home_pct || (b.betiq_probs && b.betiq_probs.home) || 0}"
-                 data-event-id="${b.event_id}"
-                 data-selection="${b.home_team}"
-                 data-market="Match Result"
-                 oninput="calcManualEdge(this)">
-          <span class="vb-manual-edge"></span>
-        </div>
-        ${(b.true_draw_pct != null || (b.betiq_probs && b.betiq_probs.draw)) ? `
-        <div class="vb-manual-field">
-          <label>Draw</label>
-          <input type="number" step="0.01" placeholder="odd"
-                 value="${(b.manual_odds && b.manual_odds['Draw']) || ''}"
-                 data-prob="${b.true_draw_pct || (b.betiq_probs && b.betiq_probs.draw) || 0}"
-                 data-event-id="${b.event_id}"
-                 data-selection="Draw"
-                 data-market="Match Result"
-                 oninput="calcManualEdge(this)">
-          <span class="vb-manual-edge"></span>
-        </div>` : ''}
-        <div class="vb-manual-field">
-          <label>${b.away_team}</label>
-          <input type="number" step="0.01" placeholder="odd"
-                 value="${(b.manual_odds && b.manual_odds[b.away_team]) || ''}"
-                 data-prob="${b.true_away_pct || (b.betiq_probs && b.betiq_probs.away) || 0}"
-                 data-event-id="${b.event_id}"
-                 data-selection="${b.away_team}"
-                 data-market="Match Result"
-                 oninput="calcManualEdge(this)">
-          <span class="vb-manual-edge"></span>
-        </div>
-      </div>
-    </div>
-    ${b.true_over25_pct != null ? `
-    <div class="vb-manual-section">
-      <div class="vb-manual-section-label">Over / Under 2.5</div>
-      <div class="vb-manual-inputs">
-        <div class="vb-manual-field">
-          <label>Over 2.5</label>
-          <input type="number" step="0.01" placeholder="odd"
-                 value="${(b.manual_odds && b.manual_odds['Over 2.5 goals']) || ''}"
-                 data-prob="${b.true_over25_pct}"
-                 data-event-id="${b.event_id}"
-                 data-selection="Over 2.5 goals"
-                 data-market="Over/Under 2.5"
-                 oninput="calcManualEdge(this)">
-          <span class="vb-manual-edge"></span>
-        </div>
-        <div class="vb-manual-field">
-          <label>Under 2.5</label>
-          <input type="number" step="0.01" placeholder="odd"
-                 value="${(b.manual_odds && b.manual_odds['Under 2.5 goals']) || ''}"
-                 data-prob="${b.true_under25_pct}"
-                 data-event-id="${b.event_id}"
-                 data-selection="Under 2.5 goals"
-                 data-market="Over/Under 2.5"
-                 oninput="calcManualEdge(this)">
-          <span class="vb-manual-edge"></span>
-        </div>
-      </div>
-    </div>` : ''}
-    ${b.true_btts_yes_pct != null ? `
-    <div class="vb-manual-section">
-      <div class="vb-manual-section-label">Both Teams To Score</div>
-      <div class="vb-manual-inputs">
-        <div class="vb-manual-field">
-          <label>BTTS Yes</label>
-          <input type="number" step="0.01" placeholder="odd"
-                 value="${(b.manual_odds && b.manual_odds['BTTS Yes']) || ''}"
-                 data-prob="${b.true_btts_yes_pct}"
-                 data-event-id="${b.event_id}"
-                 data-selection="BTTS Yes"
-                 data-market="Both Teams To Score"
-                 oninput="calcManualEdge(this)">
-          <span class="vb-manual-edge"></span>
-        </div>
-        <div class="vb-manual-field">
-          <label>BTTS No</label>
-          <input type="number" step="0.01" placeholder="odd"
-                 value="${(b.manual_odds && b.manual_odds['BTTS No']) || ''}"
-                 data-prob="${b.true_btts_no_pct}"
-                 data-event-id="${b.event_id}"
-                 data-selection="BTTS No"
-                 data-market="Both Teams To Score"
-                 oninput="calcManualEdge(this)">
-          <span class="vb-manual-edge"></span>
-        </div>
-      </div>
-    </div>` : ''}
-  </div>`;
 
   return `<div class="${cardCls}" data-id="${b.event_id}" data-agreement="${cardAgreement}">
     <div class="vb-card-head">
@@ -1218,7 +1136,6 @@ function renderCard(b) {
     ${safestRow}
     ${oddsBarHtml}
     <div class="vb-your-value vb-pick-block best-value has-value" style="display:none"></div>
-    ${!hasAutoH2H ? manualOddsHtml : ''}
     <div class="vb-card-foot">
       <span class="all-markets-link" onclick="toggleExpand('${b.event_id}')">
         ${isExpanded ? '▲' : '▾'} xG · Smart Money · Full Markets (${detailsCount})
