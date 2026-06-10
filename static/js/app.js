@@ -275,7 +275,7 @@ let vbState = {
   minEdge: 3,    // default 3% — blocks Qatar at +0.2%
   maxOdds: 5.0,  // default 5.0 — blocks longshots (Qatar at 15.0)
   minConf: 0,
-  expanded: new Set(),
+  collapsed: new Set(),
   viewMode: 'cards',  // 'cards' or 'table'
 };
 let _prevValueBetCount = -1;
@@ -660,7 +660,7 @@ function renderCard(b) {
   const hasValue = bv && bv.edge_pct != null
     && bv.edge_pct >= _qMinEdge && bv.edge_pct <= 15
     && (!bv.book_odd || bv.book_odd <= _qMaxOdds);
-  const isExpanded = vbState.expanded.has(b.event_id);
+  const isExpanded = !vbState.collapsed.has(b.event_id);
   // Bug 3 fix: include best_home so World Cup matches with best odds but no 1xBet/b365 don't show manual form
   const hasAutoH2H = !!(b.x1_home || b.b365_home || b.best_home);
 
@@ -1138,7 +1138,7 @@ function renderCard(b) {
     <div class="vb-your-value vb-pick-block best-value has-value" style="display:none"></div>
     <div class="vb-card-foot">
       <span class="all-markets-link" onclick="toggleExpand('${b.event_id}')">
-        ${isExpanded ? '▲' : '▾'} xG · Smart Money · Full Markets (${detailsCount})
+        ${isExpanded ? '▾ Hide' : '▸ Show'} xG · Smart Money · Full Markets (${detailsCount})
       </span>
     </div>
     <div class="vb-all-markets">${isExpanded ? (xgBlock + autoOddsHtml + (hasAutoH2H ? '' : '') + allMarketsHTML) : ''}</div>
@@ -1351,10 +1351,10 @@ function updateCardFromManualOdds(card, eventId) {
 }
 
 function toggleExpand(eventId) {
-  if (vbState.expanded.has(eventId)) {
-    vbState.expanded.delete(eventId);
+  if (vbState.collapsed.has(eventId)) {
+    vbState.collapsed.delete(eventId);
   } else {
-    vbState.expanded.add(eventId);
+    vbState.collapsed.add(eventId);
   }
   renderValueBets();
 }
