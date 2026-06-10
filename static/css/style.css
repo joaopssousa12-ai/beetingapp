@@ -684,17 +684,11 @@ tbody tr.value-row td.strong { color: var(--text); }
   color: var(--text);
 }
 
-/* The two main picks: Most Likely + Best Value */
-.vb-picks {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
-}
+/* Legacy pick block — used only for vb-your-value (manual odds result) */
 .vb-pick-block {
   padding: 14px 18px;
-  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
-.vb-pick-block:last-child { border-right: none; }
 .vb-pick-block.best-value {
   background: linear-gradient(180deg, transparent 0%, var(--green-bg) 100%);
 }
@@ -1596,8 +1590,137 @@ tbody tr.value-row td.strong { color: var(--text); }
 }
 
 /* ============================================================
-   REDESIGNED CARD COMPONENTS (2026-06-10)
+   REDESIGNED CARD COMPONENTS (2026-06-10 v2)
    ============================================================ */
+
+/* Hero pick block — full width, professional hierarchy */
+.vb-hero-pick {
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.vb-hero-pick.has-value-pick {
+  background: linear-gradient(135deg, rgba(52,211,153,0.06) 0%, transparent 70%);
+  border-left: 3px solid var(--green);
+}
+[data-theme="dark"] .vb-hero-pick.has-value-pick {
+  background: linear-gradient(135deg, rgba(52,211,153,0.09) 0%, transparent 70%);
+}
+.vb-hero-pick .vb-pick-selection {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin: 6px 0 2px;
+  line-height: 1.2;
+}
+.vb-hero-pick .vb-pick-market {
+  font-size: 11px;
+  color: var(--text3);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 14px;
+}
+.vb-hero-numbers {
+  display: flex;
+  gap: 24px;
+  align-items: flex-end;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.vb-hero-num-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.vb-hero-big {
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1;
+}
+.vb-hero-big.edge-pos { color: var(--green); }
+.vb-hero-big.edge-flat { color: var(--amber); }
+.vb-hero-big.edge-neg { color: var(--text3); }
+.vb-hero-big.edge-noise { color: var(--amber); }
+.vb-hero-big.kelly-val { color: var(--accent); }
+.vb-hero-lbl {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text3);
+}
+.vb-hero-model {
+  font-size: 11.5px;
+  color: var(--text3);
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border2);
+}
+
+/* Compact safest pick row */
+.vb-safest-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.vb-sr-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text3);
+  white-space: nowrap;
+}
+.vb-sr-sel { font-weight: 600; color: var(--text); white-space: nowrap; }
+.vb-sr-mkt { color: var(--text3); font-size: 11px; white-space: nowrap; }
+
+/* Market odds bar (always visible) */
+.vb-odds-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 18px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  overflow: hidden;
+}
+.vb-ob-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  white-space: nowrap;
+}
+.vb-ob-item.vc-pos { background: rgba(52,211,153,0.08); border-radius: 6px; padding: 2px 6px; }
+.vb-ob-sel { font-size: 11px; color: var(--text3); }
+.vb-ob-odd { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text); }
+.vb-ob-edge { font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--green); }
+.vb-ob-div { color: var(--border2); font-size: 11px; margin: 0 2px; }
+.vb-ob-sep { color: var(--border2); font-size: 13px; margin: 0 6px; }
+
+/* Track button inside hero block */
+.vb-hero-pick .vb-pick-action {
+  margin-top: 12px;
+  padding-top: 0;
+  border-top: none;
+  justify-content: flex-start;
+}
+.vb-track-btn {
+  padding: 7px 16px !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  border-radius: 6px !important;
+}
 
 /* Card header: sport + edge chip + time on same row */
 .vb-head-right {

@@ -732,20 +732,28 @@ function renderCard(b) {
   const safestPick = b.safest_pick;
   const bvKelly = bv ? _calcKelly(bv.edge_pct, bv.book_odd) : null;
 
-  // Check if bv selection matches any pick (for integrating value data into the pick block)
+  // Look up actual book odd for any pick from b.all_picks
+  function getPickBookData(pick) {
+    if (!pick) return null;
+    return (b.all_picks || []).find(p => p.book === 'Best' && p.market === pick.market && p.selection === pick.selection) || null;
+  }
+
+  // Check if bv selection matches any pick (for value context: kelly + track button)
   function _makeVI(pick) {
     if (!hasValue || !bv || !pick) return null;
     if (pick.selection !== bv.selection) return null;
-    return { book_odd: bv.book_odd, edge_pct: bv.edge_pct, kelly_str: bvKelly, book_label: bv.book === 'Best' ? '🏆 Best' : (bv.book || 'Book') };
+    return { book_odd: bv.book_odd, edge_pct: bv.edge_pct, kelly_str: bvKelly };
   }
   const bestVI = _makeVI(bestPick);
   const safestVI = !bestVI ? _makeVI(safestPick) : null;
 
-  function renderModelPickBlock(pick, label, iconHtml, isPrimary, vi) {
+  // HERO pick block — full width, professional hierarchy
+  // Book odd is KING. Edge + Kelly below it. Model details secondary.
+  function renderHeroPickBlock(pick, label, iconHtml, vi) {
     if (!pick) {
-      return `<div class="vb-pick-block ${isPrimary ? 'best-value no-value' : ''}">
+      return `<div class="vb-hero-pick no-value">
         <div class="vb-pick-label">${iconHtml}${label}</div>
-        <div style="color:var(--text3);font-size:12px;padding:6px 0">Not enough data</div>
+        <div style="color:var(--text3);font-size:13px;padding:12px 0">Not enough data to generate a pick</div>
       </div>`;
     }
     const stars = pick.confidence || 0;
@@ -754,54 +762,148 @@ function renderCard(b) {
     const confHtml = isGoalsMarket
       ? `<span class="vb-goals-conf ${(pick.goals_confidence||'medium').toLowerCase()}">${pick.goals_confidence||'MEDIUM'}</span>`
       : `<span class="vb-stars">${starsRow}</span>`;
-    const fairStr = pick.fair_odd ? pick.fair_odd.toFixed(2) : '—';
+
+    // Book odd: use vi (value context) or fall back to all_picks lookup
+    const bookData = vi ? { book_odd: vi.book_odd, edge_pct: vi.edge_pct } : getPickBookData(pick);
+    const bookOdd = bookData ? bookData.book_odd : null;
+    const edgePct = bookData ? bookData.edge_pct : null;
+    const hasRealValue = vi != null; // edge passes quality gate
+
+    // Edge chip styling
+    let eCls = 'neg', eSign = '';
+    if (edgePct != null) {
+      eSign = edgePct > 0 ? '+' : '';
+      eCls = edgePct > 15 ? 'noise' : hasRealValue ? 'pos' : edgePct >= 1 ? 'flat' : 'neg';
+    }
+
+    // Kelly (only when real value)
+    const kellyStr = vi ? vi.kelly_str : null;
+
+    // Model details row (secondary info — smaller)
+    const fairStr = pick.fair_odd ? pick.fair_odd.toFixed(2) : null;
     const targetStr = pick.target_odd_5pct ? pick.target_odd_5pct.toFixed(2) : null;
-    // Odds grid
-    let oddsItems = `<span class="vb-odd-item"><span class="vb-odd-lbl">Prob</span><span class="vb-odd-val">${pick.model_prob != null ? pick.model_prob + '%' : '—'}</span></span>`;
-    oddsItems += `<span class="vb-odd-item"><span class="vb-odd-lbl">Fair</span><span class="vb-odd-val">${fairStr}</span></span>`;
-    if (targetStr) oddsItems += `<span class="vb-odd-item"><span class="vb-odd-lbl">Target</span><span class="vb-odd-val">≥${targetStr}</span></span>`;
-    if (vi) {
-      oddsItems += `<span class="vb-odd-item vb-odd-book"><span class="vb-odd-lbl">${vi.book_label}</span><span class="vb-odd-val">${fmtOdd(vi.book_odd)}</span></span>`;
-      const eSign = vi.edge_pct > 0 ? '+' : '';
-      oddsItems += `<span class="vb-odd-item vb-odd-edge"><span class="vb-odd-lbl">Edge</span><span class="vb-odd-val">${eSign}${vi.edge_pct.toFixed(1)}%</span></span>`;
-    }
-    // Action row only when value + primary
-    let actionHtml = '';
-    if (vi && isPrimary) {
-      actionHtml = `<div class="vb-pick-action">
-        <span class="vb-kelly-pill">¼ Kelly: ${vi.kelly_str || '—'}</span>
-        <button class="add-bet-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track</button>
-      </div>`;
-    }
-    const blockCls = `vb-pick-block${isPrimary ? ' best-value' : ''}${vi ? ' has-value-pick' : ''}`;
+    let modelRow = '';
+    const modelParts = [];
+    if (pick.model_prob != null) modelParts.push(`Model: ${pick.model_prob}%`);
+    if (fairStr) modelParts.push(`Fair: ${fairStr}`);
+    if (targetStr) modelParts.push(`Target: ≥${targetStr}`);
+    if (modelParts.length) modelRow = `<div class="vb-hero-model">${modelParts.join(' · ')}</div>`;
+
+    // Action row (only when real value)
+    const actionHtml = hasRealValue
+      ? `<div class="vb-pick-action">
+          <button class="add-bet-btn vb-track-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track Bet</button>
+        </div>`
+      : '';
+
+    const blockCls = `vb-hero-pick${hasRealValue ? ' has-value-pick' : ''}`;
     return `<div class="${blockCls}">
       <div class="vb-pick-label">${iconHtml}${label}${confHtml}</div>
       <div class="vb-pick-selection">${pick.selection}</div>
-      <div class="vb-pick-market">${pick.market}${!isGoalsMarket && pick.model_prob != null ? ' · ' + pick.model_prob + '% prob' : ''}</div>
-      <div class="vb-pick-odds">${oddsItems}</div>
+      <div class="vb-pick-market">${pick.market}</div>
+      <div class="vb-hero-numbers">
+        ${bookOdd != null ? `<div class="vb-hero-num-block">
+          <span class="vb-hero-big">${fmtOdd(bookOdd)}</span>
+          <span class="vb-hero-lbl">Best Odd</span>
+        </div>` : ''}
+        ${edgePct != null ? `<div class="vb-hero-num-block">
+          <span class="vb-hero-big edge-${eCls}">${eSign}${edgePct.toFixed(1)}%</span>
+          <span class="vb-hero-lbl">Edge</span>
+        </div>` : ''}
+        ${kellyStr ? `<div class="vb-hero-num-block">
+          <span class="vb-hero-big kelly-val">${kellyStr}</span>
+          <span class="vb-hero-lbl">¼ Kelly</span>
+        </div>` : ''}
+      </div>
+      ${modelRow}
       ${actionHtml}
+    </div>`;
+  }
+
+  // COMPACT secondary pick — just a single row
+  function renderCompactPick(pick, label, iconHtml) {
+    if (!pick) return '';
+    const stars = pick.confidence || 0;
+    const starsRow = Array.from({length:5}, (_,i) => `<span class="vb-star${i >= stars ? ' empty' : ''}">★</span>`).join('');
+    const bookData = getPickBookData(pick);
+    const bookOdd = bookData ? bookData.book_odd : null;
+    const edgePct = bookData ? bookData.edge_pct : null;
+    const eSign = edgePct && edgePct > 0 ? '+' : '';
+    const eCls = edgePct == null ? '' : edgePct > 15 ? 'noise' : edgePct >= 3 ? 'pos' : edgePct >= 1 ? 'flat' : 'neg';
+    const oddStr = bookOdd != null ? ` · <strong>${fmtOdd(bookOdd)}</strong>` : '';
+    const edgeStr = edgePct != null ? ` · <span class="edge-chip ${eCls}" style="font-size:10px;padding:1px 5px">${eSign}${edgePct.toFixed(1)}%</span>` : '';
+    return `<div class="vb-safest-row">
+      ${iconHtml}<span class="vb-sr-label">${label}:</span>
+      <span class="vb-sr-sel">${pick.selection}</span>
+      <span class="vb-sr-mkt">${pick.market}</span>
+      ${oddStr}${edgeStr}
+      <span class="vb-stars" style="margin-left:auto">${starsRow}</span>
     </div>`;
   }
 
   const trophyIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h12v6c0 3-3 6-6 6s-6-3-6-6V2z"/><path d="M9 18h6v3H9z"/></svg>';
   const shieldIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-4 9-8 10-4-1-8-5-8-10V6l8-4z"/></svg>';
 
-  const mlBlock = renderModelPickBlock(bestPick, 'Best Pick', trophyIcon, true, bestVI);
-  const bvBlock = renderModelPickBlock(safestPick, 'Safest Pick', shieldIcon, false, safestVI);
+  const heroBlock = renderHeroPickBlock(bestPick, 'Best Pick', trophyIcon, bestVI);
+  // Show safest as compact row only if it's a different selection than best
+  const samePick = bestPick && safestPick && bestPick.selection === safestPick.selection && bestPick.market === safestPick.market;
+  const safestRow = (!samePick && safestPick) ? renderCompactPick(safestPick, 'Safest Pick', shieldIcon) : '';
 
-  // Standalone value block when bv doesn't match either pick selection
+  // Standalone value block when bv doesn't match any model pick
   let standaloneValueHtml = '';
   if (hasValue && bv && !bestVI && !safestVI) {
     const sign = bv.edge_pct > 0 ? '+' : '';
-    const bookLabel = bv.book === 'Best' ? '🏆 Best' : (bv.book || 'Book');
     standaloneValueHtml = `<div class="vb-value-standalone">
       <span class="edge-chip pos">${sign}${bv.edge_pct.toFixed(1)}%</span>
       <span class="vb-vs-content"><span class="vb-vs-sel">${bv.selection}</span><span class="vb-vs-mkt">${bv.market}</span></span>
-      <span class="vb-vs-odds">${bookLabel} <strong>${fmtOdd(bv.book_odd)}</strong></span>
+      <span class="vb-vs-odds">Best <strong>${fmtOdd(bv.book_odd)}</strong></span>
       ${bvKelly ? `<span class="vb-vs-kelly">Kelly: ${bvKelly}</span>` : ''}
       <button class="add-bet-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track</button>
     </div>`;
   }
+
+  // ── Market odds bar (always visible — no click needed) ─────────
+  const oddsBarHtml = (() => {
+    const bestPicks = (b.all_picks || []).filter(p => p.book === 'Best');
+    if (!bestPicks.length) return '';
+    // Group by market type
+    const h2h = bestPicks.filter(p => p.market === 'Match Result');
+    const ou = bestPicks.filter(p => p.market && p.market.includes('Over/Under'));
+    const btts = bestPicks.filter(p => p.market === 'Both Teams To Score');
+    const parts = [];
+    if (h2h.length) {
+      parts.push(h2h.map(p => {
+        const eSign = p.edge_pct > 0 ? '+' : '';
+        const eCls = p.edge_pct > 15 ? 'noise' : p.edge_pct >= _qMinEdge && p.edge_pct <= 15 ? 'pos' : p.edge_pct >= 1 ? 'flat' : '';
+        const shortSel = p.selection === b.home_team ? (b.home_team.split(' ')[0]) : p.selection === b.away_team ? (b.away_team.split(' ')[0]) : p.selection;
+        return `<span class="vb-ob-item${eCls ? ' vc-' + eCls : ''}">
+          <span class="vb-ob-sel">${shortSel}</span>
+          <span class="vb-ob-odd">${fmtOdd(p.book_odd)}</span>
+          ${eCls === 'pos' ? `<span class="vb-ob-edge">${eSign}${p.edge_pct.toFixed(1)}%</span>` : ''}
+        </span>`;
+      }).join('<span class="vb-ob-div">·</span>'));
+    }
+    if (ou.length) {
+      const ouStr = ou.map(p => {
+        const eSign = p.edge_pct > 0 ? '+' : '';
+        const eCls = p.edge_pct >= _qMinEdge && p.edge_pct <= 15 ? 'pos' : '';
+        const shortSel = p.selection.includes('Over') ? `O${p.selection.replace(/[^0-9.]/g,'')}` : `U${p.selection.replace(/[^0-9.]/g,'')}`;
+        return `<span class="vb-ob-item${eCls ? ' vc-pos' : ''}"><span class="vb-ob-sel">${shortSel}</span><span class="vb-ob-odd">${fmtOdd(p.book_odd)}</span>${eCls ? `<span class="vb-ob-edge">${eSign}${p.edge_pct.toFixed(1)}%</span>` : ''}</span>`;
+      }).join('<span class="vb-ob-div">·</span>');
+      parts.push(ouStr);
+    }
+    if (btts.length) {
+      const bttsStr = btts.map(p => {
+        const eSign = p.edge_pct > 0 ? '+' : '';
+        const eCls = p.edge_pct >= _qMinEdge && p.edge_pct <= 15 ? 'pos' : '';
+        const shortSel = p.selection.includes('Yes') ? 'BTTS Y' : 'BTTS N';
+        return `<span class="vb-ob-item${eCls ? ' vc-pos' : ''}"><span class="vb-ob-sel">${shortSel}</span><span class="vb-ob-odd">${fmtOdd(p.book_odd)}</span>${eCls ? `<span class="vb-ob-edge">${eSign}${p.edge_pct.toFixed(1)}%</span>` : ''}</span>`;
+      }).join('<span class="vb-ob-div">·</span>');
+      parts.push(bttsStr);
+    }
+    if (!parts.length) return '';
+    return `<div class="vb-odds-bar">${parts.join('<span class="vb-ob-sep">│</span>')}</div>`;
+  })();
 
   // All-markets expanded view — with no-vig (fair) odds + Kelly stake
   const allMarketsHTML = (() => {
@@ -1112,15 +1214,17 @@ function renderCard(b) {
     ${biasBanner}
     ${probLineHtml}
     ${standaloneValueHtml}
-    <div class="vb-picks">${mlBlock}${bvBlock}</div>
+    ${heroBlock}
+    ${safestRow}
+    ${oddsBarHtml}
     <div class="vb-your-value vb-pick-block best-value has-value" style="display:none"></div>
-    ${manualOddsHtml}
+    ${!hasAutoH2H ? manualOddsHtml : ''}
     <div class="vb-card-foot">
       <span class="all-markets-link" onclick="toggleExpand('${b.event_id}')">
-        ${isExpanded ? '▲' : '▾'} xG · Odds · Markets (${detailsCount})
+        ${isExpanded ? '▲' : '▾'} xG · Smart Money · Full Markets (${detailsCount})
       </span>
     </div>
-    <div class="vb-all-markets">${isExpanded ? (xgBlock + autoOddsHtml + allMarketsHTML) : ''}</div>
+    <div class="vb-all-markets">${isExpanded ? (xgBlock + autoOddsHtml + (hasAutoH2H ? '' : '') + allMarketsHTML) : ''}</div>
   </div>`;
 }
 
