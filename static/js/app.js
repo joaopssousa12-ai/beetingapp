@@ -693,6 +693,20 @@ function renderValueBets() {
   }, 50);
 }
 
+// Leagues with historically negative backtest ROI — warn (or avoid) value bets there.
+const NEGATIVE_ROI_LEAGUES = [
+  { match: ['eredivisie'], label: 'Eredivisie', roi: -12.7, severity: 'avoid' },
+  { match: ['scottish', 'scotland'], label: 'Scottish', roi: -12.4, severity: 'avoid' },
+  { match: ['ligue 1', 'ligue1'], label: 'Ligue 1', roi: -5.3, severity: 'warn' },
+];
+function negativeRoiLeague(name) {
+  const s = (name || '').toLowerCase();
+  for (const lg of NEGATIVE_ROI_LEAGUES) {
+    if (lg.match.some(m => s.includes(m))) return lg;
+  }
+  return null;
+}
+
 function renderCard(b) {
   const _qMinEdge = vbState.minEdge ?? 3;
   const _qMaxOdds = vbState.maxOdds ?? 5.0;
@@ -729,6 +743,15 @@ function renderCard(b) {
     : null;
 
   const hasValue = !!bestPickReal;
+
+  // ── Negative-ROI league warning (from historical backtest) ─────
+  const negLeague = negativeRoiLeague(b.sport_name);
+  const negLeagueBanner = negLeague
+    ? `<div class="vb-negroi-banner vb-negroi-${negLeague.severity}">
+        ${negLeague.severity === 'avoid' ? '❌' : '⚠️'} ${negLeague.label}: historical ROI ${negLeague.roi}%
+        — ${negLeague.severity === 'avoid' ? 'avoid betting this league' : 'bet with caution'}
+      </div>`
+    : '';
 
   // ── Edge chip for card header (reflects the real best pick only) ──
   let edgeChipHtml = '';
@@ -1134,6 +1157,7 @@ function renderCard(b) {
         ${clvBadge ? `<span class="vb-clv-inline">${clvBadge}</span>` : ''}
       </div>
     </div>
+    ${negLeagueBanner}
     ${movementBanner}
     ${biasBanner}
     ${probLineHtml}
