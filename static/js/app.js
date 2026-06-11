@@ -497,11 +497,19 @@ function vbEval(b) {
   const bestPick = valuePicks.length
     ? valuePicks.reduce((a, p) => ((p.confidence||0)*100 + p.edge_pct) > ((a.confidence||0)*100 + a.edge_pct) ? p : a)
     : null;
+  // Sharp consensus (A+B): the green "value" tier requires that the two sharp
+  // references don't disagree. 'diverge' = Pinnacle & Betfair give materially
+  // different fair probs → edge is uncertain → never celebrate as green.
+  const refAgree = b.ref_agreement;            // 'agree' | 'single' | 'diverge' | undefined
+  const sharpConflict = refAgree === 'diverge';
   const isValue = !!bestPick && bestPick.edge_pct >= VB_VALUE_FLOOR
-      && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD;
-  // Stars are the Best Pick's stars. No eligible Best Pick → 0 stars.
-  const stars = bestPick ? (bestPick.confidence || 0) : 0;
-  return { realPicks, bestPick, isValue, stars, ceiling };
+      && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD
+      && !sharpConflict;
+  // Stars follow the Best Pick, then get capped by sharp-consensus quality.
+  let stars = bestPick ? (bestPick.confidence || 0) : 0;
+  if (refAgree === 'single') stars = Math.min(stars, 3);   // one source ⇒ cap confidence
+  if (sharpConflict) stars = Math.min(stars, 2);
+  return { realPicks, bestPick, isValue, stars, ceiling, refAgree };
 }
 
 // ============================================================
@@ -857,11 +865,19 @@ function renderCard(b) {
   const starsHtmlFor = (n) => Array.from({length:5}, (_,i) =>
     `<span class="vb-star${i >= (n||0) ? ' empty' : ''}">★</span>`).join('');
   const trophyIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h12v6c0 3-3 6-6 6s-6-3-6-6V2z"/><path d="M9 18h6v3H9z"/></svg>';
-  const refLabel = b.odds_source === 'betfair' ? 'Betfair' : 'Pinnacle';
+  const refLabel = b.ref_sources || (b.odds_source === 'betfair' ? 'Betfair' : 'Pinnacle');
+  // Sharp-consensus badge (A+B): tells the user how trustworthy the fair line is.
+  const refChip = (() => {
+    const ra = b.ref_agreement;
+    if (ra === 'agree')   return `<span class="vb-ref-chip ref-agree">✓ Pinnacle + Betfair concordam</span>`;
+    if (ra === 'single')  return `<span class="vb-ref-chip ref-single">1 fonte sharp · ${b.ref_sources || ''}</span>`;
+    if (ra === 'diverge') return `<span class="vb-ref-chip ref-diverge">⚠ Sharps divergem${b.ref_max_diff_pp ? ` (${b.ref_max_diff_pp}pp)` : ''} — edge incerto</span>`;
+    return '';
+  })();
 
   // BIG hero card — odd is KING (26px+). `celebrated` = clears the green value
-  // gate (edge >=3% & odd 1.5-5). Both tiers show the ¼-Kelly stake (blue) next
-  // to the edge AND a Track Bet button; only the styling/label differ.
+  // gate (edge >=3% & odd 1.5-5 & sharps agree). Both tiers show the ¼-Kelly
+  // stake (blue) next to the edge AND a Track Bet button; only styling/label differ.
   function renderHeroReal(p, celebrated) {
     const edge = p.edge_pct;
     const eCls = edge >= 3 ? 'pos' : edge >= 1 ? 'flat' : 'neg';
@@ -871,7 +887,9 @@ function renderCard(b) {
     const label = celebrated ? 'Best Pick' : 'Best available';
     const note = celebrated
       ? (fair ? `Fair odd ${fair} · ★ from ${refLabel} (real market)` : '')
-      : `Best available — below the green value gate (edge ≥3% & odd ≤5). Size with care.`;
+      : (b.ref_agreement === 'diverge'
+          ? `Best available — the two sharp markets disagree, so we can't confirm value. Informational only.`
+          : `Best available — below the green value gate (edge ≥3% & odd ≤5). Size with care.`);
     return `<div class="${cls}">
       <div class="vb-pick-label">${trophyIcon}${label}<span class="vb-stars">${starsHtmlFor(p.confidence)}</span></div>
       <div class="vb-pick-selection">${p.selection}</div>
@@ -894,6 +912,7 @@ function renderCard(b) {
           <span class="vb-hero-lbl">True prob</span>
         </div>
       </div>
+      ${refChip ? `<div class="vb-ref-row">${refChip}</div>` : ''}
       ${note ? `<div class="vb-hero-model">${note}</div>` : ''}
       <div class="vb-pick-action">
         <button class="add-bet-btn vb-track-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track Bet</button>

@@ -871,6 +871,14 @@ def remove_vig_power(odds_home, odds_draw, odds_away):
 # Above 4% = Pinnacle doesn't have strong info → trust less.
 PINNACLE_MAX_LIQUID_VIG = 4.0
 
+# Sharp-consensus gate: when BOTH Pinnacle and Betfair exist, we blend them into
+# one stable fair line and check how far apart their no-vig probabilities are.
+# If the largest gap on any outcome is within this many percentage points, the
+# two independent sharps "agree" (high trust). Beyond it they "diverge" → the
+# true probability is genuinely uncertain, so we don't celebrate it as a green
+# value bet. Tunable; 2.5pp ≈ the user's "within ~2%" intuition with a little slack.
+REF_AGREE_PP = 2.5
+
 # Teams with massive public following — market odds often biased downward by casual bettors.
 # When model probability is significantly lower than market-implied, flag as possible public trap.
 POPULAR_CLUBS = {
@@ -1039,53 +1047,86 @@ def get_value_bets():
         pd_raw = d.get("pin_draw")
         pa_raw = d.get("pin_away")
 
-        if bf_h and bf_a:
-            # Betfair Exchange as primary reference
-            ph, pd_, pa = bf_h, bf_d, bf_a
+        # ── A+B: blend Pinnacle + Betfair into ONE stable fair line, and record
+        # whether the two sharps AGREE. Using both (instead of switching between
+        # them) stops the edge from jumping just because one source updated; the
+        # agreement flag lets the UI reserve the green "value" tier for picks that
+        # two independent sharp markets CONFIRM. ──
+        def _novig(h, dr, a):
+            dv = remove_vig_power(h, dr, a)
+            if not dv:
+                return None
+            return {
+                "h": dv["home"] / 100,
+                "d": (dv["draw"] / 100) if dv.get("draw") is not None else None,
+                "a": dv["away"] / 100,
+                "vig": dv["vig_pct"],
+            }
+
+        pin_nv = _novig(ph_raw, pd_raw, pa_raw) if (ph_raw and pa_raw) else None
+        bf_nv = _novig(bf_h, bf_d, bf_a) if (bf_h and bf_a) else None
+
+        true_h = true_d = true_a = None
+        if pin_nv and bf_nv:
+            # Average the two no-vig lines → stable fair probabilities.
+            true_h = (pin_nv["h"] + bf_nv["h"]) / 2
+            true_a = (pin_nv["a"] + bf_nv["a"]) / 2
+            if pin_nv["d"] is not None and bf_nv["d"] is not None:
+                true_d = (pin_nv["d"] + bf_nv["d"]) / 2
+            else:
+                true_d = pin_nv["d"] if pin_nv["d"] is not None else bf_nv["d"]
+            diffs = [abs(pin_nv["h"] - bf_nv["h"]) * 100, abs(pin_nv["a"] - bf_nv["a"]) * 100]
+            if pin_nv["d"] is not None and bf_nv["d"] is not None:
+                diffs.append(abs(pin_nv["d"] - bf_nv["d"]) * 100)
+            max_diff = max(diffs)
+            d["ref_max_diff_pp"] = round(max_diff, 1)
+            d["ref_agreement"] = "agree" if max_diff <= REF_AGREE_PP else "diverge"
+            d["ref_sources"] = "Pinnacle + Betfair"
+            d["odds_source"] = "blend"
+            d["pin_vig_pct"] = round(min(pin_nv["vig"], bf_nv["vig"]), 2)
+        elif bf_nv:
+            true_h, true_d, true_a = bf_nv["h"], bf_nv["d"], bf_nv["a"]
+            d["ref_agreement"] = "single"
+            d["ref_sources"] = "Betfair only"
             d["odds_source"] = "betfair"
-        elif ph_raw and pa_raw:
-            # Pinnacle as secondary reference
-            ph, pd_, pa = ph_raw, pd_raw, pa_raw
+            d["pin_vig_pct"] = bf_nv["vig"]
+        elif pin_nv:
+            true_h, true_d, true_a = pin_nv["h"], pin_nv["d"], pin_nv["a"]
+            d["ref_agreement"] = "single"
+            d["ref_sources"] = "Pinnacle only"
             d["odds_source"] = "pinnacle"
+            d["pin_vig_pct"] = pin_nv["vig"]
         else:
-            ph = pd_ = pa = None
+            d["ref_agreement"] = None
             d["odds_source"] = "xg_model"
             print(f"NO_REFERENCE: {d.get('home_team')} vs {d.get('away_team')} "
                   f"— no Betfair or Pinnacle odds, using xG model", flush=True)
 
-        if ph and pa:
-            devig = remove_vig_power(ph, pd_, pa)
-            if devig:
-                true_h = devig["home"] / 100
-                true_d = (devig["draw"] / 100) if devig.get("draw") is not None else None
-                true_a = devig["away"] / 100
-                d["true_home_pct"] = round(true_h * 100, 1)
-                d["true_draw_pct"] = round(true_d * 100, 1) if true_d else None
-                d["true_away_pct"] = round(true_a * 100, 1)
-                d["pin_vig_pct"] = devig["vig_pct"]
+        if true_h is not None and true_a is not None:
+            d["true_home_pct"] = round(true_h * 100, 1)
+            d["true_draw_pct"] = round(true_d * 100, 1) if true_d else None
+            d["true_away_pct"] = round(true_a * 100, 1)
+            d["pin_low_liquidity"] = d.get("pin_vig_pct", 0) > PINNACLE_MAX_LIQUID_VIG
 
-                # Low liquidity flag (applies to both Betfair thin markets and Pinnacle)
-                d["pin_low_liquidity"] = devig["vig_pct"] > PINNACLE_MAX_LIQUID_VIG
-
-                for sel, tp, x1, b365, best, pin_o in [
-                    (d.get("home_team"), true_h, d.get("x1_home"), d.get("b365_home"), d.get("best_home"), ph),
-                    ("Draw", true_d, d.get("x1_draw"), d.get("b365_draw"), d.get("best_draw"), pd_),
-                    (d.get("away_team"), true_a, d.get("x1_away"), d.get("b365_away"), d.get("best_away"), pa),
-                ]:
-                    if not tp: continue
-                    for book, odd in (("1xBet", x1), ("Bet365", b365), ("Best", best)):
-                        if not odd: continue
-                        edge = (odd * tp - 1) * 100
-                        picks.append({
-                            "market": "Match Result",
-                            "selection": sel,
-                            "true_prob": round(tp * 100, 1),
-                            "pin_odd": pin_o,
-                            "book": book,
-                            "book_odd": odd,
-                            "edge_pct": round(edge, 2),
-                            "kelly_pct": round(kelly_stake(tp, odd) * 100, 2),
-                        })
+            for sel, tp, x1, b365, best, pin_o in [
+                (d.get("home_team"), true_h, d.get("x1_home"), d.get("b365_home"), d.get("best_home"), bf_h or ph_raw),
+                ("Draw", true_d, d.get("x1_draw"), d.get("b365_draw"), d.get("best_draw"), bf_d or pd_raw),
+                (d.get("away_team"), true_a, d.get("x1_away"), d.get("b365_away"), d.get("best_away"), bf_a or pa_raw),
+            ]:
+                if not tp: continue
+                for book, odd in (("1xBet", x1), ("Bet365", b365), ("Best", best)):
+                    if not odd: continue
+                    edge = (odd * tp - 1) * 100
+                    picks.append({
+                        "market": "Match Result",
+                        "selection": sel,
+                        "true_prob": round(tp * 100, 1),
+                        "pin_odd": pin_o,
+                        "book": book,
+                        "book_odd": odd,
+                        "edge_pct": round(edge, 2),
+                        "kelly_pct": round(kelly_stake(tp, odd) * 100, 2),
+                    })
 
         # ========== OVER/UNDER 2.5 ==========
         pov, pun = d.get("pin_over25"), d.get("pin_under25")

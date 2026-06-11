@@ -1672,6 +1672,17 @@ tbody tr.value-row td.strong { color: var(--text); }
 [data-theme="dark"] .vb-hero-pick.has-value-pick {
   background: linear-gradient(135deg, rgba(52,211,153,0.09) 0%, transparent 70%);
 }
+/* Sharp-consensus badge (Pinnacle vs Betfair) — tells the user how trustworthy
+   the fair line is, so a green pick means two independent sharps confirm it. */
+.vb-ref-row { margin: 6px 0 2px; }
+.vb-ref-chip {
+  display: inline-block; font-size: 11px; font-weight: 600;
+  padding: 2px 9px; border-radius: 12px; white-space: nowrap;
+}
+.vb-ref-chip.ref-agree   { background: rgba(34,197,94,0.12);  color: #16a34a; border: 1px solid rgba(34,197,94,0.35); }
+.vb-ref-chip.ref-single  { background: var(--bg2);            color: var(--text3); border: 1px solid var(--border); }
+.vb-ref-chip.ref-diverge { background: rgba(245,158,11,0.12); color: #d97706; border: 1px solid rgba(245,158,11,0.35); }
+
 /* Below the value floor — muted grey, NOT a green recommendation */
 .vb-hero-pick.below-floor {
   border-left: 3px solid var(--border2);
