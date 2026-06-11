@@ -104,6 +104,10 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
 
             if true_h is not None and bh and bd and ba:
                 match_had_odds = True
+                # Only ONE H2H bet per match — the single best-edge side. (Betting
+                # home+draw+away on the same match is contradictory and inflated the
+                # bet count; a real value bettor backs one side.)
+                candidates = []
                 for sel, true_p, book_odd in [
                     (r['home_team'], true_h, bh),
                     ('Draw', true_d, bd),
@@ -112,16 +116,18 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
                     if not book_odd or book_odd > max_odds:
                         continue
                     edge_pct = (true_p * book_odd - 1) * 100
-                    if edge_pct < min_edge:
-                        continue
+                    if edge_pct >= min_edge:
+                        candidates.append((edge_pct, sel, true_p, book_odd))
+                if candidates:
+                    edge_pct, sel, true_p, book_odd = max(candidates, key=lambda x: x[0])
                     k = min(_kelly(true_p, book_odd, kelly_frac), max_kelly_pct)
-                    stake = round(k * current_bankroll, 2)
-                    if stake < 0.01:
-                        continue
-                    won = _won_h2h(r['result'], sel, r['home_team'], r['away_team'])
-                    profit = round(stake * (book_odd - 1) if won else -stake, 2)
-                    current_bankroll = round(current_bankroll + profit, 2)
-                    bets.append({
+                    # FLAT staking on the FIXED starting bankroll (no compounding).
+                    stake = round(k * bankroll, 2)
+                    if stake >= 0.01:
+                        won = _won_h2h(r['result'], sel, r['home_team'], r['away_team'])
+                        profit = round(stake * (book_odd - 1) if won else -stake, 2)
+                        current_bankroll = round(current_bankroll + profit, 2)
+                        bets.append({
                         'date': date_str,
                         'league': r['league_name'] or '',
                         'season': r['season'] or '',
@@ -153,7 +159,10 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
                     if edge_pct < min_edge:
                         continue
                     k = min(_kelly(true_p, book_odd, kelly_frac), max_kelly_pct)
-                    stake = round(k * current_bankroll, 2)
+                    # FLAT staking: size on the FIXED starting bankroll, not the
+                    # compounding one. Compounding 17k sequential bets makes stakes
+                    # (and profit) explode to billions — unrealistic and unbettable.
+                    stake = round(k * bankroll, 2)
                     if stake < 0.01:
                         continue
                     total_goals = (r['home_goals'] or 0) + (r['away_goals'] or 0)
@@ -199,9 +208,43 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
     returns = [b['profit'] / b['stake'] for b in bets if b['stake'] > 0]
     mean_r = statistics.mean(returns) if returns else 0
     std_r = statistics.stdev(returns) if len(returns) > 1 else 1
-    # Annualise using estimated bets per year
-    bets_per_year = total_bets  # conservative: treat full sample as ~1 year
+    # Annualise by the REAL time span, not by treating all bets as one year
+    # (which over-inflated Sharpe by sqrt(total_bets) ~= 132x for a 17k sample).
+    dates = sorted(b['date'] for b in bets if b['date'])
+    years = 1.0
+    if len(dates) >= 2:
+        try:
+            from datetime import date as _date
+            d0 = _date.fromisoformat(dates[0][:10])
+            d1 = _date.fromisoformat(dates[-1][:10])
+            years = max((d1 - d0).days / 365.25, 0.5)
+        except Exception:
+            years = 1.0
+    bets_per_year = total_bets / years
     sharpe = (mean_r / std_r) * math.sqrt(bets_per_year) if std_r > 0 else 0
+
+    # By market (Match Result vs Over/Under) — so duplicates/coverage are visible
+    market_map = {}
+    for b in bets:
+        mk = b['market']
+        if mk not in market_map:
+            market_map[mk] = {'market': mk, 'bets': 0, 'wins': 0, 'staked': 0.0, 'profit': 0.0}
+        market_map[mk]['bets'] += 1
+        if b['won']:
+            market_map[mk]['wins'] += 1
+        market_map[mk]['staked'] += b['stake']
+        market_map[mk]['profit'] += b['profit']
+    by_market = []
+    for d in market_map.values():
+        d['win_rate'] = round(d['wins'] / d['bets'] * 100, 1) if d['bets'] else 0
+        d['roi'] = round(d['profit'] / d['staked'] * 100, 1) if d['staked'] > 0 else 0
+        d['profit'] = round(d['profit'], 2)
+        d['staked'] = round(d['staked'], 2)
+        by_market.append(d)
+    by_market.sort(key=lambda x: x['bets'], reverse=True)
+
+    # Distinct matches actually bet on (to show how many bets share a match)
+    distinct_matches = len({(b['date'], b['match']) for b in bets})
 
     # By league
     league_map = {}
@@ -268,9 +311,14 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
             'bankroll_growth': round((current_bankroll - bankroll) / bankroll * 100, 1),
             'avg_edge': round(statistics.mean(b['edge_pct'] for b in bets), 2),
             'avg_odds': round(statistics.mean(b['odds'] for b in bets), 2),
+            'staking': 'flat (¼-Kelly on starting bankroll, cap 5%)',
+            'years': round(years, 1),
+            'distinct_matches': distinct_matches,
+            'bets_per_match': round(total_bets / distinct_matches, 2) if distinct_matches else 0,
         },
         'bets': bets[-500:],
         'by_league': by_league,
+        'by_market': by_market,
         'pnl_series': pnl_series,
     }
 

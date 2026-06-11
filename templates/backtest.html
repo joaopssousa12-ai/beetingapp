@@ -398,9 +398,14 @@ function renderResults(d) {
     }
     return;
   }
-  // Data-scope line — always tell the user what was simulated
-  document.getElementById('btScope').textContent =
-    `Simulating over ${withOdds} matches with odds (of ${scanned} scanned) · ${s.total_bets.toLocaleString()} bets placed`;
+  // Data-scope line — always tell the user what was simulated + how
+  const bm = (d.by_market || []).map(m =>
+    `${m.market}: ${m.bets.toLocaleString()} (${m.roi >= 0 ? '+' : ''}${m.roi}% ROI)`).join(' · ');
+  document.getElementById('btScope').innerHTML =
+    `Staking: <strong>${s.staking || 'flat ¼-Kelly'}</strong> · ${withOdds} matches w/ odds (of ${scanned})
+     · ${s.total_bets.toLocaleString()} bets over ${s.years || '?'}y
+     · ${s.bets_per_match || '?'} bets/match (${(s.distinct_matches||0).toLocaleString()} distinct)`
+    + (bm ? `<br>By market — ${bm}` : '');
 
   // Metrics
   const roi = Number(s.roi);
