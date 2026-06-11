@@ -380,9 +380,22 @@ function renderResults(d) {
   if (!s || s.total_bets === 0) {
     const empty = document.getElementById('btEmpty');
     empty.style.display = 'block';
-    empty.innerHTML = `<div style="font-weight:600">No value detected — 0 picks passed the quality gate</div>
-      <div style="margin-top:8px;font-size:13px">Scanned <strong>${scanned}</strong> historical matches
-      (${withOdds} had usable odds). Try lowering Min Edge or widening Max Odds.</div>`;
+    const cov = (s && s.coverage) || {};
+    const usable = (s && s.matches_with_odds) || 0;
+    if (usable === 0) {
+      // Root cause: no historical odds in the DB. Tell the user how to fix it.
+      empty.innerHTML = `<div style="font-weight:600;color:#fbbf24">No usable odds in the database</div>
+        <div style="margin-top:8px;font-size:13px;line-height:1.6">
+        Scanned <strong>${scanned}</strong> matches but none had odds.<br>
+        Coverage — B365: <strong>${cov.b365||0}</strong> · Pinnacle close: <strong>${cov.pinnacle_close||0}</strong>
+        · Max: <strong>${cov.max||0}</strong> · Avg: <strong>${cov.avg||0}</strong><br><br>
+        ➜ Go to <a href="/" style="color:var(--accent,#6366f1)">Dashboard → Data Collector</a> and click
+        <strong>"Import Historical Odds (for Backtest)"</strong>, then run again.</div>`;
+    } else {
+      empty.innerHTML = `<div style="font-weight:600">No value detected — 0 picks passed the quality gate</div>
+        <div style="margin-top:8px;font-size:13px">Scanned <strong>${scanned}</strong> matches
+        (<strong>${withOdds}</strong> had usable odds). Try lowering Min Edge or widening Max Odds.</div>`;
+    }
     return;
   }
   // Data-scope line — always tell the user what was simulated

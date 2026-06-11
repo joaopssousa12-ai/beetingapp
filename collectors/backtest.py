@@ -58,6 +58,8 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
                home_goals, away_goals, result,
                b365_home, b365_draw, b365_away,
                pinnacle_home_close, pinnacle_draw_close, pinnacle_away_close,
+               max_home, max_draw, max_away,
+               avg_home, avg_draw, avg_away,
                over25_pinnacle, under25_pinnacle, over25_max, over25_avg
         FROM football_matches
         {where}
@@ -67,6 +69,8 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
 
     matches_scanned = len(rows)
     matches_with_odds = 0   # had usable reference + book odds for the chosen market
+    # Per-column coverage so the UI can show WHY a run found (or didn't find) data
+    coverage = {'b365': 0, 'pinnacle_close': 0, 'max': 0, 'avg': 0, 'ou_pinnacle': 0}
     bets = []
     current_bankroll = bankroll
 
@@ -75,11 +79,28 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
         date_str = r['date'] or ''
         match_had_odds = False
 
+        # Track which odds columns are populated (home side as proxy)
+        if r['b365_home']: coverage['b365'] += 1
+        if r['pinnacle_home_close']: coverage['pinnacle_close'] += 1
+        if r['max_home']: coverage['max'] += 1
+        if r['avg_home']: coverage['avg'] += 1
+        if r['over25_pinnacle']: coverage['ou_pinnacle'] += 1
+
         # --- Match Result (H2H) ---
         if market_filter in ('all', 'h2h'):
-            ph, pd_, pa = r['pinnacle_home_close'], r['pinnacle_draw_close'], r['pinnacle_away_close']
-            bh, bd, ba = r['b365_home'], r['b365_draw'], r['b365_away']
-            true_h, true_d, true_a = _devig_3way(ph, pd_, pa)
+            # Reference (true prob): Pinnacle close is sharpest; fall back to the
+            # market average (always present in football-data) so a run still works
+            # when Pinnacle isn't recorded.
+            if r['pinnacle_home_close'] and r['pinnacle_draw_close'] and r['pinnacle_away_close']:
+                ref_h, ref_d, ref_a = r['pinnacle_home_close'], r['pinnacle_draw_close'], r['pinnacle_away_close']
+            else:
+                ref_h, ref_d, ref_a = r['avg_home'], r['avg_draw'], r['avg_away']
+            true_h, true_d, true_a = _devig_3way(ref_h, ref_d, ref_a)
+
+            # Bet at the BEST available price: max across books -> b365 -> avg.
+            bh = r['max_home'] or r['b365_home'] or r['avg_home']
+            bd = r['max_draw'] or r['b365_draw'] or r['avg_draw']
+            ba = r['max_away'] or r['b365_away'] or r['avg_away']
 
             if true_h is not None and bh and bd and ba:
                 match_had_odds = True
@@ -164,6 +185,7 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
                 'total_bets': 0,
                 'matches_scanned': matches_scanned,
                 'matches_with_odds': matches_with_odds,
+                'coverage': coverage,
             },
             'bets': [], 'by_league': [], 'pnl_series': [],
         }
@@ -233,6 +255,7 @@ def run_backtest(min_edge=3.0, max_odds=5.0, bankroll=1000.0, kelly_frac=0.25,
             'total_bets': total_bets,
             'matches_scanned': matches_scanned,
             'matches_with_odds': matches_with_odds,
+            'coverage': coverage,
             'wins': wins,
             'losses': total_bets - wins,
             'win_rate': round(wins / total_bets * 100, 1),

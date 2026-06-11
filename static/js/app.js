@@ -1818,6 +1818,39 @@ async function startCollection() {
   }
 }
 
+async function startOddsImport() {
+  const btn = document.getElementById('collect-btn');  // poller re-enables this one
+  const box = document.getElementById('status-box');
+  const log = document.getElementById('status-log');
+  const title = document.getElementById('status-title');
+  const oddsBtn = document.getElementById('odds-import-btn');
+
+  const current = await fetchJSON('/api/collection/status');
+  if (current && current.running) {
+    box.style.display = 'block';
+    title.textContent = 'Running...';
+    _pollCollectionStatus(btn, box, log, title);
+    return;
+  }
+
+  oddsBtn.disabled = true;
+  oddsBtn.textContent = '⏳ Importing odds...';
+  box.style.display = 'block';
+  log.innerHTML = '<div style="color:var(--text3)">Importing historical odds from football-data.co.uk…</div>';
+  title.textContent = 'Running...';
+
+  try {
+    const resp = await fetch('/api/collection/odds-history', { method: 'POST' });
+    const data = await resp.json();
+    if (!data.ok) log.innerHTML = `<div style="color:var(--amber)">${data.msg || 'Already running'}</div>`;
+    _pollCollectionStatus(btn, box, log, title);
+  } catch (e) {
+    log.innerHTML = `<div style="color:var(--red)">Error: ${e.message}</div>`;
+  } finally {
+    setTimeout(() => { oddsBtn.disabled = false; oddsBtn.textContent = '⬇ Import Historical Odds (for Backtest)'; }, 2000);
+  }
+}
+
 function _pollCollectionStatus(btn, box, log, title) {
   if (collectionPoller) clearInterval(collectionPoller);
   let collectPollCount = 0;

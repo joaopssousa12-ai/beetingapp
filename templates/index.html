@@ -402,6 +402,13 @@
             <button class="btn-primary" id="collect-btn" onclick="startCollection()">
               ▶ Run Now
             </button>
+            <button class="btn-primary" id="odds-import-btn" onclick="startOddsImport()" style="margin-left:8px;background:var(--accent)">
+              ⬇ Import Historical Odds (for Backtest)
+            </button>
+            <p class="muted-text" style="margin-top:6px;font-size:12px">
+              The backtest needs real historical odds (B365 / Pinnacle / Max / Avg) from
+              football-data.co.uk. Click once — takes ~1-2 min — then go to Backtesting.
+            </p>
             <div class="status-box" id="status-box" style="display:none">
               <div class="status-header">
                 <span class="spinner" id="status-spinner"></span>

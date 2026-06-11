@@ -23,6 +23,7 @@ from collectors.database import (
     USE_POSTGRES, DATABASE_URL
 )
 from collectors.football import collect_football
+from collectors.footballdata import collect_footballdata
 from collectors.tennis import collect_tennis
 from collectors.odds import collect_odds
 from collectors.odds_football import collect_odds_apifootball
@@ -112,6 +113,15 @@ async def run_full_collection():
         except Exception as e:
             import traceback
             cb(f"FOOTBALL ERROR: {repr(e)}")
+            cb(traceback.format_exc()[-800:])
+
+        cb("Step 1b/4: Collecting historical ODDS (football-data.co.uk)...")
+        try:
+            res_fd = await loop.run_in_executor(None, lambda: collect_footballdata(status_callback=cb))
+            cb(f"Odds done: {res_fd.get('rows',0)} rows, {res_fd.get('with_odds',0)} with usable odds.")
+        except Exception as e:
+            import traceback
+            cb(f"FOOTBALLDATA ERROR: {repr(e)}")
             cb(traceback.format_exc()[-800:])
 
         cb("Step 2/4: Collecting tennis data (ATP/WTA from GitHub)...")
@@ -298,6 +308,34 @@ async def api_start_collection():
         return JSONResponse({"ok": False, "msg": "Already running."})
     asyncio.create_task(run_full_collection())
     return JSONResponse({"ok": True, "msg": "Collection started."})
+
+
+async def _run_footballdata_only():
+    collection_status["running"] = True
+    collection_status["messages"] = ["Importing historical odds (football-data.co.uk)..."]
+    collection_status["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    def cb(msg):
+        collection_status["messages"].append(msg)
+    loop = asyncio.get_event_loop()
+    try:
+        res = await loop.run_in_executor(None, lambda: collect_footballdata(status_callback=cb))
+        cb(f"DONE: {res.get('rows',0)} rows, {res.get('with_odds',0)} with usable odds. "
+           f"Now go to /backtest and Run Simulation.")
+    except Exception as e:
+        import traceback
+        cb(f"ODDS IMPORT ERROR: {repr(e)}")
+        print(f"FOOTBALLDATA_ERROR: {traceback.format_exc()}", flush=True)
+    finally:
+        collection_status["running"] = False
+
+
+@app.post("/api/collection/odds-history")
+async def api_collect_odds_history():
+    """Import ONLY the historical odds (fast path to make the backtest usable)."""
+    if collection_status["running"]:
+        return JSONResponse({"ok": False, "msg": "Already running."})
+    asyncio.create_task(_run_footballdata_only())
+    return JSONResponse({"ok": True, "msg": "Historical odds import started."})
 
 @app.get("/api/migrate")
 @app.post("/api/migrate")
