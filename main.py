@@ -468,8 +468,15 @@ def test_oddspapi():
 @app.get("/api/value-bets")
 async def api_value_bets():
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, get_value_bets)
-    return JSONResponse(result)
+    try:
+        result = await loop.run_in_executor(None, get_value_bets)
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"VALUE_BETS_ERROR: {e}\n{traceback.format_exc()}", flush=True)
+        # Degrade gracefully — the UI shows "No live odds yet" on an empty list
+        # rather than a blank landing page.
+        return JSONResponse([])
 
 @app.get("/api/value-bets/{event_id}")
 async def api_event_detail(event_id: str):

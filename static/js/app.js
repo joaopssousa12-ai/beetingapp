@@ -1182,7 +1182,7 @@ function renderCard(b) {
         ${isExpanded ? '▾ Hide' : '▸ Show'} xG · Smart Money · Full Markets (${detailsCount})
       </span>
     </div>
-    <div class="vb-all-markets">${isExpanded ? (xgBlock + autoOddsHtml + (hasAutoH2H ? '' : '') + allMarketsHTML) : ''}</div>
+    <div class="vb-all-markets">${isExpanded ? (xgBlock + autoOddsHtml + allMarketsHTML) : ''}</div>
   </div>`;
 }
 
