@@ -425,7 +425,8 @@ function renderResults(d) {
   document.getElementById('mBets').textContent = s.total_bets.toLocaleString();
   document.getElementById('mStaked').textContent = `€${fmt(s.total_staked, 0)} staked`;
   document.getElementById('mAvgEdge').textContent = '+' + fmt(s.avg_edge) + '%';
-  document.getElementById('mAvgOdds').textContent = 'avg odds ' + fmt(s.avg_odds, 2);
+  document.getElementById('mAvgOdds').textContent =
+    `avg ${fmt(s.avg_odds, 2)} · range ${fmt(s.min_odd, 2)}–${fmt(s.max_odd, 2)}`;
   document.getElementById('btMetrics').style.display = 'block';
 
   // Chart
