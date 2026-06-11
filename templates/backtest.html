@@ -95,6 +95,32 @@
     .bt-bet-hdrs > :nth-child(6), .bt-bet-row > :nth-child(6) { display: none; }
     .bt-table th:nth-child(4), .bt-table td:nth-child(4) { display: none; } /* hide Profit€, keep ROI */
   }
+
+  /* Tabs */
+  .bt-tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border, #2d3748); }
+  .bt-tab { background: none; border: none; color: var(--text3, #64748b); font-size: 13px; font-weight: 600;
+    padding: 9px 16px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .bt-tab:hover { color: var(--text, #e2e8f0); }
+  .bt-tab.active { color: var(--accent, #6366f1); border-bottom-color: var(--accent, #6366f1); }
+
+  /* Export button */
+  .bt-export { background: none; border: 1px solid var(--border, #2d3748); color: var(--text2, #94a3b8);
+    border-radius: 6px; padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .bt-export:hover { border-color: var(--accent, #6366f1); color: var(--accent, #6366f1); }
+
+  /* CLV tab */
+  .clv-row { display: grid; grid-template-columns: 90px 1fr 90px 64px 64px 70px;
+    padding: 7px 16px; border-bottom: 1px solid var(--border2, #1e2535); font-size: 12px; align-items: center; }
+  .clv-hdrs { display: grid; grid-template-columns: 90px 1fr 90px 64px 64px 70px;
+    padding: 6px 16px; background: var(--bg3, #141824); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; color: var(--text3, #64748b); }
+  .clv-pos { color: #34d399; font-family: var(--mono, 'DM Mono', monospace); }
+  .clv-neg { color: #f87171; font-family: var(--mono, 'DM Mono', monospace); }
+  @media (max-width: 600px) {
+    .clv-row, .clv-hdrs { grid-template-columns: 76px 1fr 56px 60px; }
+    .clv-row > :nth-child(3), .clv-hdrs > :nth-child(3),
+    .clv-row > :nth-child(4), .clv-hdrs > :nth-child(4) { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -107,6 +133,13 @@
     <a href="/" class="bt-nav" style="margin-left:auto">← Dashboard</a>
   </div>
 
+  <!-- Tabs -->
+  <div class="bt-tabs">
+    <button class="bt-tab active" id="tabBtnSim" onclick="switchTab('sim')">Simulation</button>
+    <button class="bt-tab" id="tabBtnClv" onclick="switchTab('clv')">CLV Analysis (real bets)</button>
+  </div>
+
+  <div id="tab-sim">
   <!-- Controls -->
   <div class="bt-controls">
     <div class="bt-ctrl">
@@ -210,7 +243,10 @@
   <div class="bt-bets-wrap" id="btBetsWrap" style="display:none">
     <div class="bt-bets-head">
       <span>Recent Simulated Bets</span>
-      <span id="betsCount" style="font-size:12px;color:var(--text3)"></span>
+      <span style="display:flex;align-items:center;gap:10px">
+        <span id="betsCount" style="font-size:12px;color:var(--text3)"></span>
+        <button class="bt-export" onclick="exportBetsCSV()">⬇ Export CSV</button>
+      </span>
     </div>
     <div class="bt-bet-hdrs">
       <span>Date</span><span>Match / Selection</span><span>Market</span>
@@ -227,10 +263,56 @@
   <div id="btEmpty" class="bt-empty">
     Configure os parâmetros e clica <strong>Run Simulation</strong>
   </div>
+  </div><!-- /tab-sim -->
+
+  <!-- CLV ANALYSIS TAB (real tracked bets vs Pinnacle close) -->
+  <div id="tab-clv" style="display:none">
+    <div class="bt-subtitle" style="margin-bottom:16px">
+      Closing Line Value das tuas apostas reais (settled) vs. Pinnacle close.
+      CLV positivo consistente é o melhor preditor de lucro a longo prazo.
+    </div>
+    <div class="bt-metrics" id="clvMetrics" style="display:none">
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">Avg CLV</div>
+        <div class="bt-metric-val" id="clvAvg">—</div>
+        <div class="bt-metric-sub">Beat the closing line by</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">Positive CLV Rate</div>
+        <div class="bt-metric-val neu" id="clvPosRate">—</div>
+        <div class="bt-metric-sub" id="clvPosSub">— of — bets beat close</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-lbl">Tracked Bets (settled)</div>
+        <div class="bt-metric-val neu" id="clvCount">—</div>
+        <div class="bt-metric-sub">with Pinnacle close</div>
+      </div>
+    </div>
+    <div class="bt-bets-wrap" id="clvTableWrap" style="display:none">
+      <div class="bt-bets-head">
+        <span>Bet-by-bet CLV</span>
+        <button class="bt-export" onclick="exportClvCSV()">⬇ Export CSV</button>
+      </div>
+      <div class="clv-hdrs">
+        <span>Date</span><span>Match / Selection</span><span>Book</span>
+        <span style="text-align:right">Your</span><span style="text-align:right">Close</span>
+        <span style="text-align:right">CLV %</span>
+      </div>
+      <div class="bt-bets-scroll" id="clvBody"></div>
+    </div>
+    <div id="clvLoading" class="bt-loading" style="display:none"><div class="spinner"></div></div>
+    <div id="clvEmpty" class="bt-empty">
+      Ainda não há apostas settled com Pinnacle close registado.<br>
+      Faz track de apostas e marca o resultado — o CLV aparece aqui.
+    </div>
+  </div>
 </div>
 
 <script>
 let btChart = null;
+let lastResult = null;   // last successful backtest payload (for CSV export)
+let clvData = null;      // last CLV payload (for CSV export)
+let clvLoaded = false;
 
 async function loadMeta() {
   try {
@@ -291,6 +373,7 @@ function fmt(n, dec=1) { return n == null ? '—' : Number(n).toFixed(dec); }
 function fmtSign(n, dec=1) { const v = Number(n); return (v >= 0 ? '+' : '') + v.toFixed(dec); }
 
 function renderResults(d) {
+  lastResult = d;   // keep for CSV export
   const s = d.summary;
   const scanned = (s && s.matches_scanned != null) ? s.matches_scanned.toLocaleString() : '?';
   const withOdds = (s && s.matches_with_odds != null) ? s.matches_with_odds.toLocaleString() : '?';
@@ -432,6 +515,115 @@ function renderChart(series) {
       },
     },
   });
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────
+function switchTab(name) {
+  const sim = name === 'sim';
+  document.getElementById('tab-sim').style.display = sim ? '' : 'none';
+  document.getElementById('tab-clv').style.display = sim ? 'none' : '';
+  document.getElementById('tabBtnSim').classList.toggle('active', sim);
+  document.getElementById('tabBtnClv').classList.toggle('active', !sim);
+  if (!sim && !clvLoaded) loadCLV();
+}
+
+// ── CLV analysis (real tracked bets) ───────────────────────────────
+async function loadCLV() {
+  clvLoaded = true;
+  document.getElementById('clvEmpty').style.display = 'none';
+  document.getElementById('clvLoading').style.display = 'block';
+  try {
+    const r = await fetch('/api/backtest/clv');
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    clvData = d;
+    renderCLV(d);
+  } catch(e) {
+    const empty = document.getElementById('clvEmpty');
+    empty.style.display = 'block';
+    empty.innerHTML = `<div style="color:#f87171;font-weight:600">⚠ Could not load CLV</div>
+      <div style="margin-top:8px;font-size:13px">${e.message}</div>`;
+    clvLoaded = false; // allow retry
+  } finally {
+    document.getElementById('clvLoading').style.display = 'none';
+  }
+}
+
+function renderCLV(d) {
+  if (!d || !d.count) {
+    document.getElementById('clvEmpty').style.display = 'block';
+    document.getElementById('clvMetrics').style.display = 'none';
+    document.getElementById('clvTableWrap').style.display = 'none';
+    return;
+  }
+  const avg = Number(d.avg_clv);
+  document.getElementById('clvAvg').textContent = fmtSign(d.avg_clv, 2) + '%';
+  document.getElementById('clvAvg').className = 'bt-metric-val ' + (avg >= 0 ? 'pos' : 'neg');
+  document.getElementById('clvPosRate').textContent = fmt(d.positive_clv_rate, 0) + '%';
+  const posN = Math.round(d.count * d.positive_clv_rate / 100);
+  document.getElementById('clvPosSub').textContent = `${posN} of ${d.count} bets beat close`;
+  document.getElementById('clvCount').textContent = d.count.toLocaleString();
+  document.getElementById('clvMetrics').style.display = 'grid';
+
+  const body = document.getElementById('clvBody');
+  body.innerHTML = '';
+  d.records.slice().reverse().forEach(r => {
+    const cls = r.clv_pct >= 0 ? 'clv-pos' : 'clv-neg';
+    body.innerHTML += `<div class="clv-row">
+      <span style="color:var(--text3)">${(r.placed_at||'').slice(0,10)}</span>
+      <span>${r.home_team||''} v ${r.away_team||''}<br><span style="color:var(--text3);font-size:11px">${r.selection||''}</span></span>
+      <span style="color:var(--text3);font-size:11px">${r.bookmaker||'—'}</span>
+      <span style="text-align:right;font-family:var(--mono)">${Number(r.odds).toFixed(2)}</span>
+      <span style="text-align:right;font-family:var(--mono)">${Number(r.pin_close_odds).toFixed(2)}</span>
+      <span style="text-align:right" class="${cls}">${fmtSign(r.clv_pct,1)}%</span>
+    </div>`;
+  });
+  document.getElementById('clvTableWrap').style.display = 'block';
+}
+
+// ── CSV export ─────────────────────────────────────────────────────
+function downloadCSV(rows, filename) {
+  if (!rows || !rows.length) { alert('Nada para exportar — corre uma simulação primeiro.'); return; }
+  const esc = v => {
+    const s = (v == null ? '' : String(v));
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const headers = Object.keys(rows[0]);
+  const csv = [headers.join(',')]
+    .concat(rows.map(r => headers.map(h => esc(r[h])).join(',')))
+    .join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }); // BOM for Excel
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportBetsCSV() {
+  if (!lastResult || !lastResult.bets || !lastResult.bets.length) {
+    alert('Nada para exportar — corre uma simulação primeiro.'); return;
+  }
+  const rows = lastResult.bets.map(b => ({
+    date: (b.date||'').slice(0,10), league: b.league, match: b.match,
+    market: b.market, selection: b.selection, odds: b.odds,
+    edge_pct: b.edge_pct, true_prob: b.true_prob, stake: b.stake,
+    won: b.won ? 'W' : 'L', profit: b.profit, bankroll: b.bankroll,
+  }));
+  downloadCSV(rows, `betiq_backtest_${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+function exportClvCSV() {
+  if (!clvData || !clvData.records || !clvData.records.length) {
+    alert('Sem CLV para exportar.'); return;
+  }
+  const rows = clvData.records.map(r => ({
+    placed_at: (r.placed_at||'').slice(0,10), match: `${r.home_team||''} v ${r.away_team||''}`,
+    market: r.market, selection: r.selection, bookmaker: r.bookmaker,
+    your_odds: r.odds, close_odds: r.pin_close_odds, clv_pct: r.clv_pct,
+    result: r.result, profit: r.profit,
+  }));
+  downloadCSV(rows, `betiq_clv_${new Date().toISOString().slice(0,10)}.csv`);
 }
 
 // Init
