@@ -232,6 +232,16 @@ def parse_and_store(events, sport_key, sport_name):
     return inserted
 
 
+def _pretty_sport_name(key):
+    """tennis_atp_halle_open -> 'ATP Halle Open'; tennis_wta -> 'WTA Tour'."""
+    parts = key.split("_")
+    if len(parts) < 2:
+        return key
+    tour = parts[1].upper()  # atp/wta
+    rest = " ".join(p.capitalize() for p in parts[2:])
+    return f"{tour} {rest}".strip() if rest else f"{tour} Tour"
+
+
 def collect_odds(status_callback=None):
     def cb(msg):
         print(msg, flush=True)
@@ -271,6 +281,15 @@ def collect_odds(status_callback=None):
     }
 
     to_fetch = {k: v for k, v in SPORT_GROUPS.items() if k in active or k in ALWAYS_FETCH}
+
+    # The Odds API exposes tennis PER TOURNAMENT (e.g. tennis_atp_halle), which
+    # come and go each week — a hardcoded list always misses whatever is live now.
+    # So auto-include EVERY currently-active tennis_* key (friendly name derived
+    # from the key, unless we already have a nicer one in SPORT_GROUPS).
+    for k in active:
+        if k.startswith("tennis_") and k not in to_fetch:
+            to_fetch[k] = SPORT_GROUPS.get(k) or _pretty_sport_name(k)
+
     cb(f"Fetching odds for {len(to_fetch)} sports from our watchlist...")
 
     if not to_fetch:

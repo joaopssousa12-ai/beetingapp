@@ -288,7 +288,7 @@ let vbState = {
   mode: 'all',
   bankroll: 0,
   minEdge: 3,    // default 3% — blocks Qatar at +0.2%
-  maxOdds: 5.0,  // default 5.0 — blocks longshots (Qatar at 15.0)
+  maxOdds: 8.0,  // hard ceiling: picks up to 8.0 show as "best available"; >8 = info only
   minConf: 0,
   collapsed: new Set(),
   viewMode: 'cards',  // 'cards' or 'table'
@@ -473,9 +473,11 @@ function playNewBetSound() {
 // filters can't pull a game in just because some >ceiling longshot looked good
 // (that was the "5★ but Best Pick = no value" bug).
 // ============================================================
-const VB_VALUE_FLOOR = 3;   // edge% needed to be a green / celebrated value bet
-const VB_ODD_FLOOR = 1.5;   // min odd for a celebrated pick
-function vbOddCeiling() { return Math.min(vbState.maxOdds ?? 5.0, 5.0); }
+const VB_VALUE_FLOOR = 3;        // edge% needed to be a green / celebrated value bet
+const VB_ODD_FLOOR = 1.5;        // min odd for a celebrated pick
+const VB_GREEN_MAX_ODD = 5.0;    // green "Best Pick" sweet-spot odd cap
+const VB_HARD_CEILING = 8.0;     // above this odd, never shown as a pick (info only)
+function vbOddCeiling() { return Math.min(vbState.maxOdds ?? VB_HARD_CEILING, VB_HARD_CEILING); }
 
 function vbEval(b) {
   const minEdge = vbState.minEdge ?? 3;
@@ -496,7 +498,7 @@ function vbEval(b) {
     ? valuePicks.reduce((a, p) => ((p.confidence||0)*100 + p.edge_pct) > ((a.confidence||0)*100 + a.edge_pct) ? p : a)
     : null;
   const isValue = !!bestPick && bestPick.edge_pct >= VB_VALUE_FLOOR
-      && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= 5.0;
+      && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD;
   // Stars are the Best Pick's stars. No eligible Best Pick → 0 stars.
   const stars = bestPick ? (bestPick.confidence || 0) : 0;
   return { realPicks, bestPick, isValue, stars, ceiling };
@@ -510,7 +512,7 @@ function renderTableView(data) {
   if (!data.length) { wrap.innerHTML = '<div class="vb-empty"><div class="vb-empty-title">No matches match your filters</div></div>'; return; }
   const _br = vbState.bankroll || 0;
   const _qMinEdge = vbState.minEdge ?? 3;
-  const _qMaxOdds = vbState.maxOdds ?? 5.0;
+  const _qMaxOdds = vbState.maxOdds ?? 8.0;
   const header = `<div class="vb-table-header">
     <span class="vbt-edge">Edge</span>
     <span class="vbt-event">Match</span>
@@ -691,7 +693,7 @@ function renderValueBets() {
 
   // Sound notification — fire when new value bets appear
   const _qMinEdge = vbState.minEdge ?? 3;
-  const _qMaxOdds = vbState.maxOdds ?? 5.0;
+  const _qMaxOdds = vbState.maxOdds ?? 8.0;
   const valueCount = data.filter(b => vbEval(b).isValue).length;
   if (_prevValueBetCount >= 0 && valueCount > _prevValueBetCount) playNewBetSound();
   _prevValueBetCount = valueCount;
@@ -766,7 +768,7 @@ function negativeRoiLeague(name) {
 
 function renderCard(b) {
   const _qMinEdge = vbState.minEdge ?? 3;
-  const _qMaxOdds = vbState.maxOdds ?? 5.0;
+  const _qMaxOdds = vbState.maxOdds ?? 8.0;
   const isExpanded = !vbState.collapsed.has(b.event_id);
   const hasAutoH2H = !!(b.x1_home || b.b365_home || b.best_home);
 
@@ -857,8 +859,9 @@ function renderCard(b) {
   const trophyIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h12v6c0 3-3 6-6 6s-6-3-6-6V2z"/><path d="M9 18h6v3H9z"/></svg>';
   const refLabel = b.odds_source === 'betfair' ? 'Betfair' : 'Pinnacle';
 
-  // BIG hero card — odd is KING (26px+). `celebrated` = clears the value floor (>=3%
-  // edge, odd 1.5-5): green + Track button. Otherwise muted/informational only.
+  // BIG hero card — odd is KING (26px+). `celebrated` = clears the green value
+  // gate (edge >=3% & odd 1.5-5). Both tiers show the ¼-Kelly stake (blue) next
+  // to the edge AND a Track Bet button; only the styling/label differ.
   function renderHeroReal(p, celebrated) {
     const edge = p.edge_pct;
     const eCls = edge >= 3 ? 'pos' : edge >= 1 ? 'flat' : 'neg';
@@ -868,7 +871,7 @@ function renderCard(b) {
     const label = celebrated ? 'Best Pick' : 'Best available';
     const note = celebrated
       ? (fair ? `Fair odd ${fair} · ★ from ${refLabel} (real market)` : '')
-      : `Below the 3% value gate — informational only, not a recommended bet`;
+      : `Best available — below the green value gate (edge ≥3% & odd ≤5). Size with care.`;
     return `<div class="${cls}">
       <div class="vb-pick-label">${trophyIcon}${label}<span class="vb-stars">${starsHtmlFor(p.confidence)}</span></div>
       <div class="vb-pick-selection">${p.selection}</div>
@@ -882,7 +885,7 @@ function renderCard(b) {
           <span class="vb-hero-big edge-${eCls}">${edge >= 0 ? '+' : ''}${edge.toFixed(1)}%</span>
           <span class="vb-hero-lbl">Edge</span>
         </div>
-        ${celebrated && kelly ? `<div class="vb-hero-num-block">
+        ${kelly ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big kelly-val">${kelly}</span>
           <span class="vb-hero-lbl">¼ Kelly</span>
         </div>` : ''}
@@ -892,9 +895,9 @@ function renderCard(b) {
         </div>
       </div>
       ${note ? `<div class="vb-hero-model">${note}</div>` : ''}
-      ${celebrated ? `<div class="vb-pick-action">
+      <div class="vb-pick-action">
         <button class="add-bet-btn vb-track-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track Bet</button>
-      </div>` : ''}
+      </div>
     </div>`;
   }
 
