@@ -31,6 +31,34 @@ def invalidate_value_bets_cache():
     _vb_cache["data"] = None
     _vb_cache["ts"] = 0.0
 
+# Guard so only one background recompute runs at a time.
+_vb_refreshing = {"active": False}
+
+
+def value_bets_cache_state():
+    """Return (data_or_None, is_stale) without triggering a compute.
+    Lets the API serve cached picks instantly and decide whether to refresh."""
+    data = _vb_cache["data"]
+    if data is None:
+        return None, True
+    stale = (time.time() - _vb_cache["ts"]) >= _VB_CACHE_TTL
+    return data, stale
+
+
+def refresh_value_bets():
+    """Recompute value bets in the background (stale-while-revalidate).
+    No-op if the cache is already fresh or another refresh is in flight."""
+    if _vb_refreshing["active"]:
+        return
+    _vb_refreshing["active"] = True
+    try:
+        get_value_bets()  # recomputes only if cache is stale; updates memory + disk
+    except Exception as e:
+        import traceback
+        print(f"VALUE_BETS_REFRESH_ERROR: {e}\n{traceback.format_exc()}", flush=True)
+    finally:
+        _vb_refreshing["active"] = False
+
 # ============================================================
 # DATABASE LAYER — supports both SQLite (local) and PostgreSQL (production)
 # If DATABASE_URL is set (Supabase/Render Postgres), use PostgreSQL.
@@ -42,6 +70,46 @@ USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
 VOLUME_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", os.path.join(os.path.dirname(__file__), "..", "data"))
 DB_PATH = os.path.join(VOLUME_DIR, "betting.db")
+
+# Disk-persisted value-bets cache. Lets the app serve the last computed picks
+# instantly after a (slow) Render cold start, while a fresh compute runs in the
+# background — so users never stare at "Loading..." waiting for the engine.
+_VB_CACHE_FILE = os.path.join(VOLUME_DIR, "vb_cache.json")
+
+
+def _persist_vb_cache(data):
+    """Best-effort write of the value-bets result to disk (survives restarts)."""
+    try:
+        import json
+        os.makedirs(VOLUME_DIR, exist_ok=True)
+        tmp = _VB_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time(), "data": data}, f)
+        os.replace(tmp, _VB_CACHE_FILE)  # atomic — never leaves a half-written file
+    except Exception as e:
+        print(f"VB_CACHE_PERSIST_WARN: {e}", flush=True)
+
+
+def load_vb_cache_from_disk():
+    """Populate the in-memory cache from disk if empty. Returns True if loaded.
+    Called once at startup so the first request after a cold boot is instant."""
+    if _vb_cache["data"] is not None:
+        return False
+    try:
+        import json
+        if not os.path.exists(_VB_CACHE_FILE):
+            return False
+        with open(_VB_CACHE_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if payload.get("data"):
+            _vb_cache["data"] = payload["data"]
+            _vb_cache["ts"] = payload.get("ts", 0.0)
+            print(f"VB_CACHE: loaded {len(payload['data'])} events from disk "
+                  f"(age {int(time.time() - _vb_cache['ts'])}s)", flush=True)
+            return True
+    except Exception as e:
+        print(f"VB_CACHE_LOAD_WARN: {e}", flush=True)
+    return False
 
 
 def _translate_query(query):
@@ -1487,6 +1555,7 @@ def get_value_bets():
     # Store in cache
     _vb_cache["data"] = results
     _vb_cache["ts"] = time.time()
+    _persist_vb_cache(results)  # survive cold starts
     # Clear session caches — data is now in _vb_cache
     _session_elo = None
     _session_xg = None

@@ -19,6 +19,7 @@ from collectors.database import (
     get_elo_summary, get_elo_rating, elo_based_probability,
     save_manual_odd, delete_manual_odd, get_manual_odds_map,
     invalidate_value_bets_cache,
+    value_bets_cache_state, refresh_value_bets, load_vb_cache_from_disk,
     USE_POSTGRES, DATABASE_URL
 )
 from collectors.football import collect_football
@@ -62,6 +63,18 @@ async def startup():
         print("Scheduler started.", flush=True)
     except Exception as e:
         print(f"SCHEDULER ERROR: {e}", flush=True)
+
+    # Warm the value-bets cache so the first request after a cold start is fast.
+    # 1) Load the last computed picks from disk instantly (serve immediately).
+    # 2) Recompute in the background while Render finishes spinning up, so by the
+    #    time the user's request lands the cache is hot.
+    try:
+        load_vb_cache_from_disk()
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, refresh_value_bets)  # fire-and-forget (returns a Future)
+        print("Value-bets cache warming started.", flush=True)
+    except Exception as e:
+        print(f"Cache warm skipped: {e}", flush=True)
 
     # Auto-bootstrap: if database is empty, trigger collection in background
     try:
@@ -469,6 +482,14 @@ def test_oddspapi():
 async def api_value_bets():
     loop = asyncio.get_event_loop()
     try:
+        # Stale-while-revalidate: serve cached picks instantly (even if a little
+        # stale) and refresh in the background, so the page never blocks on the
+        # engine. Only compute synchronously when there is no cache at all.
+        data, stale = value_bets_cache_state()
+        if data is not None:
+            if stale:
+                loop.run_in_executor(None, refresh_value_bets)  # fire-and-forget refresh
+            return JSONResponse(data)
         result = await loop.run_in_executor(None, get_value_bets)
         return JSONResponse(result)
     except Exception as e:
@@ -477,6 +498,13 @@ async def api_value_bets():
         # Degrade gracefully — the UI shows "No live odds yet" on an empty list
         # rather than a blank landing page.
         return JSONResponse([])
+
+
+@app.get("/healthz")
+async def healthz():
+    """Ultra-cheap liveness check (no DB). Point an external uptime pinger here
+    (e.g. UptimeRobot every 5 min) to stop Render's free tier from sleeping."""
+    return JSONResponse({"ok": True})
 
 @app.get("/api/value-bets/{event_id}")
 async def api_event_detail(event_id: str):
