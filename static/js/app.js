@@ -1617,9 +1617,43 @@ async function loadBetStats() {
   }
 }
 
+// #6 Reality check: the model assigned each bet an EDGE (its EV%). The average
+// edge of your settled bets is the model's expected ROI. Compare to what you
+// actually made, and — most importantly — to your CLV, which is the real judge
+// of whether the edge was genuine (short-term ROI is mostly variance).
+function renderRealityCheck(bets) {
+  const exEl = document.getElementById('bs-expected');
+  const vEl = document.getElementById('bs-verdict');
+  if (!exEl || !vEl) return;
+  const settled = bets.filter(b => b.status === 'settled');
+  const staked = settled.reduce((s, b) => s + (b.stake || 0), 0);
+  const profit = settled.reduce((s, b) => s + (b.profit || 0), 0);
+  const realizedRoi = staked > 0 ? profit / staked * 100 : null;
+  const edges = settled.filter(b => b.edge_pct != null).map(b => b.edge_pct);
+  const expectedRoi = edges.length ? edges.reduce((a, b) => a + b, 0) / edges.length : null;
+  const clvs = bets.filter(b => b.clv_pct != null).map(b => b.clv_pct);
+  const avgClv = clvs.length ? clvs.reduce((a, b) => a + b, 0) / clvs.length : null;
+
+  exEl.textContent = expectedRoi != null ? (expectedRoi >= 0 ? '+' : '') + expectedRoi.toFixed(1) + '%' : '—';
+
+  if (realizedRoi == null || expectedRoi == null || settled.length < 5) {
+    vEl.innerHTML = `<strong>📊 Reality check:</strong> need ≥5 settled bets to compare against the model (${settled.length} so far). The model's expectation = the average edge it gave your bets.`;
+    return;
+  }
+  const clvTxt = avgClv != null ? ` · avg CLV <strong>${avgClv >= 0 ? '+' : ''}${avgClv.toFixed(1)}%</strong>` : '';
+  let verdict, color;
+  if (avgClv != null && avgClv > 0.5) { verdict = "You're beating the closing line — the edge is real ✅"; color = '#16a34a'; }
+  else if (avgClv != null && avgClv < -0.5) { verdict = 'Negative CLV — the edge isn\'t holding to closing; tighten filters / get sharper odds ⚠'; color = '#d97706'; }
+  else if (Math.abs(realizedRoi - expectedRoi) <= 3) { verdict = 'Tracking the model within normal variance'; color = 'var(--text2)'; }
+  else if (realizedRoi < expectedRoi) { verdict = 'Below model — likely variance; CLV is the final judge'; color = '#d97706'; }
+  else { verdict = 'Above model — positive variance/luck'; color = '#16a34a'; }
+  vEl.innerHTML = `<strong>📊 Reality check:</strong> real <strong>${realizedRoi >= 0 ? '+' : ''}${realizedRoi.toFixed(1)}%</strong> vs model expected <strong>${expectedRoi >= 0 ? '+' : ''}${expectedRoi.toFixed(1)}%</strong>${clvTxt}. <span style="color:${color}">${verdict}</span>`;
+}
+
 async function loadBetsTable() {
   const bets = await fetchJSON('/api/bets');
   const wrap = document.getElementById('bets-table-wrap');
+  renderRealityCheck(bets || []);   // #6: real performance vs the model's expectation
   if (!bets || bets.length === 0) {
     wrap.innerHTML = '<div style="padding:2rem 1.25rem;color:#555b6e;font-size:13px">No bets yet. Click "+ New bet" to register your first one.</div>';
     return;

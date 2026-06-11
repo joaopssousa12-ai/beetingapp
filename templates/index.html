@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BetIQ — Betting Intelligence</title>
-<link rel="stylesheet" href="/static/css/style.css?v=20260612b">
+<link rel="stylesheet" href="/static/css/style.css?v=20260612c">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -254,10 +254,12 @@
           <div class="stat-card"><div class="stat-label">Total bets</div><div class="stat-value" id="bs-total">—</div></div>
           <div class="stat-card"><div class="stat-label">Total staked</div><div class="stat-value" id="bs-staked">—</div></div>
           <div class="stat-card"><div class="stat-label">Profit / Loss</div><div class="stat-value" id="bs-profit">—</div></div>
-          <div class="stat-card"><div class="stat-label">ROI</div><div class="stat-value" id="bs-roi">—</div></div>
+          <div class="stat-card"><div class="stat-label">ROI (real)</div><div class="stat-value" id="bs-roi">—</div></div>
+          <div class="stat-card"><div class="stat-label">Expected ROI (model)</div><div class="stat-value" id="bs-expected">—</div></div>
           <div class="stat-card"><div class="stat-label">Win rate</div><div class="stat-value" id="bs-winrate">—</div></div>
           <div class="stat-card"><div class="stat-label">Avg CLV</div><div class="stat-value" id="bs-clv">—</div></div>
         </div>
+        <div id="bs-verdict" class="muted-text" style="margin:2px 0 4px;font-size:13px;line-height:1.5"></div>
 
         <div class="card" style="margin-top:1rem">
           <div class="card-head">
@@ -453,6 +455,6 @@
 
     </main>
   </div>
-<script src="/static/js/app.js?v=20260612b"></script>
+<script src="/static/js/app.js?v=20260612c"></script>
 </body>
 </html>
