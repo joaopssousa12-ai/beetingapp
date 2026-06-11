@@ -622,6 +622,21 @@ function surfaceBadge(surface) {
   const color = s === 'hard' ? '#4f9cf9' : s === 'clay' ? '#d97706' : s === 'grass' ? '#16a34a' : '#8b90a0';
   return `<span style="background:${color}18;color:${color};border:1px solid ${color}38;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:500">${surface || '?'}</span>`;
 }
+
+// Surface badge for a live tennis card. The odds feed has no surface, so we
+// infer it from the competition name (reliable for Slams; generic Tour events
+// stay unbadged). A backend `surface` hint, if present, wins.
+function tennisSurfaceBadge(b) {
+  const s = (b.sport_name || '').toLowerCase();
+  if (!(s.includes('atp') || s.includes('wta') || s.includes('tennis'))) return '';
+  let surface = b.surface || null;
+  if (!surface) {
+    if (s.includes('wimbledon')) surface = 'Grass';
+    else if (s.includes('roland') || s.includes('french open')) surface = 'Clay';
+    else if (s.includes('us open') || s.includes('australian') || s.includes('aus open')) surface = 'Hard';
+  }
+  return surface ? ' ' + surfaceBadge(surface) : '';
+}
 function fmtTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -1160,7 +1175,7 @@ function renderCard(b) {
   return `<div class="${cardCls}" data-id="${b.event_id}" data-agreement="${cardAgreement}">
     <div class="vb-card-head">
       <div class="vb-card-meta">
-        <span class="vb-sport">${b.sport_name || ''}</span>
+        <span class="vb-sport">${b.sport_name || ''}</span>${tennisSurfaceBadge(b)}
         <div class="vb-head-right">
           ${edgeChipHtml}
           <span class="vb-time">${_timeStr}${movementSparkline ? ' ' + movementSparkline : ''}</span>

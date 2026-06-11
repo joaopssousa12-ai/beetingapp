@@ -14,7 +14,7 @@ SPORT_GROUPS = {
     # ⚽ MUNDIAL 2026 — 11 Jun a 19 Jul
     "soccer_fifa_world_cup": "FIFA World Cup 2026",
     "soccer_fifa_club_world_cup": "FIFA Club World Cup 2026",
-    # Football — ligas europeias
+    # Football — ligas europeias (1ª divisão)
     "soccer_epl": "Premier League",
     "soccer_spain_la_liga": "La Liga",
     "soccer_germany_bundesliga": "Bundesliga",
@@ -26,6 +26,18 @@ SPORT_GROUPS = {
     "soccer_netherlands_eredivisie": "Eredivisie",
     "soccer_conmebol_copa_america": "Copa América",
     "soccer_uefa_euro": "UEFA Euro",
+    # Football — 2ªs divisões + ligas extra que o backtest cobre. Só são
+    # pedidas à API quando estão em época (to_fetch filtra por 'active'), por
+    # isso não gastam créditos fora de época. Nomes alinhados com o backtest.
+    "soccer_england_efl_champ": "Championship",
+    "soccer_spain_segunda_division": "La Liga 2",
+    "soccer_germany_bundesliga2": "Bundesliga 2",
+    "soccer_italy_serie_b": "Serie B",
+    "soccer_france_ligue_two": "Ligue 2",
+    "soccer_belgium_first_div": "Jupiler Pro League",
+    "soccer_turkey_super_league": "Super Lig",
+    "soccer_greece_super_league": "Super League Greece",
+    "soccer_spl": "Scottish Premiership",
     # Tennis — Grand Slams
     "tennis_atp_french_open": "ATP Roland Garros",
     "tennis_wta_french_open": "WTA Roland Garros",
