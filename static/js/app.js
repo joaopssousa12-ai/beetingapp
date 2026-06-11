@@ -1806,7 +1806,7 @@ async function checkCollectionRunning() {
   }
 }
 
-async function startCollection() {
+async function startCollection(full = false) {
   const btn = document.getElementById('collect-btn');
   const box = document.getElementById('status-box');
   const log = document.getElementById('status-log');
@@ -1830,7 +1830,7 @@ async function startCollection() {
   title.textContent = 'Running...';
 
   try {
-    const resp = await fetch('/api/collection/start', { method: 'POST' });
+    const resp = await fetch('/api/collection/start' + (full ? '?full=true' : ''), { method: 'POST' });
     const data = await resp.json();
     if (!data.ok) {
       // Already running — still show live status

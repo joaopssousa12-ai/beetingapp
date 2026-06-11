@@ -267,12 +267,28 @@ def collect_tennisdata(status_callback=None, years=None, tours=None):
         tour_name, url_tpl = TOURS[tkey]
         for year in years:
             url = url_tpl.format(y=year)
+            # Retry once — most "errors" are transient network timeouts, not real
+            # data problems (the file format is stable across years).
+            content = None
+            last_err = None
+            for attempt in range(2):
+                try:
+                    resp = requests.get(url, timeout=45)
+                    if resp.status_code == 200 and len(resp.content) >= 1000:
+                        content = resp.content
+                        break
+                    last_err = f"HTTP {resp.status_code}, {len(resp.content)} bytes"
+                except Exception as e:
+                    last_err = repr(e)
+            if content is None:
+                # No file (e.g. off-season current year) is normal — only flag a
+                # real failure (timeout/HTTP error), not an empty/missing file.
+                if last_err and "404" not in str(last_err):
+                    errors += 1
+                    cb(f"  -> {tour_name} {year} skipped: {last_err}")
+                continue
             try:
-                resp = requests.get(url, timeout=40)
-                if resp.status_code != 200 or len(resp.content) < 1000:
-                    continue
-                raw = _read_xlsx(resp.content)
-                rows = _parse_rows(raw, tour_name, year)
+                rows = _parse_rows(_read_xlsx(content), tour_name, year)
                 if not rows:
                     continue
                 with_odds += sum(1 for r in rows
@@ -282,7 +298,7 @@ def collect_tennisdata(status_callback=None, years=None, tours=None):
                 cb(f"  -> {tour_name} {year}: {n} rows")
             except Exception as e:
                 errors += 1
-                cb(f"  -> {tour_name} {year} ERROR: {e}")
+                cb(f"  -> {tour_name} {year} PARSE/DB ERROR: {e}")
 
     status = "success" if errors == 0 else "partial"
     log_collection("tennis-data.co.uk odds", status, total,

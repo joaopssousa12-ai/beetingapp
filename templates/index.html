@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BetIQ — Betting Intelligence</title>
-<link rel="stylesheet" href="/static/css/style.css?v=20260611e">
+<link rel="stylesheet" href="/static/css/style.css?v=20260611f">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -409,9 +409,12 @@
           </div>
           <div class="card">
             <div class="card-head">Run collection</div>
-            <p class="muted-text">Fetches all data from active sources and stores it in the database. Runs automatically every night at 3am. You can also trigger it manually here.</p>
-            <button class="btn-primary" id="collect-btn" onclick="startCollection()">
-              ▶ Run Now
+            <p class="muted-text"><strong>Fast refresh</strong> updates live odds + Value Bets only (~1-2 min) — use this to see today's picks. The <strong>full</strong> run also re-imports historical/backtest data (~10-15 min) and runs automatically every night at 3am.</p>
+            <button class="btn-primary" id="collect-btn" onclick="startCollection(false)">
+              ▶ Refresh Odds &amp; Value Bets (fast)
+            </button>
+            <button class="btn-secondary" id="collect-full-btn" onclick="startCollection(true)" style="margin-left:8px">
+              ⟳ Full refresh (historical)
             </button>
             <button class="btn-primary" id="odds-import-btn" onclick="startOddsImport()" style="margin-left:8px;background:var(--accent)">
               ⬇ Import Historical Odds (for Backtest)
@@ -433,6 +436,6 @@
 
     </main>
   </div>
-<script src="/static/js/app.js?v=20260611e"></script>
+<script src="/static/js/app.js?v=20260611f"></script>
 </body>
 </html>

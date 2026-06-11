@@ -104,116 +104,116 @@ async def run_full_collection():
     loop = asyncio.get_event_loop()
 
     try:
-        cb("Step 1/4: Collecting football data (GitHub/openfootball)...")
+        # ════════════════════════════════════════════════════════════
+        # PHASE 1 — LIVE ODDS FIRST. This is all the Value Bets page needs, so
+        # do it before the slow historical/backtest imports. Value bets become
+        # usable in ~1-2 min instead of waiting ~15 min behind data they don't
+        # need. (The historical imports below only feed the backtest.)
+        # ════════════════════════════════════════════════════════════
+        cb("Phase 1/3: Live odds → Value Bets...")
         try:
-            n_fb = await loop.run_in_executor(
-                None, lambda: collect_football(status_callback=cb)
-            )
-            cb(f"Football done: {n_fb} rows collected.")
+            n_od = await loop.run_in_executor(None, lambda: collect_odds_apifootball(status_callback=cb))
+            cb(f"  API-Football odds: {n_od} events.")
         except Exception as e:
             import traceback
-            cb(f"FOOTBALL ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
+            cb(f"API-FOOTBALL ODDS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+        try:
+            n_od2 = await loop.run_in_executor(None, lambda: collect_odds(status_callback=cb))
+            cb(f"  The-Odds-API (incl. live tennis): {n_od2} events.")
+        except Exception as e:
+            import traceback
+            cb(f"ODDS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+        try:
+            n_opa = await loop.run_in_executor(None, lambda: collect_oddspapi(status_callback=cb))
+            if n_opa:
+                cb(f"  OddsPapi (Pinnacle no-vig): {n_opa} events.")
+        except Exception as e:
+            cb(f"OddsPapi ERROR (non-critical): {repr(e)}")
+        try:
+            n_bf = await loop.run_in_executor(None, lambda: collect_betfair_odds(status_callback=cb))
+            if n_bf:
+                cb(f"  Betfair Exchange (sharp ref): {n_bf} events.")
+        except Exception as e:
+            cb(f"Betfair ERROR (non-critical): {repr(e)}")
+        # Value bets are ready now — refresh the cache so the page shows them fast.
+        try:
+            invalidate_value_bets_cache()
+            await loop.run_in_executor(None, get_value_bets)
+            cb("✓ VALUE BETS READY. Historical/backtest data continues below (you can use the site now).")
+        except Exception as e:
+            cb(f"Value-bets warm error: {repr(e)}")
 
-        cb("Step 1b/4: Collecting historical ODDS (football-data.co.uk)...")
+        # ════════════════════════════════════════════════════════════
+        # PHASE 2 — HISTORICAL (backtest data only). Slow; runs AFTER value bets
+        # are already live, so it never blocks them. Off-season leagues simply
+        # return no data — that's expected, not an error.
+        # ════════════════════════════════════════════════════════════
+        cb("Phase 2/3: Historical data (for the backtest only)...")
+        try:
+            n_fb = await loop.run_in_executor(None, lambda: collect_football(status_callback=cb))
+            cb(f"  Football results: {n_fb} rows.")
+        except Exception as e:
+            import traceback
+            cb(f"FOOTBALL ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         try:
             res_fd = await loop.run_in_executor(None, lambda: collect_footballdata(status_callback=cb))
-            cb(f"Odds done: {res_fd.get('rows',0)} rows, {res_fd.get('with_odds',0)} with usable odds.")
+            cb(f"  Football odds: {res_fd.get('rows',0)} rows, {res_fd.get('with_odds',0)} with odds.")
         except Exception as e:
             import traceback
-            cb(f"FOOTBALLDATA ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
-
-        cb("Step 2/4: Collecting tennis data (ATP/WTA from GitHub)...")
+            cb(f"FOOTBALLDATA ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         try:
-            n_tn = await loop.run_in_executor(
-                None, lambda: collect_tennis(start_year=2015, status_callback=cb)
-            )
-            cb(f"Tennis done: {n_tn} rows collected.")
+            n_tn = await loop.run_in_executor(None, lambda: collect_tennis(start_year=2015, status_callback=cb))
+            cb(f"  Tennis results: {n_tn} rows.")
         except Exception as e:
             import traceback
-            cb(f"TENNIS ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
-
-        cb("Step 2b/4: Collecting historical tennis ODDS (tennis-data.co.uk)...")
+            cb(f"TENNIS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         try:
             from collectors.tennisdata import collect_tennisdata
             res_td = await loop.run_in_executor(None, lambda: collect_tennisdata(status_callback=cb))
-            cb(f"Tennis odds done: {res_td.get('rows',0)} rows, {res_td.get('with_odds',0)} with usable odds.")
+            cb(f"  Tennis odds: {res_td.get('rows',0)} rows, {res_td.get('with_odds',0)} with odds.")
         except Exception as e:
             import traceback
-            cb(f"TENNISDATA ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
-
-        cb("Step 3/4: Collecting national teams (international results)...")
+            cb(f"TENNISDATA ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         try:
-            n_nat = await loop.run_in_executor(
-                None, lambda: collect_national(since_year=2010, status_callback=cb)
-            )
-            cb(f"National teams done: {n_nat} rows collected.")
+            n_nat = await loop.run_in_executor(None, lambda: collect_national(since_year=2010, status_callback=cb))
+            cb(f"  National teams: {n_nat} rows.")
         except Exception as e:
             import traceback
-            cb(f"NATIONAL ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
-
-        cb("Step 3b: Computing national team xG (Dixon-Coles proxy)...")
+            cb(f"NATIONAL ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         try:
-            n_xg = await loop.run_in_executor(
-                None, lambda: compute_national_xg(status_callback=cb)
-            )
-            cb(f"National xG done: {n_xg} teams indexed.")
+            n_us = await loop.run_in_executor(None, lambda: collect_understat(status_callback=cb))
+            cb(f"  Understat xG: {n_us} matches.")
         except Exception as e:
             import traceback
-            cb(f"NATIONAL XG ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
+            cb(f"UNDERSTAT ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
 
-        cb("Step 4/5: Collecting live odds (multi-source)...")
+        # ════════════════════════════════════════════════════════════
+        # PHASE 3 — MODELS + CLV (computed from the freshly collected data)
+        # ════════════════════════════════════════════════════════════
+        cb("Phase 3/3: Models (Elo, national xG) + CLV...")
         try:
-            n_od = await loop.run_in_executor(
-                None, lambda: collect_odds_apifootball(status_callback=cb)
-            )
-            cb(f"Football odds done: {n_od} events.")
+            n_nxg = await loop.run_in_executor(None, lambda: compute_national_xg(status_callback=cb))
+            cb(f"  National xG: {n_nxg} teams indexed.")
         except Exception as e:
             import traceback
-            cb(f"FOOTBALL ODDS ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-400:])
+            cb(f"NATIONAL XG ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         try:
-            n_od2 = await loop.run_in_executor(
-                None, lambda: collect_odds(status_callback=cb)
-            )
-            cb(f"Other odds done: {n_od2} events.")
+            await loop.run_in_executor(None, lambda: collect_elo(status_callback=cb))
         except Exception as e:
             import traceback
-            cb(f"ODDS ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
-
-        cb("Step 5/5: Collecting xG data (Understat)...")
-        try:
-            n_xg = await loop.run_in_executor(
-                None, lambda: collect_understat(status_callback=cb)
-            )
-            cb(f"Understat done: {n_xg} matches.")
-        except Exception as e:
-            import traceback
-            cb(f"UNDERSTAT ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
-
-        # Auto-capture CLV for any pending bets after collection
+            cb(f"ELO ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         try:
             n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
             if n > 0:
                 cb(f"✓ Captured Pinnacle closing line for {n} past bet(s).")
         except Exception as e:
             cb(f"CLV capture error: {repr(e)}")
-
-        # Compute Elo ratings from all collected data
-        cb("Computing Elo ratings...")
+        # Models refreshed → re-warm value bets so confidence reflects them.
         try:
-            await loop.run_in_executor(None, lambda: collect_elo(status_callback=cb))
+            invalidate_value_bets_cache()
+            await loop.run_in_executor(None, get_value_bets)
         except Exception as e:
-            import traceback
-            cb(f"ELO ERROR: {repr(e)}")
-            cb(traceback.format_exc()[-800:])
+            cb(f"Value-bets re-warm error: {repr(e)}")
 
         cb("✓ All collection finished.")
 
@@ -313,11 +313,17 @@ async def api_collection_status():
     })
 
 @app.post("/api/collection/start")
-async def api_start_collection():
+async def api_start_collection(full: bool = False):
+    """Default = FAST: refresh live odds + value bets only (~1-2 min). Pass
+    ?full=true for the complete run incl. historical/backtest data (~10-15 min,
+    also runs automatically every night at 3am)."""
     if collection_status["running"]:
         return JSONResponse({"ok": False, "msg": "Already running."})
-    asyncio.create_task(run_full_collection())
-    return JSONResponse({"ok": True, "msg": "Collection started."})
+    if full:
+        asyncio.create_task(run_full_collection())
+        return JSONResponse({"ok": True, "msg": "Full collection started (incl. historical)."})
+    asyncio.create_task(run_odds_only())
+    return JSONResponse({"ok": True, "msg": "Fast refresh started (live odds + value bets)."})
 
 
 async def _run_footballdata_only():
