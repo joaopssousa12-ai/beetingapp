@@ -883,8 +883,14 @@ tbody tr.value-row td.strong { color: var(--text); }
 .vb-market-row .m-edge.flat { color: var(--amber); }
 .vb-market-row .m-edge.neg { color: var(--text3); }
 .vb-market-row .m-edge.noise { color: var(--amber); }
+.vb-market-row .m-edge.mute { color: var(--text3); opacity: 0.6; }
 .vb-market-row .m-kelly { font-family: var(--mono); text-align: right; color: var(--accent); font-size: 11px; }
 .vb-market-row .m-conf { color: var(--accent); text-align: center; }
+.vb-market-row .m-conf .m-conf-empty { color: var(--text3); opacity: 0.5; }
+/* Rows whose odd is above the ceiling are shown for reference but dimmed —
+   never green, never starred (consistent with the Best Pick rules). */
+.vb-market-row.is-muted { opacity: 0.72; }
+.vb-market-row.is-muted .m-selection { color: var(--text2); font-weight: 400; }
 
 /* Preset buttons */
 .vb-presets-group { gap: 5px; }

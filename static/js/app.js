@@ -465,6 +465,44 @@ function playNewBetSound() {
 }
 
 // ============================================================
+// VALUE EVALUATION — ONE source of truth for the whole page
+// ------------------------------------------------------------
+// A recommendation comes ONLY from real automatic odds and NEVER above the
+// odds ceiling. Stars + value belong to the Best Pick: if there is no eligible
+// Best Pick, the match has NO stars and is NOT "value" — so the confidence
+// filters can't pull a game in just because some >ceiling longshot looked good
+// (that was the "5★ but Best Pick = no value" bug).
+// ============================================================
+const VB_VALUE_FLOOR = 3;   // edge% needed to be a green / celebrated value bet
+const VB_ODD_FLOOR = 1.5;   // min odd for a celebrated pick
+function vbOddCeiling() { return Math.min(vbState.maxOdds ?? 5.0, 5.0); }
+
+function vbEval(b) {
+  const minEdge = vbState.minEdge ?? 3;
+  const ceiling = vbOddCeiling();
+  // Best real odd per market+selection, within the ceiling. >ceiling = ignored.
+  const byKey = {};
+  for (const p of (b.all_picks || [])) {
+    if (!p.book_odd || p.book_odd <= 1 || p.book_odd > ceiling) continue;
+    const key = `${p.market}|||${p.selection}`;
+    const ex = byKey[key];
+    if (!ex) { byKey[key] = p; continue; }
+    if (p.book === 'Best' && ex.book !== 'Best') byKey[key] = p;
+    else if (ex.book !== 'Best' && p.book_odd > ex.book_odd) byKey[key] = p;
+  }
+  const realPicks = Object.values(byKey);
+  const valuePicks = realPicks.filter(p => p.edge_pct != null && p.edge_pct >= minEdge && p.edge_pct <= 15);
+  const bestPick = valuePicks.length
+    ? valuePicks.reduce((a, p) => ((p.confidence||0)*100 + p.edge_pct) > ((a.confidence||0)*100 + a.edge_pct) ? p : a)
+    : null;
+  const isValue = !!bestPick && bestPick.edge_pct >= VB_VALUE_FLOOR
+      && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= 5.0;
+  // Stars are the Best Pick's stars. No eligible Best Pick → 0 stars.
+  const stars = bestPick ? (bestPick.confidence || 0) : 0;
+  return { realPicks, bestPick, isValue, stars, ceiling };
+}
+
+// ============================================================
 // COMPACT TABLE VIEW — dense row-per-event alternative to cards
 // ============================================================
 function renderTableView(data) {
@@ -484,8 +522,9 @@ function renderTableView(data) {
     <span class="vbt-time">Time</span>
   </div>`;
   const rows = data.map(b => {
-    const bv = b.best_value;
-    const isValue = bv && bv.edge_pct != null && bv.edge_pct >= _qMinEdge && bv.edge_pct <= 15 && (!bv.book_odd || bv.book_odd <= _qMaxOdds);
+    const ev = vbEval(b);
+    const bv = ev.bestPick;
+    const isValue = ev.isValue;
     const edgePct = bv?.edge_pct ?? null;
     let eCls = 'neg';
     if (edgePct != null) {
@@ -502,7 +541,7 @@ function renderTableView(data) {
       const kQ = ((edgePct / 100) / (bv.book_odd - 1)) * 0.25;
       kellyStr = _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
     }
-    const conf = b.best_confidence || 0;
+    const conf = ev.stars;
     const timeStr = (() => {
       if (!b.commence_time) return '—';
       const diff = (new Date(b.commence_time) - Date.now()) / 3600000;
@@ -544,8 +583,6 @@ function isPlaceholderTeam(t) {
 
 function applyVbFilters(rows) {
   let out = rows.slice();
-  const minEdge = vbState.minEdge ?? 0;
-  const maxOdds = vbState.maxOdds ?? 999;
   const minConf = vbState.minConf ?? 0;
 
   // Always drop TBD bracket placeholders — never bettable, only clutter.
@@ -563,18 +600,15 @@ function applyVbFilters(rows) {
     });
   }
   if (vbState.mode === 'value') {
-    // Show only cards where the best pick meets the quality gate
-    out = out.filter(r => {
-      const bv = r.best_value;
-      if (!bv || bv.edge_pct == null) return false;
-      return bv.edge_pct >= minEdge && bv.edge_pct <= 15
-        && (!bv.book_odd || bv.book_odd <= maxOdds);
-    });
+    // Only matches that HAVE an eligible Best Pick (real odds, within the gate).
+    out = out.filter(r => vbEval(r).bestPick != null);
   } else if (vbState.mode === 'confident') {
-    out = out.filter(r => Math.max(r.best_confidence || 0, (r.best_pick && r.best_pick.confidence) || 0, (r.safest_pick && r.safest_pick.confidence) || 0) >= 4);
+    // 4+ stars ON THE BEST PICK — never on a >ceiling longshot in the table.
+    out = out.filter(r => vbEval(r).stars >= 4);
   }
   if (minConf > 0) {
-    out = out.filter(r => Math.max(r.best_confidence || 0, (r.best_pick && r.best_pick.confidence) || 0, (r.safest_pick && r.safest_pick.confidence) || 0) >= minConf);
+    // Confidence filter follows the Best Pick: no Best Pick ⇒ 0 stars ⇒ excluded.
+    out = out.filter(r => vbEval(r).stars >= minConf);
   }
   return out;
 }
@@ -622,17 +656,14 @@ function edgeClass(e) {
 // Rank: value picks on top (by confidence × edge), then positive edge, then the rest.
 // Pros want "best pick of the day" first — never date order.
 function vbRankScore(b) {
-  const bv = b.best_value;
-  if (!bv || bv.edge_pct == null) return -1e9;
-  const edge = bv.edge_pct;
-  const conf = b.best_confidence || 0;
-  const _min = vbState.minEdge ?? 3;
-  const _max = vbState.maxOdds ?? 5.0;
-  const isValue = edge >= _min && edge <= 15 && (!bv.book_odd || bv.book_odd <= _max);
-  if (isValue) return 1e6 + conf * 100 + Math.min(edge, 15); // value: rank by conf×edge
-  if (edge > 15) return -100;                                 // noise/suspect sinks
-  if (edge > 0) return edge;                                  // marginal positive
-  return -1000 + edge;                                        // negative edge at bottom
+  const ev = vbEval(b);
+  if (!ev.bestPick) return -1e9;                                  // no recommendable pick → bottom
+  const edge = ev.bestPick.edge_pct;
+  const conf = ev.stars;
+  if (ev.isValue) return 1e6 + conf * 100 + Math.min(edge, 15);   // value: rank by conf×edge
+  if (edge > 15) return -100;                                     // noise/suspect sinks
+  if (edge > 0) return edge;                                      // marginal positive
+  return -1000 + edge;                                            // negative edge at bottom
 }
 
 function renderValueBets() {
@@ -646,10 +677,7 @@ function renderValueBets() {
   // Sound notification — fire when new value bets appear
   const _qMinEdge = vbState.minEdge ?? 3;
   const _qMaxOdds = vbState.maxOdds ?? 5.0;
-  const valueCount = data.filter(b => {
-    const bv = b.best_value;
-    return bv && bv.edge_pct >= _qMinEdge && bv.edge_pct <= 15 && (!bv.book_odd || bv.book_odd <= _qMaxOdds);
-  }).length;
+  const valueCount = data.filter(b => vbEval(b).isValue).length;
   if (_prevValueBetCount >= 0 && valueCount > _prevValueBetCount) playNewBetSound();
   _prevValueBetCount = valueCount;
 
@@ -727,41 +755,15 @@ function renderCard(b) {
   const isExpanded = !vbState.collapsed.has(b.event_id);
   const hasAutoH2H = !!(b.x1_home || b.b365_home || b.best_home);
 
-  // ── HARD RULES ─────────────────────────────────────────────────
-  // Recommendations come ONLY from real automatic odds and NEVER above 5.0.
-  // (Odd-less xG-only suggestions and >5.0 longshots never appear as a pick.)
-  const ODDS_CEILING = Math.min(_qMaxOdds || 5.0, 5.0);
-  const realPicks = (() => {
-    const byKey = {};
-    for (const p of (b.all_picks || [])) {
-      if (!p.book_odd || p.book_odd <= 1 || p.book_odd > ODDS_CEILING) continue;
-      const key = `${p.market}|||${p.selection}`;
-      const ex = byKey[key];
-      if (!ex) { byKey[key] = p; continue; }
-      if (p.book === 'Best' && ex.book !== 'Best') byKey[key] = p;
-      else if (ex.book !== 'Best' && p.book_odd > ex.book_odd) byKey[key] = p;
-    }
-    return Object.values(byKey);
-  })();
-
-  // BEST PICK = highest credible edge (≥ minEdge, ≤ 15%) among real picks, weighted by confidence.
-  const _valuePicks = realPicks.filter(p => p.edge_pct != null && p.edge_pct >= _qMinEdge && p.edge_pct <= 15);
-  const bestPickReal = _valuePicks.length
-    ? _valuePicks.reduce((a, p) => ((p.confidence||0)*100 + p.edge_pct) > ((a.confidence||0)*100 + a.edge_pct) ? p : a)
-    : null;
-  // SAFEST PICK = most likely real-odds outcome (highest true prob), different selection if possible.
-  const _safePool = realPicks.filter(p => p.true_prob != null &&
-      (!bestPickReal || p.selection !== bestPickReal.selection || p.market !== bestPickReal.market));
-  const safestPickReal = _safePool.length
-    ? _safePool.reduce((a, p) => p.true_prob > a.true_prob ? p : a)
-    : null;
-
-  // VALUE FLOOR: a pick is only "value" (green, celebrated, trackable) when it clears
-  // the checklist — edge >= 3% and odd in 1.5-5.0 — no matter how low the display
-  // filter is set. Below that it's shown muted/informational, never as a green rec.
-  const VALUE_FLOOR = 3;
-  const isCelebrated = !!bestPickReal && bestPickReal.edge_pct >= VALUE_FLOOR
-    && bestPickReal.book_odd >= 1.5 && bestPickReal.book_odd <= 5.0;
+  // ── HARD RULES (single source of truth: vbEval) ───────────────
+  // Recommendations come ONLY from real automatic odds and NEVER above the
+  // ceiling. Stars/value belong to the Best Pick; below the 3% floor it shows
+  // muted/informational, never as a green rec. No more "Safest Pick".
+  const ev = vbEval(b);
+  const ODDS_CEILING = ev.ceiling;
+  const realPicks = ev.realPicks;
+  const bestPickReal = ev.bestPick;
+  const isCelebrated = ev.isValue;
   const hasValue = isCelebrated;
 
   // ── Negative-ROI league warning (from historical backtest) ─────
@@ -838,7 +840,6 @@ function renderCard(b) {
   const starsHtmlFor = (n) => Array.from({length:5}, (_,i) =>
     `<span class="vb-star${i >= (n||0) ? ' empty' : ''}">★</span>`).join('');
   const trophyIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h12v6c0 3-3 6-6 6s-6-3-6-6V2z"/><path d="M9 18h6v3H9z"/></svg>';
-  const shieldIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-4 9-8 10-4-1-8-5-8-10V6l8-4z"/></svg>';
   const refLabel = b.odds_source === 'betfair' ? 'Betfair' : 'Pinnacle';
 
   // BIG hero card — odd is KING (26px+). `celebrated` = clears the value floor (>=3%
@@ -882,38 +883,15 @@ function renderCard(b) {
     </div>`;
   }
 
-  // MEDIUM card — clearly visible (not a tiny row).
-  function renderSafestReal(p) {
-    const edge = p.edge_pct;
-    const eSign = edge != null && edge > 0 ? '+' : '';
-    const eCls = edge == null ? 'flat' : edge >= 3 ? 'pos' : edge >= 1 ? 'flat' : 'neg';
-    return `<div class="vb-safest-card">
-      <div class="vb-pick-label">${shieldIcon}Safest Pick<span class="vb-stars">${starsHtmlFor(p.confidence)}</span></div>
-      <div class="vb-safest-main">
-        <div class="vb-safest-left">
-          <div class="vb-safest-sel">${p.selection}</div>
-          <div class="vb-pick-market">${p.market}</div>
-        </div>
-        <div class="vb-safest-nums">
-          <span class="vb-safest-odd">${fmtOdd(p.book_odd)}</span>
-          ${p.true_prob != null ? `<span class="vb-safest-prob">${p.true_prob}% prob</span>` : ''}
-          ${edge != null ? `<span class="edge-chip ${eCls}" style="font-size:11px">${eSign}${edge.toFixed(1)}%</span>` : ''}
-        </div>
-      </div>
-    </div>`;
-  }
-
-  let heroBlock, safestRow;
+  let heroBlock;
   if (bestPickReal) {
     heroBlock = renderHeroReal(bestPickReal, isCelebrated);
-    safestRow = safestPickReal ? renderSafestReal(safestPickReal) : '';
   } else {
     // No real pick clears the gate at odds ≤ ceiling — say so cleanly, don't fake one.
     heroBlock = `<div class="vb-hero-pick no-value">
       <div class="vb-pick-label">${trophyIcon}Best Pick</div>
       <div style="color:var(--text3);font-size:13px;padding:10px 0">No value at odds ≤ ${ODDS_CEILING.toFixed(1)} — informational only</div>
     </div>`;
-    safestRow = '';
   }
   const standaloneValueHtml = ''; // removed: Best Pick is always real-odds-derived now
 
@@ -938,7 +916,8 @@ function renderCard(b) {
     if (h2h.length) {
       parts.push(h2h.map(p => {
         const eSign = p.edge_pct > 0 ? '+' : '';
-        const eCls = p.edge_pct > 15 ? 'noise' : p.edge_pct >= _qMinEdge && p.edge_pct <= 15 ? 'pos' : p.edge_pct >= 1 ? 'flat' : '';
+        const within = p.book_odd && p.book_odd <= ODDS_CEILING;
+        const eCls = p.edge_pct > 15 ? 'noise' : (within && p.edge_pct >= _qMinEdge && p.edge_pct <= 15) ? 'pos' : p.edge_pct >= 1 ? 'flat' : '';
         const shortSel = p.selection === b.home_team ? (b.home_team.split(' ')[0]) : p.selection === b.away_team ? (b.away_team.split(' ')[0]) : p.selection;
         return `<span class="vb-ob-item${eCls ? ' vc-' + eCls : ''}">
           <span class="vb-ob-sel">${shortSel}</span>
@@ -950,7 +929,8 @@ function renderCard(b) {
     if (ou.length) {
       const ouStr = ou.map(p => {
         const eSign = p.edge_pct > 0 ? '+' : '';
-        const eCls = p.edge_pct >= _qMinEdge && p.edge_pct <= 15 ? 'pos' : '';
+        const within = p.book_odd && p.book_odd <= ODDS_CEILING;
+        const eCls = (within && p.edge_pct >= _qMinEdge && p.edge_pct <= 15) ? 'pos' : '';
         const shortSel = p.selection.includes('Over') ? `O${p.selection.replace(/[^0-9.]/g,'')}` : `U${p.selection.replace(/[^0-9.]/g,'')}`;
         return `<span class="vb-ob-item${eCls ? ' vc-pos' : ''}"><span class="vb-ob-sel">${shortSel}</span><span class="vb-ob-odd">${fmtOdd(p.book_odd)}</span>${eCls ? `<span class="vb-ob-edge">${eSign}${p.edge_pct.toFixed(1)}%</span>` : ''}</span>`;
       }).join('<span class="vb-ob-div">·</span>');
@@ -959,7 +939,8 @@ function renderCard(b) {
     if (btts.length) {
       const bttsStr = btts.map(p => {
         const eSign = p.edge_pct > 0 ? '+' : '';
-        const eCls = p.edge_pct >= _qMinEdge && p.edge_pct <= 15 ? 'pos' : '';
+        const within = p.book_odd && p.book_odd <= ODDS_CEILING;
+        const eCls = (within && p.edge_pct >= _qMinEdge && p.edge_pct <= 15) ? 'pos' : '';
         const shortSel = p.selection.includes('Yes') ? 'BTTS Y' : 'BTTS N';
         return `<span class="vb-ob-item${eCls ? ' vc-pos' : ''}"><span class="vb-ob-sel">${shortSel}</span><span class="vb-ob-odd">${fmtOdd(p.book_odd)}</span>${eCls ? `<span class="vb-ob-edge">${eSign}${p.edge_pct.toFixed(1)}%</span>` : ''}</span>`;
       }).join('<span class="vb-ob-div">·</span>');
@@ -992,27 +973,34 @@ function renderCard(b) {
     </div>`;
     const _br = vbState.bankroll || 0;
     const rows = picks.map(p => {
-      let eCls = 'neg';
-      if (p.edge_pct > 15) eCls = 'noise';
+      // A selection only counts as a real pick (green edge + stars + Kelly) if its
+      // odd is within the ceiling. >ceiling longshots (e.g. Qatar @16.5) are shown
+      // for reference but greyed out — never green, never starred.
+      const eligible = p.book_odd && p.book_odd > 1 && p.book_odd <= ODDS_CEILING;
+      let eCls = 'mute';
+      if (!eligible) eCls = 'mute';
+      else if (p.edge_pct > 15) eCls = 'noise';
       else if (p.edge_pct >= 3) eCls = 'pos';
       else if (p.edge_pct >= 1) eCls = 'flat';
+      else eCls = 'neg';
       const sign = p.edge_pct > 0 ? '+' : '';
       const fairOdd = p.fair_odd
         ? p.fair_odd.toFixed(2)
         : (p.book_odd && p.edge_pct != null ? (p.book_odd / (1 + p.edge_pct / 100)).toFixed(2) : '—');
       let kellyStr = '—';
-      if (p.edge_pct > 0 && p.book_odd > 1) {
+      if (eligible && p.edge_pct > 0 && p.book_odd > 1) {
         const kQ = ((p.edge_pct / 100) / (p.book_odd - 1)) * 0.25;
         kellyStr = _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
       }
-      return `<div class="vb-market-row">
+      const starCount = (eligible && p.edge_pct >= VB_VALUE_FLOOR) ? (p.confidence || 0) : 0;
+      return `<div class="vb-market-row${eligible ? '' : ' is-muted'}">
         <span class="m-market">${p.market}</span>
         <span class="m-selection">${p.selection}</span>
         <span class="m-odd">${fmtOdd(p.book_odd)}</span>
         <span class="m-novigo">${fairOdd}</span>
         <span class="m-edge ${eCls}">${sign}${p.edge_pct.toFixed(1)}%</span>
         <span class="m-kelly">${kellyStr}</span>
-        <span class="m-conf">${'★'.repeat(p.confidence || 0)}</span>
+        <span class="m-conf">${starCount ? '★'.repeat(starCount) : '<span class="m-conf-empty">—</span>'}</span>
       </div>`;
     }).join('');
     return header + rows;
@@ -1189,7 +1177,6 @@ function renderCard(b) {
     ${probLineHtml}
     ${standaloneValueHtml}
     ${heroBlock}
-    ${safestRow}
     ${oddsBarHtml}
     <div class="vb-your-value vb-pick-block best-value has-value" style="display:none"></div>
     <div class="vb-card-foot">
@@ -1416,8 +1403,12 @@ function toggleExpand(eventId) {
 }
 
 function quickAddBet(b) {
-  // Pre-fill bet form with best value pick
-  if (!b || !b.best_value) return;
+  // Pre-fill bet form with the SAME pick shown on the green card (eligible best
+  // pick, real odds within the ceiling). Fall back to backend best_value only if
+  // there is no eligible pick (shouldn't happen — Track only shows when there is).
+  if (!b) return;
+  const pick = vbEval(b).bestPick || b.best_value;
+  if (!pick) return;
   document.querySelector('[data-section="mybets"]').click();
   setTimeout(() => {
     const f = document.getElementById('bet-form');
@@ -1430,16 +1421,18 @@ function quickAddBet(b) {
       const iso = new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,16);
       document.getElementById('bet-commence').value = iso;
     }
-    document.getElementById('bet-selection').value = b.best_value.selection || '';
-    document.getElementById('bet-odds').value = b.best_value.book_odd || '';
-    document.getElementById('bet-bookmaker').value = b.best_value.book || '1xBet';
+    document.getElementById('bet-selection').value = pick.selection || '';
+    document.getElementById('bet-odds').value = pick.book_odd || '';
+    document.getElementById('bet-bookmaker').value = pick.book || '1xBet';
     const stakeField = document.getElementById('bet-stake');
-    if (vbState.bankroll > 0 && b.best_value.kelly_pct > 0 && !stakeField.value) {
-      stakeField.value = (vbState.bankroll * b.best_value.kelly_pct / 100).toFixed(2);
+    const kellyQ = (pick.edge_pct > 0 && pick.book_odd > 1)
+      ? (pick.edge_pct / 100) / (pick.book_odd - 1) * 0.25 : (pick.kelly_pct || 0) / 100;
+    if (vbState.bankroll > 0 && kellyQ > 0 && !stakeField.value) {
+      stakeField.value = (vbState.bankroll * kellyQ).toFixed(2);
     }
     // Store edge for later analysis
     const edgeField = document.getElementById('bet-edge-pct');
-    if (edgeField) edgeField.value = b.best_value.edge_pct || '';
+    if (edgeField) edgeField.value = pick.edge_pct || '';
   }, 100);
 }
 
