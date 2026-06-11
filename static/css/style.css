@@ -1696,6 +1696,21 @@ tbody tr.value-row td.strong { color: var(--text); }
 .vb-sr-sel { font-weight: 600; color: var(--text); white-space: nowrap; }
 .vb-sr-mkt { color: var(--text3); font-size: 11px; white-space: nowrap; }
 
+/* Safest pick — MEDIUM card (clearly visible, not a tiny row) */
+.vb-safest-card {
+  padding: 12px 18px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--blue, #4f9cf9);
+}
+.vb-safest-card .vb-pick-label { margin-bottom: 8px; }
+.vb-safest-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.vb-safest-sel { font-size: 16px; font-weight: 700; color: var(--text); line-height: 1.2; }
+.vb-safest-card .vb-pick-market { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
+.vb-safest-nums { display: flex; align-items: center; gap: 12px; }
+.vb-safest-odd { font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--text); }
+.vb-safest-prob { font-size: 12px; color: var(--text2); font-family: var(--mono); }
+
 /* Market odds bar (always visible) */
 .vb-odds-bar {
   display: flex;
