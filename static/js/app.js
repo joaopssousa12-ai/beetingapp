@@ -284,6 +284,7 @@ document.getElementById('tennis-search').addEventListener('input', function () {
 let vbState = {
   raw: [],
   sportFilter: '',
+  surfaceFilter: '',
   whenFilter: 'all',
   mode: 'all',
   bankroll: 0,
@@ -331,6 +332,10 @@ function wireFilters() {
   vbState._wired = true;
   document.getElementById('vb-sport').addEventListener('change', e => {
     vbState.sportFilter = e.target.value; renderValueBets();
+  });
+  const surfEl = document.getElementById('vb-surface');
+  if (surfEl) surfEl.addEventListener('change', e => {
+    vbState.surfaceFilter = e.target.value; renderValueBets();
   });
   document.getElementById('vb-when').addEventListener('change', e => {
     vbState.whenFilter = e.target.value; renderValueBets();
@@ -599,6 +604,8 @@ function applyVbFilters(rows) {
   out = out.filter(r => !isPlaceholderTeam(r.home_team) && !isPlaceholderTeam(r.away_team));
 
   if (vbState.sportFilter) out = out.filter(r => r.sport_name === vbState.sportFilter);
+  // Surface is a tennis concept → when set, show only matching-surface tennis events.
+  if (vbState.surfaceFilter) out = out.filter(r => isTennisEvent(r) && tennisSurface(r) === vbState.surfaceFilter);
   if (vbState.whenFilter !== 'all') {
     const now = Date.now();
     const hoursMap = {'24h': 24, '48h': 48, '7d': 168, '14d': 336, '30d': 720};
@@ -669,18 +676,34 @@ function lineMoveLine(b, p) {
   return `<div class="vb-linemove ${shortened ? 'vb-lm-in' : 'vb-lm-out'}">${arrow} Line ${o.toFixed(2)} → ${l.toFixed(2)} · ${txt}</div>`;
 }
 
-// Surface badge for a live tennis card. The odds feed has no surface, so we
-// infer it from the competition name (reliable for Slams; generic Tour events
-// stay unbadged). A backend `surface` hint, if present, wins.
-function tennisSurfaceBadge(b) {
+// Is this a tennis event?
+function isTennisEvent(b) {
   const s = (b.sport_name || '').toLowerCase();
-  if (!(s.includes('atp') || s.includes('wta') || s.includes('tennis'))) return '';
-  let surface = b.surface || null;
-  if (!surface) {
-    if (s.includes('wimbledon')) surface = 'Grass';
-    else if (s.includes('roland') || s.includes('french open')) surface = 'Clay';
-    else if (s.includes('us open') || s.includes('australian') || s.includes('aus open')) surface = 'Hard';
+  return s.includes('atp') || s.includes('wta') || s.includes('tennis');
+}
+
+// The odds feed has no surface, so infer it from the tournament name. Tournaments
+// keep the same surface year to year, so a keyword map covers most of the tour
+// (not just the Slams). Unknown tournaments return null (stay unfiltered/unbadged).
+const _SURFACE_KEYWORDS = {
+  Grass: ['wimbledon', 'halle', 'queen', 's-hertogenbosch', 'hertogenbosch', 'stuttgart', 'eastbourne', 'mallorca', 'newport', 'nottingham', 'birmingham'],
+  Clay: ['roland garros', 'french open', 'monte carlo', 'monte-carlo', 'madrid', 'rome', 'italian open', 'hamburg', 'barcelona', 'munich', 'estoril', 'bastad', 'gstaad', 'kitzbuhel', 'umag', 'geneva', 'lyon', 'bucharest', 'rabat', 'charleston', 'stuttgart open', 'strasbourg', 'parma'],
+  Hard: ['us open', 'australian', 'aus open', 'miami', 'indian wells', 'cincinnati', 'canada', 'montreal', 'toronto', 'dubai', 'doha', 'acapulco', 'shanghai', 'beijing', 'tokyo', 'vienna', 'basel', 'paris masters', 'rotterdam', 'marseille', 'metz', 'antwerp', 'astana', 'adelaide', 'brisbane', 'auckland', 'washington', 'winston', 'chengdu', 'zhuhai'],
+};
+
+function tennisSurface(b) {
+  if (b.surface) return b.surface;           // backend hint wins
+  if (!isTennisEvent(b)) return null;
+  const s = (b.sport_name || '').toLowerCase();
+  for (const [surf, kws] of Object.entries(_SURFACE_KEYWORDS)) {
+    if (kws.some(k => s.includes(k))) return surf;
   }
+  return null;
+}
+
+// Surface badge for a live tennis card.
+function tennisSurfaceBadge(b) {
+  const surface = tennisSurface(b);
   return surface ? ' ' + surfaceBadge(surface) : '';
 }
 function fmtTime(iso) {
@@ -1860,6 +1883,26 @@ async function checkCollectionRunning() {
       btn.textContent = '⏳ Running...';
       _pollCollectionStatus(btn, box, log, title);
     }
+  }
+}
+
+async function testTelegram() {
+  const btn = document.getElementById('tg-test-btn');
+  const st = document.getElementById('tg-test-status');
+  if (!btn) return;
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = '⏳ Sending…';
+  if (st) st.textContent = '';
+  try {
+    const r = await fetch('/api/telegram/test', { method: 'POST' });
+    const d = await r.json();
+    if (st) {
+      st.textContent = (d.ok ? '✅ ' : '⚠ ') + (d.msg || (d.ok ? 'Sent — check Telegram.' : 'Failed.'));
+      st.style.color = d.ok ? '#16a34a' : '#d97706';
+    }
+  } catch (e) {
+    if (st) { st.textContent = '⚠ ' + e.message; st.style.color = '#d97706'; }
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
   }
 }
 

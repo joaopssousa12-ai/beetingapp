@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BetIQ — Betting Intelligence</title>
-<link rel="stylesheet" href="/static/css/style.css?v=20260612a">
+<link rel="stylesheet" href="/static/css/style.css?v=20260612b">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -173,6 +173,12 @@
         <div class="vb-toolbar">
           <div class="vb-toolbar-group">
             <select id="vb-sport" class="vb-select"><option value="">All sports</option></select>
+            <select id="vb-surface" class="vb-select" title="Tennis surface (Hard/Clay/Grass)">
+              <option value="">All surfaces</option>
+              <option value="Hard">🎾 Hard</option>
+              <option value="Clay">🎾 Clay</option>
+              <option value="Grass">🎾 Grass</option>
+            </select>
             <select id="vb-when" class="vb-select">
               <option value="all" selected>All upcoming</option>
               <option value="24h">Next 24h</option>
@@ -431,11 +437,22 @@
               <div class="status-log" id="status-log"></div>
             </div>
           </div>
+          <div class="card">
+            <div class="card-head">📲 Telegram alerts</div>
+            <p class="muted-text">Get a Telegram ping the moment a new green value bet appears (sent automatically on every odds refresh, deduped per ~20h). Set <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_CHAT_ID</code> in your Render environment variables, then test below.</p>
+            <ol class="muted-text" style="font-size:12px;margin:0 0 10px 18px;line-height:1.7">
+              <li>Open <strong>@BotFather</strong> on Telegram → <code>/newbot</code> → copy the <strong>token</strong>.</li>
+              <li>Message your new bot once, then open <code>@userinfobot</code> to get your <strong>chat id</strong>.</li>
+              <li>Add both as env vars on Render and redeploy → click Test.</li>
+            </ol>
+            <button class="btn-secondary" id="tg-test-btn" onclick="testTelegram()">📨 Test Telegram</button>
+            <span id="tg-test-status" class="muted-text" style="margin-left:10px;font-size:12px"></span>
+          </div>
         </div>
       </section>
 
     </main>
   </div>
-<script src="/static/js/app.js?v=20260612a"></script>
+<script src="/static/js/app.js?v=20260612b"></script>
 </body>
 </html>
