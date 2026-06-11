@@ -378,3 +378,124 @@ def get_backtest_meta():
     leagues = sorted({r['league_name'] for r in rows if r['league_name']})
     seasons = sorted({r['season'] for r in rows if r['season']}, reverse=True)
     return {'leagues': leagues, 'seasons': seasons}
+
+
+# ============================================================
+# SWEET-SPOT COMPARISON — run several (min_edge, max_odds) settings in one pass
+# ============================================================
+def _scenario_bets(rows, min_edge, max_odds, bankroll, kelly_frac, max_kelly_pct, market_filter):
+    """Same staking/selection logic as run_backtest, returned as (stake, profit, won, date) tuples."""
+    out = []
+    for r in rows:
+        # --- Match Result: one best-edge bet per match ---
+        if market_filter in ('all', 'h2h'):
+            if r['pinnacle_home_close'] and r['pinnacle_draw_close'] and r['pinnacle_away_close']:
+                ref_h, ref_d, ref_a = r['pinnacle_home_close'], r['pinnacle_draw_close'], r['pinnacle_away_close']
+            else:
+                ref_h, ref_d, ref_a = r['avg_home'], r['avg_draw'], r['avg_away']
+            th, td, ta = _devig_3way(ref_h, ref_d, ref_a)
+            bh = r['max_home'] or r['b365_home'] or r['avg_home']
+            bd = r['max_draw'] or r['b365_draw'] or r['avg_draw']
+            ba = r['max_away'] or r['b365_away'] or r['avg_away']
+            if th is not None and bh and bd and ba:
+                cands = []
+                for sel, tp, od in [(r['home_team'], th, bh), ('Draw', td, bd), (r['away_team'], ta, ba)]:
+                    if not od or od > max_odds:
+                        continue
+                    e = (tp * od - 1) * 100
+                    if e >= min_edge:
+                        cands.append((e, sel, tp, od))
+                if cands:
+                    e, sel, tp, od = max(cands, key=lambda x: x[0])
+                    k = min(_kelly(tp, od, kelly_frac), max_kelly_pct)
+                    stake = round(k * bankroll, 2)
+                    if stake >= 0.01:
+                        won = _won_h2h(r['result'], sel, r['home_team'], r['away_team'])
+                        out.append((stake, round(stake * (od - 1) if won else -stake, 2), won, r['date'] or ''))
+        # --- Over/Under 2.5 ---
+        if market_filter in ('all', 'ou25'):
+            to, tu = _devig_2way(r['over25_pinnacle'], r['under25_pinnacle'])
+            ob = r['over25_max'] or r['over25_avg']
+            if to is not None and ob and ob <= max_odds:
+                e = (to * ob - 1) * 100
+                if e >= min_edge:
+                    k = min(_kelly(to, ob, kelly_frac), max_kelly_pct)
+                    stake = round(k * bankroll, 2)
+                    if stake >= 0.01:
+                        won = ((r['home_goals'] or 0) + (r['away_goals'] or 0)) > 2.5
+                        out.append((stake, round(stake * (ob - 1) if won else -stake, 2), won, r['date'] or ''))
+    return out
+
+
+def _summarize_scenario(min_edge, max_odds, bets):
+    n = len(bets)
+    if n == 0:
+        return {'min_edge': min_edge, 'max_odds': max_odds, 'bets': 0, 'win_rate': 0,
+                'roi': 0, 'sharpe': 0, 'profit': 0}
+    wins = sum(1 for b in bets if b[2])
+    staked = sum(b[0] for b in bets)
+    profit = sum(b[1] for b in bets)
+    returns = [b[1] / b[0] for b in bets if b[0] > 0]
+    mean_r = statistics.mean(returns) if returns else 0
+    std_r = statistics.stdev(returns) if len(returns) > 1 else 1
+    dates = sorted(b[3] for b in bets if b[3])
+    years = 1.0
+    if len(dates) >= 2:
+        try:
+            from datetime import date as _date
+            years = max((_date.fromisoformat(dates[-1][:10]) - _date.fromisoformat(dates[0][:10])).days / 365.25, 0.5)
+        except Exception:
+            years = 1.0
+    sharpe = (mean_r / std_r) * math.sqrt(n / years) if std_r > 0 else 0
+    return {
+        'min_edge': min_edge, 'max_odds': max_odds, 'bets': n,
+        'win_rate': round(wins / n * 100, 1),
+        'roi': round(profit / staked * 100, 2) if staked > 0 else 0,
+        'sharpe': round(sharpe, 2),
+        'profit': round(profit, 2),
+    }
+
+
+def compare_thresholds(bankroll=1000.0, kelly_frac=0.25, max_kelly_pct=0.05,
+                       market_filter='all', scenarios=None):
+    """Run several (min_edge, max_odds) settings over the SAME data (loaded once)."""
+    scenarios = scenarios or [
+        (3.0, 5.0), (4.0, 5.0), (5.0, 5.0), (5.0, 4.0), (6.0, 5.0), (8.0, 5.0),
+    ]
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT date, home_team, away_team, home_goals, away_goals, result,
+               b365_home, b365_draw, b365_away,
+               pinnacle_home_close, pinnacle_draw_close, pinnacle_away_close,
+               max_home, max_draw, max_away, avg_home, avg_draw, avg_away,
+               over25_pinnacle, under25_pinnacle, over25_max, over25_avg
+        FROM football_matches
+        WHERE result IS NOT NULL AND home_goals IS NOT NULL
+        ORDER BY date ASC
+    """).fetchall()
+    conn.close()
+    rows = [dict(r) for r in rows]  # materialise once, reuse for every scenario
+
+    results = []
+    for (min_edge, max_odds) in scenarios:
+        bets = _scenario_bets(rows, min_edge, max_odds, bankroll, kelly_frac, max_kelly_pct, market_filter)
+        results.append(_summarize_scenario(min_edge, max_odds, bets))
+
+    # Heuristic recommendation: best risk-adjusted return (Sharpe) among scenarios
+    # with a meaningful sample (>= 500 bets) is the "sweet spot".
+    valid = [r for r in results if r['bets'] >= 500]
+    best_sharpe = max((r['sharpe'] for r in valid), default=0)
+    for r in results:
+        if r['bets'] == 0:
+            r['recommendation'] = 'no bets'
+        elif r['bets'] >= 500 and r['sharpe'] == best_sharpe and best_sharpe > 0:
+            r['recommendation'] = '⭐ SWEET SPOT (best Sharpe)'
+        elif r['min_edge'] <= 3:
+            r['recommendation'] = 'Volume play'
+        elif r['min_edge'] >= 8:
+            r['recommendation'] = 'High quality, low volume'
+        elif r['bets'] < 500:
+            r['recommendation'] = 'Too few bets'
+        else:
+            r['recommendation'] = 'Balanced'
+    return {'matches_scanned': len(rows), 'scenarios': results}

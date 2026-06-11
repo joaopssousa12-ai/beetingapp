@@ -175,6 +175,28 @@
       <select id="ctrlSeason"><option value="">All Seasons</option></select>
     </div>
     <button class="bt-run" id="btnRun" onclick="runBacktest()">▶ Run Simulation</button>
+    <button class="bt-run" id="btnCompare" onclick="runCompare()" style="background:var(--bg2,#1a1f2e);border:1px solid var(--accent,#6366f1);color:var(--accent,#6366f1)">🎯 Sweet Spot Analysis</button>
+  </div>
+
+  <!-- Sweet-spot comparison -->
+  <div id="btCompareWrap" style="display:none;margin-bottom:24px">
+    <div class="bt-section-title">🎯 Sweet Spot — same data, different thresholds</div>
+    <table class="bt-table">
+      <thead>
+        <tr>
+          <th>Threshold</th>
+          <th style="text-align:right">Bets</th>
+          <th style="text-align:right">Win Rate</th>
+          <th style="text-align:right">ROI</th>
+          <th style="text-align:right">Sharpe</th>
+          <th style="text-align:right">Profit €</th>
+          <th>Recommendation</th>
+        </tr>
+      </thead>
+      <tbody id="compareBody"></tbody>
+    </table>
+    <div id="btCompareLoading" class="bt-loading" style="display:none"><div class="spinner"></div>
+      <div style="margin-top:10px;font-size:13px">A correr 6 cenários sobre os mesmos dados…</div></div>
   </div>
 
   <!-- Data scope -->
@@ -367,6 +389,51 @@ async function runBacktest() {
     document.getElementById('btLoading').style.display = 'none';
     btn.disabled = false; btn.textContent = '▶ Run Simulation';
   }
+}
+
+async function runCompare() {
+  const btn = document.getElementById('btnCompare');
+  const wrap = document.getElementById('btCompareWrap');
+  const loading = document.getElementById('btCompareLoading');
+  const body = document.getElementById('compareBody');
+  btn.disabled = true; btn.textContent = '⏳ Running 6 scenarios…';
+  wrap.style.display = 'block';
+  body.innerHTML = '';
+  loading.style.display = 'block';
+  const params = new URLSearchParams({
+    bankroll: document.getElementById('ctrlBankroll').value,
+    kelly: document.getElementById('ctrlKelly').value,
+    market: document.getElementById('ctrlMarket').value,
+  });
+  try {
+    const r = await fetch('/api/backtest/compare?' + params);
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    renderCompare(d);
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="7" style="color:#f87171;padding:14px">⚠ ${e.message}</td></tr>`;
+  } finally {
+    loading.style.display = 'none';
+    btn.disabled = false; btn.textContent = '🎯 Sweet Spot Analysis';
+  }
+}
+
+function renderCompare(d) {
+  const body = document.getElementById('compareBody');
+  body.innerHTML = '';
+  (d.scenarios || []).forEach(s => {
+    const sweet = (s.recommendation || '').includes('SWEET');
+    const roiCls = s.roi >= 0 ? 'pos' : 'neg';
+    body.innerHTML += `<tr style="${sweet ? 'background:rgba(99,102,241,0.10)' : ''}">
+      <td class="mono">Edge ≥${s.min_edge}% · Odds ≤${s.max_odds}</td>
+      <td style="text-align:right" class="mono">${(s.bets||0).toLocaleString()}</td>
+      <td style="text-align:right" class="mono">${s.win_rate}%</td>
+      <td style="text-align:right" class="${roiCls}">${s.roi >= 0 ? '+' : ''}${s.roi}%</td>
+      <td style="text-align:right" class="mono">${s.sharpe}</td>
+      <td style="text-align:right" class="${s.profit >= 0 ? 'pos' : 'neg'}">${s.profit >= 0 ? '+' : ''}€${(s.profit||0).toLocaleString()}</td>
+      <td style="font-size:12px${sweet ? ';color:var(--accent,#6366f1);font-weight:600' : ''}">${s.recommendation || ''}</td>
+    </tr>`;
+  });
 }
 
 function fmt(n, dec=1) { return n == null ? '—' : Number(n).toFixed(dec); }

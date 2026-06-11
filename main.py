@@ -770,6 +770,19 @@ async def api_backtest(
             status_code=500,
         )
 
+@app.get("/api/backtest/compare")
+async def api_backtest_compare(bankroll: float = 1000.0, kelly: float = 0.25, market: str = "all"):
+    from collectors.backtest import compare_thresholds
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: compare_thresholds(
+            bankroll=bankroll, kelly_frac=kelly, market_filter=market))
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"BACKTEST_ERROR (compare): {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": f"{type(e).__name__}: {e}", "scenarios": []}, status_code=500)
+
 @app.get("/api/backtest/clv")
 async def api_backtest_clv():
     from collectors.backtest import get_clv_analysis
