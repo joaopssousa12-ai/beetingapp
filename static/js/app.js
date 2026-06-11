@@ -531,11 +531,25 @@ function toggleViewMode() {
   renderValueBets();
 }
 
+// TBD knockout-bracket placeholders ("1A", "2B", "W73", "L101", "3A/B/C/D/F").
+// They have no real teams/odds and emit fake identical probabilities — pure noise.
+function isPlaceholderTeam(t) {
+  if (!t) return true;
+  const s = String(t).trim();
+  if (s.includes('/')) return true;          // "3A/B/C/D/F"
+  if (/^[WL]\d+$/i.test(s)) return true;      // W73, L101
+  if (/^\d+[A-Z]?$/i.test(s)) return true;    // 1A, 2B, 2I, 23
+  return false;
+}
+
 function applyVbFilters(rows) {
   let out = rows.slice();
   const minEdge = vbState.minEdge ?? 0;
   const maxOdds = vbState.maxOdds ?? 999;
   const minConf = vbState.minConf ?? 0;
+
+  // Always drop TBD bracket placeholders — never bettable, only clutter.
+  out = out.filter(r => !isPlaceholderTeam(r.home_team) && !isPlaceholderTeam(r.away_team));
 
   if (vbState.sportFilter) out = out.filter(r => r.sport_name === vbState.sportFilter);
   if (vbState.whenFilter !== 'all') {
@@ -742,7 +756,13 @@ function renderCard(b) {
     ? _safePool.reduce((a, p) => p.true_prob > a.true_prob ? p : a)
     : null;
 
-  const hasValue = !!bestPickReal;
+  // VALUE FLOOR: a pick is only "value" (green, celebrated, trackable) when it clears
+  // the checklist — edge >= 3% and odd in 1.5-5.0 — no matter how low the display
+  // filter is set. Below that it's shown muted/informational, never as a green rec.
+  const VALUE_FLOOR = 3;
+  const isCelebrated = !!bestPickReal && bestPickReal.edge_pct >= VALUE_FLOOR
+    && bestPickReal.book_odd >= 1.5 && bestPickReal.book_odd <= 5.0;
+  const hasValue = isCelebrated;
 
   // ── Negative-ROI league warning (from historical backtest) ─────
   const negLeague = negativeRoiLeague(b.sport_name);
@@ -787,7 +807,7 @@ function renderCard(b) {
       <span class="vb-pitem">${b.home_team} <strong>${bq.home}%</strong></span>
       ${bq.draw != null ? `<span class="vb-pitem">Draw <strong>${bq.draw}%</strong></span>` : ''}
       <span class="vb-pitem">${b.away_team} <strong>${bq.away}%</strong></span>
-      <span class="${agreeCls}">${agreeIcon} ${agreeText}</span>
+      ${hasValue ? `<span class="${agreeCls}">${agreeIcon} ${agreeText}</span>` : ''}
     </div>`;
   } else if (b.true_home_pct != null) {
     probLineHtml = `<div class="vb-prob-line">
@@ -821,14 +841,20 @@ function renderCard(b) {
   const shieldIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-4 9-8 10-4-1-8-5-8-10V6l8-4z"/></svg>';
   const refLabel = b.odds_source === 'betfair' ? 'Betfair' : 'Pinnacle';
 
-  // BIG hero card — only ever a real pick with odds ≤ ceiling. Odd is KING (26px+).
-  function renderHeroReal(p) {
+  // BIG hero card — odd is KING (26px+). `celebrated` = clears the value floor (>=3%
+  // edge, odd 1.5-5): green + Track button. Otherwise muted/informational only.
+  function renderHeroReal(p, celebrated) {
     const edge = p.edge_pct;
     const eCls = edge >= 3 ? 'pos' : edge >= 1 ? 'flat' : 'neg';
     const kelly = _calcKelly(edge, p.book_odd);
     const fair = p.true_prob ? (100 / p.true_prob).toFixed(2) : null;
-    return `<div class="vb-hero-pick has-value-pick">
-      <div class="vb-pick-label">${trophyIcon}Best Pick<span class="vb-stars">${starsHtmlFor(p.confidence)}</span></div>
+    const cls = celebrated ? 'vb-hero-pick has-value-pick' : 'vb-hero-pick below-floor';
+    const label = celebrated ? 'Best Pick' : 'Best available';
+    const note = celebrated
+      ? (fair ? `Fair odd ${fair} · ★ from ${refLabel} (real market)` : '')
+      : `Below the 3% value gate — informational only, not a recommended bet`;
+    return `<div class="${cls}">
+      <div class="vb-pick-label">${trophyIcon}${label}<span class="vb-stars">${starsHtmlFor(p.confidence)}</span></div>
       <div class="vb-pick-selection">${p.selection}</div>
       <div class="vb-pick-market">${p.market}</div>
       <div class="vb-hero-numbers">
@@ -837,10 +863,10 @@ function renderCard(b) {
           <span class="vb-hero-lbl">Best Odd</span>
         </div>
         <div class="vb-hero-num-block">
-          <span class="vb-hero-big edge-${eCls}">+${edge.toFixed(1)}%</span>
+          <span class="vb-hero-big edge-${eCls}">${edge >= 0 ? '+' : ''}${edge.toFixed(1)}%</span>
           <span class="vb-hero-lbl">Edge</span>
         </div>
-        ${kelly ? `<div class="vb-hero-num-block">
+        ${celebrated && kelly ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big kelly-val">${kelly}</span>
           <span class="vb-hero-lbl">¼ Kelly</span>
         </div>` : ''}
@@ -849,10 +875,10 @@ function renderCard(b) {
           <span class="vb-hero-lbl">True prob</span>
         </div>
       </div>
-      ${fair ? `<div class="vb-hero-model">Fair odd ${fair} · ★ from ${refLabel} (real market)</div>` : ''}
-      <div class="vb-pick-action">
+      ${note ? `<div class="vb-hero-model">${note}</div>` : ''}
+      ${celebrated ? `<div class="vb-pick-action">
         <button class="add-bet-btn vb-track-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track Bet</button>
-      </div>
+      </div>` : ''}
     </div>`;
   }
 
@@ -879,7 +905,7 @@ function renderCard(b) {
 
   let heroBlock, safestRow;
   if (bestPickReal) {
-    heroBlock = renderHeroReal(bestPickReal);
+    heroBlock = renderHeroReal(bestPickReal, isCelebrated);
     safestRow = safestPickReal ? renderSafestReal(safestPickReal) : '';
   } else {
     // No real pick clears the gate at odds ≤ ceiling — say so cleanly, don't fake one.
