@@ -135,6 +135,16 @@ async def run_full_collection():
             cb(f"TENNIS ERROR: {repr(e)}")
             cb(traceback.format_exc()[-800:])
 
+        cb("Step 2b/4: Collecting historical tennis ODDS (tennis-data.co.uk)...")
+        try:
+            from collectors.tennisdata import collect_tennisdata
+            res_td = await loop.run_in_executor(None, lambda: collect_tennisdata(status_callback=cb))
+            cb(f"Tennis odds done: {res_td.get('rows',0)} rows, {res_td.get('with_odds',0)} with usable odds.")
+        except Exception as e:
+            import traceback
+            cb(f"TENNISDATA ERROR: {repr(e)}")
+            cb(traceback.format_exc()[-800:])
+
         cb("Step 3/4: Collecting national teams (international results)...")
         try:
             n_nat = await loop.run_in_executor(
@@ -336,6 +346,35 @@ async def api_collect_odds_history():
         return JSONResponse({"ok": False, "msg": "Already running."})
     asyncio.create_task(_run_footballdata_only())
     return JSONResponse({"ok": True, "msg": "Historical odds import started."})
+
+
+async def _run_tennisdata_only():
+    collection_status["running"] = True
+    collection_status["messages"] = ["Importing historical tennis odds (tennis-data.co.uk)..."]
+    collection_status["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    def cb(msg):
+        collection_status["messages"].append(msg)
+    loop = asyncio.get_event_loop()
+    try:
+        from collectors.tennisdata import collect_tennisdata
+        res = await loop.run_in_executor(None, lambda: collect_tennisdata(status_callback=cb))
+        cb(f"DONE: {res.get('rows',0)} rows, {res.get('with_odds',0)} with usable odds. "
+           f"Now go to /backtest, switch to Tennis and Run Simulation.")
+    except Exception as e:
+        import traceback
+        cb(f"TENNIS ODDS IMPORT ERROR: {repr(e)}")
+        print(f"TENNISDATA_ERROR: {traceback.format_exc()}", flush=True)
+    finally:
+        collection_status["running"] = False
+
+
+@app.post("/api/collection/tennis-odds")
+async def api_collect_tennis_odds():
+    """Import historical tennis odds (tennis-data.co.uk) for the tennis backtest."""
+    if collection_status["running"]:
+        return JSONResponse({"ok": False, "msg": "Already running."})
+    asyncio.create_task(_run_tennisdata_only())
+    return JSONResponse({"ok": True, "msg": "Tennis odds import started."})
 
 @app.get("/api/migrate")
 @app.post("/api/migrate")
@@ -748,19 +787,27 @@ async def api_backtest(
     league: str = None,
     season: str = None,
     market: str = "all",
+    sport: str = "football",
 ):
-    from collectors.backtest import run_backtest
+    from collectors.backtest import run_backtest, run_tennis_backtest
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, lambda: run_backtest(
-            min_edge=min_edge,
-            max_odds=max_odds,
-            bankroll=bankroll,
-            kelly_frac=kelly,
-            league=league if league else None,
-            season=season if season else None,
-            market_filter=market,
-        ))
+        if sport == "tennis":
+            # league -> tour (ATP/WTA), season -> surface (Hard/Clay/Grass)
+            result = await loop.run_in_executor(None, lambda: run_tennis_backtest(
+                min_edge=min_edge, max_odds=max_odds, bankroll=bankroll, kelly_frac=kelly,
+                tour=league if league else None, surface=season if season else None,
+            ))
+        else:
+            result = await loop.run_in_executor(None, lambda: run_backtest(
+                min_edge=min_edge,
+                max_odds=max_odds,
+                bankroll=bankroll,
+                kelly_frac=kelly,
+                league=league if league else None,
+                season=season if season else None,
+                market_filter=market,
+            ))
         return JSONResponse(result)
     except Exception as e:
         import traceback
@@ -771,12 +818,17 @@ async def api_backtest(
         )
 
 @app.get("/api/backtest/compare")
-async def api_backtest_compare(bankroll: float = 1000.0, kelly: float = 0.25, market: str = "all"):
-    from collectors.backtest import compare_thresholds
+async def api_backtest_compare(bankroll: float = 1000.0, kelly: float = 0.25,
+                               market: str = "all", sport: str = "football"):
+    from collectors.backtest import compare_thresholds, compare_thresholds_tennis
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, lambda: compare_thresholds(
-            bankroll=bankroll, kelly_frac=kelly, market_filter=market))
+        if sport == "tennis":
+            result = await loop.run_in_executor(None, lambda: compare_thresholds_tennis(
+                bankroll=bankroll, kelly_frac=kelly))
+        else:
+            result = await loop.run_in_executor(None, lambda: compare_thresholds(
+                bankroll=bankroll, kelly_frac=kelly, market_filter=market))
         return JSONResponse(result)
     except Exception as e:
         import traceback
@@ -796,11 +848,12 @@ async def api_backtest_clv():
         return JSONResponse({"error": str(e), "count": 0, "records": []}, status_code=500)
 
 @app.get("/api/backtest/meta")
-async def api_backtest_meta():
-    from collectors.backtest import get_backtest_meta
+async def api_backtest_meta(sport: str = "football"):
+    from collectors.backtest import get_backtest_meta, get_tennis_backtest_meta
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, get_backtest_meta)
+        fn = get_tennis_backtest_meta if sport == "tennis" else get_backtest_meta
+        result = await loop.run_in_executor(None, fn)
         return JSONResponse(result)
     except Exception as e:
         import traceback

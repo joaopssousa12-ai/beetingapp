@@ -184,6 +184,7 @@ def _translate_schema(query):
 TABLE_PRIMARY_KEYS = {
     "football_matches": "match_id",
     "tennis_matches": "match_id",
+    "tennis_odds": "match_id",
     "national_matches": "match_id",
     "understat_matches": "match_id",
     "team_xg": "team",
@@ -372,6 +373,32 @@ def init_db():
     # Index for the backtest engine: it scans settled matches ordered by date.
     c.execute("CREATE INDEX IF NOT EXISTS idx_fm_date ON football_matches(date)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_fm_league ON football_matches(league_name)")
+
+    # Historical tennis odds (tennis-data.co.uk) — real B365/Pinnacle/Max/Avg
+    # match-winner prices + results, for the 2-way tennis backtest. Separate from
+    # tennis_matches (JeffSackmann) which has stats/rankings but NO odds.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS tennis_odds (
+            match_id TEXT PRIMARY KEY,
+            date TEXT,
+            tour TEXT,
+            tournament TEXT,
+            surface TEXT,
+            round TEXT,
+            best_of INTEGER,
+            winner TEXT,
+            loser TEXT,
+            wrank INTEGER,
+            lrank INTEGER,
+            b365_w REAL, b365_l REAL,
+            ps_w REAL, ps_l REAL,
+            max_w REAL, max_l REAL,
+            avg_w REAL, avg_l REAL,
+            collected_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_to_date ON tennis_odds(date)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_to_tour ON tennis_odds(tour)")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS tennis_matches (
