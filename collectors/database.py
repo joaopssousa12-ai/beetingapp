@@ -1117,7 +1117,7 @@ def get_value_bets():
                 for book, odd in (("1xBet", x1), ("Bet365", b365), ("Best", best)):
                     if not odd: continue
                     edge = (odd * tp - 1) * 100
-                    picks.append({
+                    pk = {
                         "market": "Match Result",
                         "selection": sel,
                         "true_prob": round(tp * 100, 1),
@@ -1126,7 +1126,17 @@ def get_value_bets():
                         "book_odd": odd,
                         "edge_pct": round(edge, 2),
                         "kelly_pct": round(kelly_stake(tp, odd) * 100, 2),
-                    })
+                    }
+                    # Label which real book holds the best price (so the user knows
+                    # WHERE to bet — 1xBet is theirs). Best == max across all books.
+                    if book == "Best":
+                        if x1 and abs(odd - x1) < 1e-9:
+                            pk["best_book"] = "1xBet"
+                        elif b365 and abs(odd - b365) < 1e-9:
+                            pk["best_book"] = "Bet365"
+                        else:
+                            pk["best_book"] = "outra casa"
+                    picks.append(pk)
 
         # ========== OVER/UNDER 2.5 ==========
         pov, pun = d.get("pin_over25"), d.get("pin_under25")

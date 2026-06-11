@@ -1683,6 +1683,17 @@ tbody tr.value-row td.strong { color: var(--text); }
 .vb-ref-chip.ref-single  { background: var(--bg2);            color: var(--text3); border: 1px solid var(--border); }
 .vb-ref-chip.ref-diverge { background: rgba(245,158,11,0.12); color: #d97706; border: 1px solid rgba(245,158,11,0.35); }
 
+/* Line movement on the recommended pick (sharp money signal). */
+.vb-linemove { margin: 4px 0 2px; font-size: 12px; font-weight: 500; }
+.vb-linemove.vb-lm-in   { color: #16a34a; }
+.vb-linemove.vb-lm-out  { color: #d97706; }
+.vb-linemove.vb-lm-flat { color: var(--text3); }
+
+/* The user's own bookmaker (1xBet) price for the pick — what they can really get. */
+.vb-yourbook { margin: 6px 0 2px; font-size: 12.5px; color: var(--text2); }
+.vb-yourbook strong { color: var(--text); font-family: var(--mono); }
+.vb-yourbook .vb-yb-best { color: #16a34a; font-size: 11px; font-weight: 600; }
+
 /* Below the value floor — muted grey, NOT a green recommendation */
 .vb-hero-pick.below-floor {
   border-left: 3px solid var(--border2);

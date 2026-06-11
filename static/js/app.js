@@ -633,6 +633,42 @@ function surfaceBadge(surface) {
   return `<span style="background:${color}18;color:${color};border:1px solid ${color}38;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:500">${surface || '?'}</span>`;
 }
 
+// The user bets at 1xBet — show THEIR price + edge for this pick, so the number
+// reflects what they can actually get (not just the theoretical best book).
+function yourBookLine(b, p) {
+  const mine = (b.all_picks || []).find(q => q.book === '1xBet'
+    && q.market === p.market && q.selection === p.selection && q.book_odd);
+  if (!mine) return '';
+  const same = Math.abs((mine.book_odd || 0) - (p.book_odd || 0)) < 1e-9;
+  const e = mine.edge_pct;
+  const eC = e == null ? 'flat' : e >= 3 ? 'pos' : e >= 1 ? 'flat' : 'neg';
+  return `<div class="vb-yourbook">🎯 Your book · <strong>1xBet ${fmtOdd(mine.book_odd)}</strong>`
+    + (e != null ? ` <span class="edge-chip ${eC}" style="font-size:11px">${e >= 0 ? '+' : ''}${e.toFixed(1)}%</span>` : '')
+    + (same ? ` <span class="vb-yb-best">✓ matches best</span>` : '')
+    + `</div>`;
+}
+
+// Line movement for the recommended pick's own selection (sharp signal, front
+// and centre). Odds SHORTENING on our side = money coming in = market agrees
+// with us (positive CLV signal). Lengthening = drifting = be cautious.
+function lineMoveLine(b, p) {
+  const m = b.line_movement;
+  if (!m || !m.opening || !m.latest) return '';
+  let key = null;
+  if (p.selection === b.home_team) key = 'home';
+  else if (p.selection === b.away_team) key = 'away';
+  else if (p.selection === 'Draw') key = 'draw';
+  if (!key) return '';
+  const o = m.opening[key], l = m.latest[key];
+  if (!o || !l) return '';
+  const delta = l - o;
+  if (Math.abs(delta) < 0.03) return `<div class="vb-linemove vb-lm-flat">↔ Line stable (${o.toFixed(2)})</div>`;
+  const shortened = delta < 0;
+  const arrow = shortened ? '📉' : '📈';
+  const txt = shortened ? 'money coming in — market agrees ✓' : 'drifting out — be cautious';
+  return `<div class="vb-linemove ${shortened ? 'vb-lm-in' : 'vb-lm-out'}">${arrow} Line ${o.toFixed(2)} → ${l.toFixed(2)} · ${txt}</div>`;
+}
+
 // Surface badge for a live tennis card. The odds feed has no surface, so we
 // infer it from the competition name (reliable for Slams; generic Tour events
 // stay unbadged). A backend `surface` hint, if present, wins.
@@ -897,7 +933,7 @@ function renderCard(b) {
       <div class="vb-hero-numbers">
         <div class="vb-hero-num-block">
           <span class="vb-hero-big">${fmtOdd(p.book_odd)}</span>
-          <span class="vb-hero-lbl">Best Odd</span>
+          <span class="vb-hero-lbl">Best Odd${p.best_book ? ' · ' + p.best_book : ''}</span>
         </div>
         <div class="vb-hero-num-block">
           <span class="vb-hero-big edge-${eCls}">${edge >= 0 ? '+' : ''}${edge.toFixed(1)}%</span>
@@ -912,6 +948,8 @@ function renderCard(b) {
           <span class="vb-hero-lbl">True prob</span>
         </div>
       </div>
+      ${yourBookLine(b, p)}
+      ${lineMoveLine(b, p)}
       ${refChip ? `<div class="vb-ref-row">${refChip}</div>` : ''}
       ${note ? `<div class="vb-hero-model">${note}</div>` : ''}
       <div class="vb-pick-action">
