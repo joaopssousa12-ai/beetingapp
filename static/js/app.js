@@ -286,7 +286,7 @@ let vbState = {
   sportFilter: '',
   surfaceFilter: '',
   whenFilter: 'all',
-  mode: 'all',
+  mode: 'value',   // open decluttered: only games with an actionable pick (#7)
   bankroll: 0,
   minEdge: 3,    // default 3% — blocks Qatar at +0.2%
   maxOdds: 8.0,  // hard ceiling: picks up to 8.0 show as "best available"; >8 = info only
@@ -794,13 +794,16 @@ function renderValueBets() {
   let data = applyVbFilters(vbState.raw);
   data.sort((a, b) => vbRankScore(b) - vbRankScore(a));
 
-  const countEl = document.getElementById('vb-count');
-  if (countEl) countEl.textContent = `${data.length} match${data.length === 1 ? '' : 'es'} · ${vbState.raw.length} total`;
-
-  // Sound notification — fire when new value bets appear
   const _qMinEdge = vbState.minEdge ?? 3;
   const _qMaxOdds = vbState.maxOdds ?? 8.0;
-  const valueCount = data.filter(b => vbEval(b).isValue).length;
+  const valueCount = data.filter(b => vbEval(b).isValue).length;   // green, actionable value bets
+
+  const countEl = document.getElementById('vb-count');
+  if (countEl) countEl.innerHTML =
+    `<span class="vb-count-value" style="color:${valueCount > 0 ? '#16a34a' : 'var(--text3)'}">🟢 ${valueCount} value</span>`
+    + ` · ${data.length} shown · ${vbState.raw.length} total`;
+
+  // Sound notification — fire when new value bets appear
   if (_prevValueBetCount >= 0 && valueCount > _prevValueBetCount) playNewBetSound();
   _prevValueBetCount = valueCount;
 
@@ -822,16 +825,18 @@ function renderValueBets() {
     return;
   }
 
-  // Pro signal: when no pick clears the quality gate, say so plainly.
-  // Showing junk as if it were value destroys trust — pros respect a clean "no".
-  let noValueBanner = '';
+  // Positive when there ARE value bets; honest "no value" when none.
+  let banner;
   if (valueCount === 0) {
-    noValueBanner = `<div class="vb-novalue-banner">
+    banner = `<div class="vb-novalue-banner">
       <strong>No value detected today</strong> — 0 picks passed the quality gate
       (edge ≥ ${_qMinEdge}%, odds ≤ ${_qMaxOdds}). Matches below are informational only.
     </div>`;
+  } else {
+    banner = `<div class="vb-value-banner">🟢 <strong>${valueCount} value bet${valueCount === 1 ? '' : 's'} today</strong>
+      — edge ≥3% &amp; sharp-confirmed. Best picks first; size by the ¼-Kelly shown.</div>`;
   }
-  wrap.innerHTML = noValueBanner + data.map(b => renderCard(b)).join('');
+  wrap.innerHTML = banner + data.map(b => renderCard(b)).join('');
 
   // Trigger edge calculation for any pre-filled manual odds inputs
   setTimeout(() => {

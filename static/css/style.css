@@ -1031,6 +1031,21 @@ tbody tr.value-row td.strong { color: var(--text); }
 }
 .vb-novalue-banner strong { color: var(--text); }
 
+/* Positive counterpart — shown when there ARE value bets today (#7). */
+.vb-value-banner {
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 0.9rem;
+  border-radius: var(--radius);
+  background: rgba(34,197,94,0.08);
+  border: 1px solid rgba(34,197,94,0.25);
+  border-left: 3px solid #16a34a;
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.vb-value-banner strong { color: #16a34a; }
+.vb-count-value { font-weight: 700; }
+
 /* Betting Checklist — the 5 rules a pick must pass before you bet */
 .betting-checklist {
   display: flex;
