@@ -487,6 +487,11 @@ def init_db():
         ("bf_home", "REAL"), ("bf_draw", "REAL"), ("bf_away", "REAL"),
         # Bet365 specific odds for edge calculation
         ("b365_home", "REAL"), ("b365_draw", "REAL"), ("b365_away", "REAL"),
+        # Asian Handicap (spreads): Pinnacle's main line + prices, and best price
+        # among books offering the SAME line. ah_line is the HOME handicap (e.g. -1.5).
+        ("ah_line", "REAL"),
+        ("pin_ah_home", "REAL"), ("pin_ah_away", "REAL"),
+        ("best_ah_home", "REAL"), ("best_ah_away", "REAL"),
     ]:
         try:
             c.execute(f"ALTER TABLE odds_events ADD COLUMN {col} {typ}")
@@ -1197,6 +1202,33 @@ def get_value_bets():
                             "edge_pct": round(edge, 2),
                             "kelly_pct": round(kelly_stake(tp, odd) * 100, 2),
                         })
+
+        # ========== ASIAN HANDICAP (spreads) ==========
+        ah_line = d.get("ah_line")
+        pah_h, pah_a = d.get("pin_ah_home"), d.get("pin_ah_away")
+        if ah_line is not None and pah_h and pah_a:
+            dv = remove_vig_power(pah_h, None, pah_a)   # 2-way devig (no draw)
+            if dv:
+                true_h_ah = dv["home"] / 100
+                true_a_ah = dv["away"] / 100
+                mkt_lbl = f"Asian Handicap {ah_line:+g}"
+                for sel, tp, best, pin_o in [
+                    (f"{d.get('home_team')} {ah_line:+g}", true_h_ah, d.get("best_ah_home"), pah_h),
+                    (f"{d.get('away_team')} {-ah_line:+g}", true_a_ah, d.get("best_ah_away"), pah_a),
+                ]:
+                    if not best:
+                        continue
+                    edge = (best * tp - 1) * 100
+                    picks.append({
+                        "market": mkt_lbl,
+                        "selection": sel,
+                        "true_prob": round(tp * 100, 1),
+                        "pin_odd": pin_o,
+                        "book": "Best",
+                        "book_odd": best,
+                        "edge_pct": round(edge, 2),
+                        "kelly_pct": round(kelly_stake(tp, best) * 100, 2),
+                    })
 
         # Confidence per pick
         for p in picks:

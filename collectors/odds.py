@@ -94,7 +94,10 @@ def fetch_odds(sport_key):
     # makes The Odds API reject the WHOLE request (HTTP 422 "unknown market"),
     # which silently returned zero tennis events. h2h works for every sport, so
     # only ask for totals/btts on soccer.
-    markets = "h2h,totals,btts" if sport_key.startswith("soccer_") else "h2h"
+    # The Odds API bills per market × region, so keep the soccer market count at 3
+    # to stay quota-neutral: swap the low-value BTTS for Asian Handicap (spreads),
+    # which is sharper/more valuable. (h2h works for every sport.)
+    markets = "h2h,totals,spreads" if sport_key.startswith("soccer_") else "h2h"
     params = {
         "apiKey": API_KEY,
         "regions": "eu,us",
@@ -140,9 +143,9 @@ def parse_and_store(events, sport_key, sport_name):
                 for o in market.get("outcomes", []):
                     name = o.get("name", "")
                     price = o.get("price")
-                    if mkey == "totals":
-                        point = o.get("point")
-                        outcomes[f"{name}|{point}"] = price
+                    if mkey in ("totals", "spreads"):
+                        # totals: "Over|2.5"; spreads (Asian handicap): "Home|-1.5"
+                        outcomes[f"{name}|{o.get('point')}"] = price
                     else:
                         outcomes[name] = price
                 book_odds[bm_key][mkey] = outcomes
@@ -200,6 +203,40 @@ def parse_and_store(events, sport_key, sport_name):
         best_btts_yes = max([v for v in [get_btts(bm, "Yes") for bm in book_odds] if v], default=None)
         best_btts_no = max([v for v in [get_btts(bm, "No") for bm in book_odds] if v], default=None)
 
+        # --- ASIAN HANDICAP (spreads) ---
+        # Pinnacle's main line is the reference; best price is taken among books
+        # offering the SAME line (so the two sides are comparable).
+        def get_ah(book_key):
+            mkt = book_odds.get(book_key, {}).get("spreads", {})
+            hp = ap = None
+            line = None
+            for k, price in mkt.items():
+                if "|" not in k:
+                    continue
+                nm, pt = k.rsplit("|", 1)
+                try:
+                    pt = float(pt)
+                except (ValueError, TypeError):
+                    continue
+                if nm == home:
+                    hp, line = price, pt
+                elif nm == away:
+                    ap = price
+            return (line, hp, ap) if (hp and ap and line is not None) else (None, None, None)
+
+        ah_line, pin_ah_home, pin_ah_away = get_ah("pinnacle")
+        best_ah_home = best_ah_away = None
+        if ah_line is not None:
+            for bm in book_odds:
+                l, hp, ap = get_ah(bm)
+                if l == ah_line:  # same home line ⇒ comparable
+                    if hp and (best_ah_home is None or hp > best_ah_home):
+                        best_ah_home = hp
+                    if ap and (best_ah_away is None or ap > best_ah_away):
+                        best_ah_away = ap
+            best_ah_home = best_ah_home or pin_ah_home
+            best_ah_away = best_ah_away or pin_ah_away
+
         try:
             conn.execute("""
                 INSERT OR REPLACE INTO odds_events (
@@ -210,8 +247,9 @@ def parse_and_store(events, sport_key, sport_name):
                     b365_home, b365_draw, b365_away,
                     pin_over25, pin_under25, x1_over25, x1_under25, best_over25, best_under25,
                     pin_btts_yes, pin_btts_no, x1_btts_yes, x1_btts_no, best_btts_yes, best_btts_no,
+                    ah_line, pin_ah_home, pin_ah_away, best_ah_home, best_ah_away,
                     updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 event_id, sport_key, sport_name, home, away, commence,
                 pin_home, pin_draw, pin_away,
@@ -220,6 +258,7 @@ def parse_and_store(events, sport_key, sport_name):
                 b365_home, b365_draw, b365_away,
                 pin_over25, pin_under25, x1_over25, x1_under25, best_over25, best_under25,
                 pin_btts_yes, pin_btts_no, x1_btts_yes, x1_btts_no, best_btts_yes, best_btts_no,
+                ah_line, pin_ah_home, pin_ah_away, best_ah_home, best_ah_away,
                 datetime.now().strftime("%Y-%m-%d %H:%M")
             ))
             # Also save snapshot to history for line movement tracking
