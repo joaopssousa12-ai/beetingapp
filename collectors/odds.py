@@ -85,10 +85,15 @@ def get_active_sports():
 
 
 def fetch_odds(sport_key):
+    # CRITICAL: totals/btts are SOCCER-only markets. Requesting them for tennis
+    # makes The Odds API reject the WHOLE request (HTTP 422 "unknown market"),
+    # which silently returned zero tennis events. h2h works for every sport, so
+    # only ask for totals/btts on soccer.
+    markets = "h2h,totals,btts" if sport_key.startswith("soccer_") else "h2h"
     params = {
         "apiKey": API_KEY,
         "regions": "eu,us",
-        "markets": "h2h,totals,btts",
+        "markets": markets,
         "bookmakers": BOOKMAKERS,
         "oddsFormat": "decimal",
     }
@@ -97,8 +102,11 @@ def fetch_odds(sport_key):
         remaining = r.headers.get("x-requests-remaining", "?")
         if r.status_code == 200:
             return r.json(), remaining
+        # Surface the reason (422 invalid market, 401 bad key, 404 unknown sport…)
+        print(f"ODDS_FETCH {sport_key}: HTTP {r.status_code} — {r.text[:160]}", flush=True)
         return None, remaining
-    except Exception:
+    except Exception as e:
+        print(f"ODDS_FETCH {sport_key}: {repr(e)}", flush=True)
         return None, "?"
 
 
