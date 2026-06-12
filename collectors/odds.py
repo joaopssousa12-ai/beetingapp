@@ -73,6 +73,11 @@ SPORT_GROUPS = {
 
 BOOKMAKERS = "pinnacle,bet365,unibet_eu,williamhill,betfair_ex_eu,bwin,betway,marathonbet,onexbet"
 
+# Last known free-tier quota (set by fetch_odds from x-requests-remaining), so the
+# frequent near-kickoff refresh can back off before exhausting the monthly budget.
+_LAST_REMAINING = {"v": None}
+IMMINENT_MIN_QUOTA = 25  # don't run the cheap near-kickoff refresh below this
+
 
 def get_active_sports():
     try:
@@ -100,6 +105,10 @@ def fetch_odds(sport_key):
     try:
         r = requests.get(f"{BASE}/sports/{sport_key}/odds", params=params, timeout=20)
         remaining = r.headers.get("x-requests-remaining", "?")
+        try:
+            _LAST_REMAINING["v"] = int(remaining)
+        except (ValueError, TypeError):
+            pass
         if r.status_code == 200:
             return r.json(), remaining
         # Surface the reason (422 invalid market, 401 bad key, 404 unknown sport…)
@@ -248,6 +257,53 @@ def _pretty_sport_name(key):
     tour = parts[1].upper()  # atp/wta
     rest = " ".join(p.capitalize() for p in parts[2:])
     return f"{tour} {rest}".strip() if rest else f"{tour} Tour"
+
+
+def refresh_imminent_odds(status_callback=None, within_hours=4):
+    """Near-kickoff refresh: re-fetch ONLY the sports that have events starting in
+    the next `within_hours`. The line is sharpest close to kickoff, and this costs
+    almost nothing (often 0-2 requests) vs a full sweep — so we capture the
+    near-closing price where it matters without burning the free quota."""
+    def cb(msg):
+        print(msg, flush=True)
+        if status_callback:
+            status_callback(msg)
+
+    if not API_KEY:
+        return 0
+    # Quota guard: protect the monthly budget for the daily full refresh.
+    if _LAST_REMAINING["v"] is not None and _LAST_REMAINING["v"] < IMMINENT_MIN_QUOTA:
+        cb(f"Imminent refresh: skipped (quota low: {_LAST_REMAINING['v']} left).")
+        return 0
+
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT DISTINCT sport_key FROM odds_events "
+            "WHERE commence_time > datetime('now') "
+            "AND commence_time < datetime('now', ?)",
+            (f"+{int(within_hours)} hours",),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        cb(f"Imminent refresh DB error: {e}")
+        return 0
+
+    # 'soccer' is the openfootball fixtures key (no The-Odds-API endpoint) — skip.
+    keys = [r["sport_key"] for r in rows
+            if r["sport_key"] and r["sport_key"] != "soccer"]
+    if not keys:
+        cb("Imminent refresh: no matches starting soon.")
+        return 0
+
+    total, remaining = 0, "?"
+    for sk in keys:
+        events, remaining = fetch_odds(sk)
+        if events:
+            total += parse_and_store(events, sk, SPORT_GROUPS.get(sk) or _pretty_sport_name(sk))
+    cb(f"Imminent refresh: {total} events across {len(keys)} sport(s) starting <{within_hours}h. "
+       f"Credits left: {remaining}")
+    return total
 
 
 def diagnose_tennis():

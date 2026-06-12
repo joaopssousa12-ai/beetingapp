@@ -60,6 +60,9 @@ async def startup():
     try:
         scheduler.add_job(lambda: asyncio.create_task(run_full_collection()), "cron", hour=3, minute=0)
         scheduler.add_job(lambda: asyncio.create_task(run_odds_only()), "cron", hour="*/6", minute=15)
+        # Near-kickoff refresh: cheap, only re-fetches sports with imminent matches
+        # (captures the sharpest near-closing line). Quota-guarded.
+        scheduler.add_job(lambda: asyncio.create_task(run_imminent_refresh()), "cron", hour="*/3", minute=30)
         scheduler.start()
         print("Scheduler started.", flush=True)
     except Exception as e:
@@ -546,6 +549,27 @@ async def run_odds_only():
         cb(traceback.format_exc()[-800:])
     finally:
         collection_status["running"] = False
+
+async def run_imminent_refresh():
+    """Near-kickoff refresh (cron */3h). Cheap + quota-guarded; only re-fetches
+    sports with matches starting soon to capture the near-closing line."""
+    if collection_status.get("running"):
+        return
+    loop = asyncio.get_event_loop()
+    try:
+        from collectors.odds import refresh_imminent_odds
+        n = await loop.run_in_executor(None, lambda: refresh_imminent_odds())
+        if n and n > 0:
+            invalidate_value_bets_cache()
+            vb = await loop.run_in_executor(None, get_value_bets)  # warm + use for alerts
+            try:
+                await loop.run_in_executor(None, lambda: send_alerts_for_value_bets(vb))
+            except Exception as e:
+                print(f"IMMINENT alerts error: {e}", flush=True)
+    except Exception as e:
+        import traceback
+        print(f"IMMINENT_REFRESH ERROR: {e}\n{traceback.format_exc()[-400:]}", flush=True)
+
 
 @app.post("/api/odds/refresh")
 @app.get("/api/odds/refresh")
