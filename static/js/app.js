@@ -505,14 +505,17 @@ function vbEval(b) {
   // Sharp consensus (A+B): the green "value" tier requires that the two sharp
   // references don't disagree. 'diverge' = Pinnacle & Betfair give materially
   // different fair probs → edge is uncertain → never celebrate as green.
-  const refAgree = b.ref_agreement;            // 'agree' | 'single' | 'diverge' | undefined
-  const sharpConflict = refAgree === 'diverge';
+  // 'agree' | 'single' | 'diverge_sharp' (two sharps disagree → block green) |
+  // 'diverge_model' (our model disagrees with the market → caution, still green)
+  const refAgree = b.ref_agreement;
+  const sharpConflict = refAgree === 'diverge_sharp';
   const isValue = !!bestPick && bestPick.edge_pct >= VB_VALUE_FLOOR
       && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD
       && !sharpConflict;
-  // Stars follow the Best Pick, then get capped by sharp-consensus quality.
+  // Stars follow the Best Pick, capped by the quality of the second opinion.
   let stars = bestPick ? (bestPick.confidence || 0) : 0;
-  if (refAgree === 'single') stars = Math.min(stars, 3);   // one source ⇒ cap confidence
+  if (refAgree === 'single') stars = Math.min(stars, 4);          // one source (Pinnacle is still gold)
+  if (refAgree === 'diverge_model') stars = Math.min(stars, 3);   // model disagrees → caution
   if (sharpConflict) stars = Math.min(stars, 2);
   return { realPicks, bestPick, isValue, stars, ceiling, refAgree };
 }
@@ -928,9 +931,11 @@ function renderCard(b) {
   // Sharp-consensus badge (A+B): tells the user how trustworthy the fair line is.
   const refChip = (() => {
     const ra = b.ref_agreement;
-    if (ra === 'agree')   return `<span class="vb-ref-chip ref-agree">✓ Pinnacle + Betfair concordam</span>`;
-    if (ra === 'single')  return `<span class="vb-ref-chip ref-single">1 fonte sharp · ${b.ref_sources || ''}</span>`;
-    if (ra === 'diverge') return `<span class="vb-ref-chip ref-diverge">⚠ Sharps divergem${b.ref_max_diff_pp ? ` (${b.ref_max_diff_pp}pp)` : ''} — edge incerto</span>`;
+    const src = b.ref_sources || '';
+    if (ra === 'agree')         return `<span class="vb-ref-chip ref-agree">✓ ${src} concordam</span>`;
+    if (ra === 'single')        return `<span class="vb-ref-chip ref-single">1 fonte sharp · ${src}</span>`;
+    if (ra === 'diverge_sharp') return `<span class="vb-ref-chip ref-diverge">⚠ Sharps divergem${b.ref_max_diff_pp ? ` (${b.ref_max_diff_pp}pp)` : ''} — edge incerto</span>`;
+    if (ra === 'diverge_model') return `<span class="vb-ref-chip ref-diverge">⚠ Modelo discorda do mercado — cautela</span>`;
     return '';
   })();
 
@@ -946,7 +951,7 @@ function renderCard(b) {
     const label = celebrated ? 'Best Pick' : 'Best available';
     const note = celebrated
       ? (fair ? `Fair odd ${fair} · ★ from ${refLabel} (real market)` : '')
-      : (b.ref_agreement === 'diverge'
+      : (b.ref_agreement === 'diverge_sharp'
           ? `Best available — the two sharp markets disagree, so we can't confirm value. Informational only.`
           : `Best available — below the green value gate (edge ≥3% & odd ≤5). Size with care.`);
     return `<div class="${cls}">

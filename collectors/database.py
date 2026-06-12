@@ -1080,7 +1080,9 @@ def get_value_bets():
                 diffs.append(abs(pin_nv["d"] - bf_nv["d"]) * 100)
             max_diff = max(diffs)
             d["ref_max_diff_pp"] = round(max_diff, 1)
-            d["ref_agreement"] = "agree" if max_diff <= REF_AGREE_PP else "diverge"
+            # Two independent SHARP markets: if they disagree, the true prob is
+            # genuinely uncertain → block the green tier (handled in the UI).
+            d["ref_agreement"] = "agree" if max_diff <= REF_AGREE_PP else "diverge_sharp"
             d["ref_sources"] = "Pinnacle + Betfair"
             d["odds_source"] = "blend"
             d["pin_vig_pct"] = round(min(pin_nv["vig"], bf_nv["vig"]), 2)
@@ -1324,6 +1326,23 @@ def get_value_bets():
             }
         betiq = fuse_signals(pin_probs, xg_sig, elo_sig)
         d["betiq_probs"] = betiq
+
+        # ── A+B v2: when there's no 2nd SHARP market (Betfair), use our own
+        # independent MODEL (xG/Elo) as the second opinion. The edge is still vs
+        # Pinnacle (the market truth); the model only modulates CONFIDENCE:
+        #   agree  → high trust (green, more stars)
+        #   diverge_model → Pinnacle is still truth, but flag caution (green, capped stars)
+        # (Sharp-vs-sharp 'diverge_sharp' is stronger and blocks green in the UI.)
+        if d.get("ref_agreement") == "single" and betiq and betiq.get("n_signals", 0) >= 2:
+            agr = betiq.get("agreement")
+            if agr == "high":
+                d["ref_agreement"] = "agree"
+                d["ref_sources"] = "Pinnacle + modelo"
+            elif agr == "low":
+                d["ref_agreement"] = "diverge_model"
+                d["ref_sources"] = "Pinnacle vs modelo"
+            else:  # medium / other
+                d["ref_sources"] = "Pinnacle + modelo (parcial)"
 
         # Recompute best value using BetIQ probability (if available and multi-signal)
         if betiq and betiq["n_signals"] >= 2:
