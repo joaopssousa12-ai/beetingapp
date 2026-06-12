@@ -512,11 +512,15 @@ function vbEval(b) {
   const isValue = !!bestPick && bestPick.edge_pct >= VB_VALUE_FLOOR
       && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD
       && !sharpConflict;
-  // Stars follow the Best Pick, capped by the quality of the second opinion.
+  // Stars = the Pinnacle-earned base confidence (edge quality + liquidity + league),
+  // then a LIGHT second-opinion adjustment. Pinnacle is the gold-standard truth, so:
+  //  • single (Pinnacle only) → no penalty — fully trusted.
+  //  • our model agrees → no inflation (the green badge conveys the extra reassurance).
+  //  • our model disagrees → −1 only (it's a weaker cross-check, not a veto).
+  //  • two SHARP markets disagree (Betfair vs Pinnacle) → strong: cap 2 + block green.
   let stars = bestPick ? (bestPick.confidence || 0) : 0;
-  if (refAgree === 'single') stars = Math.min(stars, 4);          // one source (Pinnacle is still gold)
-  if (refAgree === 'diverge_model') stars = Math.min(stars, 3);   // model disagrees → caution
   if (sharpConflict) stars = Math.min(stars, 2);
+  else if (refAgree === 'diverge_model') stars = Math.max(1, stars - 1);
   return { realPicks, bestPick, isValue, stars, ceiling, refAgree };
 }
 
@@ -905,11 +909,13 @@ function renderCard(b) {
 
   // ── Kelly helper ────────────────────────────────────────────────
   const _br = vbState.bankroll || 0;
-  function _calcKelly(edge, odd) {
+  function _calcKelly(edge, odd, scale = 1) {
     if (!edge || !odd || edge <= 0 || odd <= 1) return null;
-    const kQ = (edge/100) / (odd - 1) * 0.25;
+    const kQ = (edge/100) / (odd - 1) * 0.25 * scale;
     return _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
   }
+  // Confidence → stake multiplier (lower stars ⇒ smaller stake).
+  const _confScale = (s) => [0, 0.30, 0.45, 0.65, 0.85, 1.0][Math.max(0, Math.min(5, s|0))] || 1.0;
 
   // ── Compact probability line (replaces BetIQ big bar chart) ────
   let probLineHtml = '';
@@ -971,7 +977,13 @@ function renderCard(b) {
   function renderHeroReal(p, celebrated) {
     const edge = p.edge_pct;
     const eCls = edge >= 3 ? 'pos' : edge >= 1 ? 'flat' : 'neg';
-    const kelly = _calcKelly(edge, p.book_odd);
+    // Stake = ¼-Kelly on the price the USER can actually get (1xBet), scaled by
+    // confidence (fewer stars ⇒ smaller stake). If 1xBet has no value, stake = €0.
+    const mine = _myBookPick(b, p);
+    const stakeEdge = mine && mine.edge_pct != null ? mine.edge_pct : edge;
+    const stakeOdd = mine ? mine.book_odd : p.book_odd;
+    const kelly = _calcKelly(stakeEdge, stakeOdd, _confScale(ev.stars));
+    const kellyZero = !!mine && (mine.edge_pct == null || mine.edge_pct <= 0);
     const fair = p.true_prob ? (100 / p.true_prob).toFixed(2) : null;
     const cls = celebrated ? 'vb-hero-pick has-value-pick' : 'vb-hero-pick below-floor';
     const label = celebrated ? 'Best Pick' : 'Best available';
@@ -995,8 +1007,11 @@ function renderCard(b) {
         </div>
         ${kelly ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big kelly-val">${kelly}</span>
-          <span class="vb-hero-lbl">¼ Kelly</span>
-        </div>` : ''}
+          <span class="vb-hero-lbl">Stake · ${ev.stars}★</span>
+        </div>` : (kellyZero ? `<div class="vb-hero-num-block">
+          <span class="vb-hero-big" style="color:#dc2626">€0</span>
+          <span class="vb-hero-lbl">no value at 1xBet</span>
+        </div>` : '')}
         <div class="vb-hero-num-block">
           <span class="vb-hero-big" style="opacity:.85">${p.true_prob != null ? p.true_prob + '%' : '—'}</span>
           <span class="vb-hero-lbl">True prob</span>
