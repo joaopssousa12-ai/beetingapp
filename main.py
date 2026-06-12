@@ -382,6 +382,21 @@ async def api_collect_tennis_odds():
     asyncio.create_task(_run_tennisdata_only())
     return JSONResponse({"ok": True, "msg": "Tennis odds import started."})
 
+
+@app.get("/api/diag/odds-sports")
+async def api_diag_odds_sports():
+    """Ground-truth diagnostic for LIVE tennis: what does The Odds API expose and
+    return right now? Open this URL in your browser and send me the JSON."""
+    from collectors.odds import diagnose_tennis
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, diagnose_tennis)
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"DIAG_ERROR: {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+
 @app.get("/api/migrate")
 @app.post("/api/migrate")
 async def api_migrate_data():

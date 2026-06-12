@@ -893,7 +893,7 @@ function renderCard(b) {
       <span class="vb-pitem">${b.home_team} <strong>${bq.home}%</strong></span>
       ${bq.draw != null ? `<span class="vb-pitem">Draw <strong>${bq.draw}%</strong></span>` : ''}
       <span class="vb-pitem">${b.away_team} <strong>${bq.away}%</strong></span>
-      ${hasValue ? `<span class="${agreeCls}">${agreeIcon} ${agreeText}</span>` : ''}
+      ${hasValue && b.xg_signal ? `<span class="${agreeCls}">${agreeIcon} ${agreeText}</span>` : ''}
     </div>`;
   } else if (b.true_home_pct != null) {
     probLineHtml = `<div class="vb-prob-line">

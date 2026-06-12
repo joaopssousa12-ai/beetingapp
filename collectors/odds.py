@@ -250,6 +250,45 @@ def _pretty_sport_name(key):
     return f"{tour} {rest}".strip() if rest else f"{tour} Tour"
 
 
+def diagnose_tennis():
+    """Ground-truth diagnostic: what tennis does The Odds API actually expose
+    right now, and does it return events? (Run from the server — it can reach the
+    API even when our local sandbox can't.)"""
+    out = {"key_set": bool(API_KEY), "remaining": None, "status": None,
+           "all_tennis_keys": [], "active_tennis": [], "event_counts": {},
+           "stored_tennis": 0}
+    if not API_KEY:
+        out["error"] = "ODDS_API_KEY not set on the server"
+        return out
+    try:
+        r = requests.get(f"{BASE}/sports", params={"apiKey": API_KEY, "all": "true"}, timeout=20)
+        out["status"] = r.status_code
+        out["remaining"] = r.headers.get("x-requests-remaining")
+        if r.status_code == 200:
+            for s in r.json():
+                k = s.get("key", "")
+                if k.startswith("tennis"):
+                    out["all_tennis_keys"].append({"key": k, "active": s.get("active"), "title": s.get("title")})
+                    if s.get("active"):
+                        out["active_tennis"].append(k)
+        else:
+            out["body"] = r.text[:300]
+    except Exception as e:
+        out["error"] = repr(e)
+    # Actually try to pull odds for each active tennis key (with the markets fix).
+    for k in (out["active_tennis"] or ["tennis_atp", "tennis_wta"])[:10]:
+        ev, _ = fetch_odds(k)
+        out["event_counts"][k] = len(ev) if ev else 0
+    try:
+        conn = get_connection()
+        row = conn.execute("SELECT COUNT(*) AS c FROM odds_events WHERE sport_key LIKE 'tennis%'").fetchone()
+        out["stored_tennis"] = (row["c"] if row else 0)
+        conn.close()
+    except Exception as e:
+        out["stored_err"] = repr(e)
+    return out
+
+
 def collect_odds(status_callback=None):
     def cb(msg):
         print(msg, flush=True)
