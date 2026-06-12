@@ -34,20 +34,30 @@ def _norm(s):
 
 
 def _login(username, password, app_key):
+    """Returns (token, error). error is None on success, else Betfair's reason."""
     try:
         r = requests.post(
             LOGIN_URL,
             data={"username": username, "password": password},
-            headers={"X-Application": app_key, "Accept": "application/json"},
+            headers={
+                "X-Application": app_key,
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
             timeout=15,
         )
-        data = r.json()
+        try:
+            data = r.json()
+        except Exception:
+            return None, f"HTTP {r.status_code}: {r.text[:120]}"
         if data.get("status") == "SUCCESS":
-            return data["token"]
-        print(f"Betfair login failed: {data.get('error', 'unknown')}", flush=True)
+            return data["token"], None
+        err = data.get("error") or data.get("status") or "unknown"
+        print(f"Betfair login failed: {err}", flush=True)
+        return None, err
     except Exception as e:
         print(f"Betfair login error: {e}", flush=True)
-    return None
+        return None, repr(e)
 
 
 def _headers(token, app_key):
@@ -119,6 +129,34 @@ def _best_back(runner):
     return offers[0]["price"] if offers else None
 
 
+def diagnose_betfair():
+    """Ground-truth diagnostic for Betfair login (run on the server). Returns the
+    EXACT reason a login fails so we can fix it precisely."""
+    app_key = os.environ.get("BETFAIR_APP_KEY", "")
+    username = os.environ.get("BETFAIR_USERNAME", "")
+    password = os.environ.get("BETFAIR_PASSWORD", "")
+    out = {
+        "app_key_set": bool(app_key), "username_set": bool(username),
+        "password_set": bool(password), "app_key_len": len(app_key),
+        "login_status": None, "login_error": None, "markets": None,
+    }
+    if not all([app_key, username, password]):
+        out["login_error"] = "MISSING_ENV_VARS — set BETFAIR_APP_KEY / BETFAIR_USERNAME / BETFAIR_PASSWORD on Render"
+        return out
+    token, err = _login(username, password, app_key)
+    if token:
+        out["login_status"] = "SUCCESS"
+        try:
+            mk = _list_markets(token, app_key, [SOCCER_TYPE_ID, TENNIS_TYPE_ID])
+            out["markets"] = len(mk)
+        except Exception as e:
+            out["markets_error"] = repr(e)
+    else:
+        out["login_status"] = "FAILED"
+        out["login_error"] = err
+    return out
+
+
 def collect_betfair_odds(status_callback=None):
     """
     Fetch Betfair Exchange back prices for all upcoming soccer (and tennis) markets.
@@ -143,9 +181,9 @@ def collect_betfair_odds(status_callback=None):
         return 0
 
     cb("Betfair Exchange: logging in...")
-    token = _login(username, password, app_key)
+    token, err = _login(username, password, app_key)
     if not token:
-        cb("Betfair: login failed.")
+        cb(f"Betfair: login failed — {err}")
         return 0
 
     # Fetch soccer + tennis markets

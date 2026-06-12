@@ -397,6 +397,21 @@ async def api_diag_odds_sports():
         print(f"DIAG_ERROR: {e}\n{traceback.format_exc()}", flush=True)
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
 
+
+@app.get("/api/diag/betfair")
+async def api_diag_betfair():
+    """Ground-truth diagnostic for Betfair login (the A+B 2nd source). Open this
+    URL in your browser and send me the JSON — it shows the EXACT login error."""
+    from collectors.betfair import diagnose_betfair
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, diagnose_betfair)
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"DIAG_ERROR (betfair): {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+
 @app.get("/api/migrate")
 @app.post("/api/migrate")
 async def api_migrate_data():
