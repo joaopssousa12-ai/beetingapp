@@ -981,7 +981,7 @@ function renderCard(b) {
           ? `Best available — the two sharp markets disagree, so we can't confirm value. Informational only.`
           : `Best available — below the green value gate (edge ≥3% & odd ≤5). Size with care.`);
     return `<div class="${cls}">
-      <div class="vb-pick-label">${trophyIcon}${label}<span class="vb-stars">${starsHtmlFor(p.confidence)}</span></div>
+      <div class="vb-pick-label">${trophyIcon}${label}<span class="vb-stars">${starsHtmlFor(ev.stars)}</span></div>
       <div class="vb-pick-selection">${p.selection}</div>
       <div class="vb-pick-market">${p.market}</div>
       <div class="vb-hero-numbers">
