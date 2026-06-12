@@ -184,6 +184,7 @@
     <button class="bt-run" id="btnRun" onclick="runBacktest()">▶ Run Simulation</button>
     <button class="bt-run" id="btnCompare" onclick="runCompare()" style="background:var(--bg2,#1a1f2e);border:1px solid var(--accent,#6366f1);color:var(--accent,#6366f1)">🎯 Sweet Spot Analysis</button>
     <button class="bt-run" id="btnImportTennis" onclick="importTennisOdds()" style="display:none;background:var(--bg2,#1a1f2e);border:1px solid #22c55e;color:#22c55e">⬇ Import Tennis Odds</button>
+    <button class="bt-run" id="btnCalib" onclick="runCalibration()" style="background:var(--bg2,#1a1f2e);border:1px solid var(--accent,#6366f1);color:var(--accent,#6366f1)">📐 Calibration</button>
   </div>
   <div id="btImportStatus" style="display:none;font-size:12px;color:var(--text3,#64748b);margin:-8px 0 16px;font-family:var(--mono,monospace)"></div>
 
@@ -206,6 +207,25 @@
     </table>
     <div id="btCompareLoading" class="bt-loading" style="display:none"><div class="spinner"></div>
       <div style="margin-top:10px;font-size:13px">A correr 6 cenários sobre os mesmos dados…</div></div>
+  </div>
+
+  <!-- Calibration -->
+  <div id="btCalibWrap" style="display:none;margin-bottom:24px">
+    <div class="bt-section-title">📐 Calibration — are our "true probabilities" reliable?</div>
+    <div id="btCalibHead" style="font-size:13px;margin:-4px 0 10px;color:var(--text2,#94a3b8)"></div>
+    <table class="bt-table">
+      <thead>
+        <tr>
+          <th>Predicted band</th>
+          <th style="text-align:right">Samples</th>
+          <th style="text-align:right">We said (avg)</th>
+          <th style="text-align:right">Actually won</th>
+          <th style="text-align:right">Gap</th>
+        </tr>
+      </thead>
+      <tbody id="calibBody"></tbody>
+    </table>
+    <div id="btCalibLoading" class="bt-loading" style="display:none"><div class="spinner"></div></div>
   </div>
 
   <!-- Data scope -->
@@ -381,7 +401,7 @@ function onSportChange() {
     ? 'Simula value betting em ténis (ATP/WTA), Pinnacle close como true prob — 2-way, liquidado pelo vencedor'
     : 'Simula estratégia de value betting em dados históricos usando Pinnacle close como true prob';
   loadMeta();
-  ['btMetrics','btChartWrap','btLeagueWrap','btBetsWrap','btCompareWrap'].forEach(id => {
+  ['btMetrics','btChartWrap','btLeagueWrap','btBetsWrap','btCompareWrap','btCalibWrap'].forEach(id => {
     const e = document.getElementById(id); if (e) e.style.display = 'none';
   });
   document.getElementById('btScope').innerHTML = '';
@@ -449,6 +469,54 @@ async function runBacktest() {
     document.getElementById('btLoading').style.display = 'none';
     btn.disabled = false; btn.textContent = '▶ Run Simulation';
   }
+}
+
+async function runCalibration() {
+  const btn = document.getElementById('btnCalib');
+  const wrap = document.getElementById('btCalibWrap');
+  const loading = document.getElementById('btCalibLoading');
+  const body = document.getElementById('calibBody');
+  const head = document.getElementById('btCalibHead');
+  btn.disabled = true; btn.textContent = '⏳ Calculating…';
+  wrap.style.display = 'block'; body.innerHTML = ''; head.textContent = '';
+  loading.style.display = 'block';
+  try {
+    const r = await fetch('/api/backtest/calibration?sport=' + sportParam());
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    renderCalibration(d);
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" style="color:#f87171;padding:14px">⚠ ${e.message}</td></tr>`;
+  } finally {
+    loading.style.display = 'none';
+    btn.disabled = false; btn.textContent = '📐 Calibration';
+  }
+}
+
+function renderCalibration(d) {
+  const head = document.getElementById('btCalibHead');
+  const body = document.getElementById('calibBody');
+  const mae = d.mae_pp;
+  const verdict = mae == null ? '' :
+    mae < 2 ? '<span style="color:var(--green,#16a34a);font-weight:600">excellent — the engine is well calibrated ✅</span>' :
+    mae < 4 ? '<span style="color:var(--green,#16a34a)">good</span>' :
+    mae < 7 ? '<span style="color:#d97706">fair</span>' :
+              '<span style="color:#f87171">poor — probabilities are off</span>';
+  head.innerHTML = `Across <strong>${(d.total||0).toLocaleString()}</strong> outcome-predictions, the average gap between
+    what we predicted and what happened is <strong>${mae != null ? mae + ' pp' : '—'}</strong> ${verdict}.
+    Lower = more trustworthy. Closer the "We said" and "Actually won" columns are, the better.`;
+  body.innerHTML = (d.buckets || []).map(b => {
+    if (!b.n) return `<tr style="opacity:.4"><td class="mono">${b.bucket}</td><td style="text-align:right">0</td><td colspan="3" style="text-align:right">—</td></tr>`;
+    const gapCls = Math.abs(b.diff) <= 3 ? 'pos' : Math.abs(b.diff) <= 6 ? '' : 'neg';
+    const gapCol = gapCls === 'pos' ? 'var(--green)' : gapCls === 'neg' ? 'var(--red)' : 'var(--text2)';
+    return `<tr>
+      <td class="mono">${b.bucket}</td>
+      <td style="text-align:right" class="mono">${b.n.toLocaleString()}</td>
+      <td style="text-align:right" class="mono">${b.predicted}%</td>
+      <td style="text-align:right" class="mono">${b.actual}%</td>
+      <td style="text-align:right;color:${gapCol}">${b.diff >= 0 ? '+' : ''}${b.diff}pp</td>
+    </tr>`;
+  }).join('');
 }
 
 async function runCompare() {

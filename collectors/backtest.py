@@ -793,3 +793,68 @@ def compare_thresholds_tennis(bankroll=1000.0, kelly_frac=0.25, max_kelly_pct=0.
         else:
             r['recommendation'] = 'Balanced'
     return {'matches_scanned': len(rows), 'scenarios': results}
+
+
+# ============================================================
+# CALIBRATION — are our devigged "true probabilities" reliable?
+# For every historical match we devig the sharp odds into a true prob per outcome,
+# then check how often that outcome ACTUALLY happened. If the engine is calibrated,
+# "we said 60%" wins ~60% of the time (points on the diagonal). Validates the
+# foundation the whole edge rests on.
+# ============================================================
+def get_calibration(sport="football"):
+    conn = get_connection()
+    pairs = []  # (predicted_prob 0-1, occurred 0/1)
+    try:
+        if sport == "tennis":
+            rows = conn.execute("""
+                SELECT winner, ps_w, ps_l, avg_w, avg_l
+                FROM tennis_odds WHERE winner IS NOT NULL
+            """).fetchall()
+            for r in rows:
+                r = dict(r)
+                rw, rl = (r["ps_w"], r["ps_l"]) if (r["ps_w"] and r["ps_l"]) else (r["avg_w"], r["avg_l"])
+                tw, tl = _devig_2way(rw, rl)
+                if tw is None:
+                    continue
+                pairs.append((tw, 1))
+                pairs.append((tl, 0))
+        else:
+            rows = conn.execute("""
+                SELECT result, pinnacle_home_close, pinnacle_draw_close, pinnacle_away_close,
+                       avg_home, avg_draw, avg_away
+                FROM football_matches WHERE result IS NOT NULL
+            """).fetchall()
+            for r in rows:
+                r = dict(r)
+                if r["pinnacle_home_close"] and r["pinnacle_draw_close"] and r["pinnacle_away_close"]:
+                    rh, rd, ra = r["pinnacle_home_close"], r["pinnacle_draw_close"], r["pinnacle_away_close"]
+                else:
+                    rh, rd, ra = r["avg_home"], r["avg_draw"], r["avg_away"]
+                th, td, ta = _devig_3way(rh, rd, ra)
+                if th is None:
+                    continue
+                res = r["result"]
+                pairs.append((th, 1 if res == "H" else 0))
+                pairs.append((td, 1 if res == "D" else 0))
+                pairs.append((ta, 1 if res == "A" else 0))
+    finally:
+        conn.close()
+
+    buckets = []
+    for lo in range(0, 100, 10):
+        hi = lo + 10
+        sel = [(p, o) for (p, o) in pairs if (lo / 100.0) <= p < (hi / 100.0)]
+        if not sel:
+            buckets.append({"bucket": f"{lo}-{hi}%", "n": 0, "predicted": None, "actual": None, "diff": None})
+            continue
+        n = len(sel)
+        pred = sum(p for p, _ in sel) / n * 100
+        act = sum(o for _, o in sel) / n * 100
+        buckets.append({"bucket": f"{lo}-{hi}%", "n": n,
+                        "predicted": round(pred, 1), "actual": round(act, 1),
+                        "diff": round(act - pred, 1)})
+    total = sum(b["n"] for b in buckets)
+    mae = (round(sum(abs(b["diff"]) * b["n"] for b in buckets if b["n"]) / total, 2)
+           if total else None)
+    return {"buckets": buckets, "total": total, "mae_pp": mae}

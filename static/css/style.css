@@ -1689,6 +1689,13 @@ tbody tr.value-row td.strong { color: var(--text); }
 .vb-linemove.vb-lm-out  { color: #d97706; }
 .vb-linemove.vb-lm-flat { color: var(--text3); }
 
+/* Estimated CLV at bet time — your price vs the sharp close (profit predictor). */
+.vb-clvest { margin: 3px 0; font-size: 12.5px; font-weight: 600; }
+.vb-clvest.vb-clv-pos  { color: #16a34a; }
+.vb-clvest.vb-clv-flat { color: var(--text2); }
+.vb-clvest.vb-clv-neg  { color: #dc2626; }
+.vb-clvest .vb-clv-note { font-weight: 400; color: var(--text3); font-size: 11px; }
+
 /* The user's own bookmaker (1xBet) price for the pick — what they can really get. */
 .vb-yourbook { margin: 6px 0 2px; font-size: 12.5px; color: var(--text2); }
 .vb-yourbook strong { color: var(--text); font-family: var(--mono); }

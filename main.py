@@ -883,6 +883,18 @@ async def api_backtest_clv():
         print(f"BACKTEST_ERROR (clv): {e}\n{traceback.format_exc()}", flush=True)
         return JSONResponse({"error": str(e), "count": 0, "records": []}, status_code=500)
 
+@app.get("/api/backtest/calibration")
+async def api_backtest_calibration(sport: str = "football"):
+    from collectors.backtest import get_calibration
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: get_calibration(sport))
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"BACKTEST_ERROR (calibration): {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": str(e), "buckets": []}, status_code=500)
+
 @app.get("/api/backtest/meta")
 async def api_backtest_meta(sport: str = "football"):
     from collectors.backtest import get_backtest_meta, get_tennis_backtest_meta

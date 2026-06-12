@@ -643,19 +643,45 @@ function surfaceBadge(surface) {
   return `<span style="background:${color}18;color:${color};border:1px solid ${color}38;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:500">${surface || '?'}</span>`;
 }
 
-// The user bets at 1xBet — show THEIR price + edge for this pick, so the number
-// reflects what they can actually get (not just the theoretical best book).
+// The user bets at 1xBet — return their pick (same market+selection) so we can
+// show the price THEY can actually get + their real expected CLV.
+function _myBookPick(b, p) {
+  return (b.all_picks || []).find(q => q.book === '1xBet'
+    && q.market === p.market && q.selection === p.selection && q.book_odd) || null;
+}
+
 function yourBookLine(b, p) {
-  const mine = (b.all_picks || []).find(q => q.book === '1xBet'
-    && q.market === p.market && q.selection === p.selection && q.book_odd);
+  const mine = _myBookPick(b, p);
   if (!mine) return '';
   const same = Math.abs((mine.book_odd || 0) - (p.book_odd || 0)) < 1e-9;
-  const e = mine.edge_pct;
-  const eC = e == null ? 'flat' : e >= 3 ? 'pos' : e >= 1 ? 'flat' : 'neg';
   return `<div class="vb-yourbook">🎯 Your book · <strong>1xBet ${fmtOdd(mine.book_odd)}</strong>`
-    + (e != null ? ` <span class="edge-chip ${eC}" style="font-size:11px">${e >= 0 ? '+' : ''}${e.toFixed(1)}%</span>` : '')
     + (same ? ` <span class="vb-yb-best">✓ matches best</span>` : '')
     + `</div>`;
+}
+
+// #2 Estimated CLV at bet time. Your bettable price vs the sharp no-vig fair IS
+// your expected Closing Line Value — the #1 predictor of long-term profit. We
+// show it for the price the user can actually get (1xBet), and flag the line
+// trend (shortening toward the pick ⇒ CLV likely even better).
+function clvEstLine(b, p) {
+  const mine = _myBookPick(b, p);
+  const e = mine && mine.edge_pct != null ? mine.edge_pct : p.edge_pct;
+  if (e == null) return '';
+  const cls = e >= 3 ? 'vb-clv-pos' : e >= 0 ? 'vb-clv-flat' : 'vb-clv-neg';
+  // line trend on this selection (reuse the movement direction)
+  let trend = '';
+  const m = b.line_movement;
+  if (m && m.opening && m.latest) {
+    let key = p.selection === b.home_team ? 'home' : p.selection === b.away_team ? 'away' : p.selection === 'Draw' ? 'draw' : null;
+    if (key && m.opening[key] && m.latest[key]) {
+      const d = m.latest[key] - m.opening[key];
+      if (d < -0.03) trend = ' · trending your way ✓';
+      else if (d > 0.03) trend = ' · drifting — bet now';
+    }
+  }
+  const book = mine ? '1xBet' : 'best';
+  return `<div class="vb-clvest ${cls}">📈 Est. CLV <strong>${e >= 0 ? '+' : ''}${e.toFixed(1)}%</strong>`
+    + ` <span class="vb-clv-note">(${book} vs sharp close — the #1 profit signal)${trend}</span></div>`;
 }
 
 // Line movement for the recommended pick's own selection (sharp signal, front
@@ -977,6 +1003,7 @@ function renderCard(b) {
         </div>
       </div>
       ${yourBookLine(b, p)}
+      ${clvEstLine(b, p)}
       ${lineMoveLine(b, p)}
       ${refChip ? `<div class="vb-ref-row">${refChip}</div>` : ''}
       ${note ? `<div class="vb-hero-model">${note}</div>` : ''}
