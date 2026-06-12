@@ -19,13 +19,46 @@ How to get app key:
 """
 
 import os
+import tempfile
 import requests
 import unicodedata
 
+# Interactive login (browser) — geo/bot-blocked from datacentres (returns HTML 403).
 LOGIN_URL = "https://identitysso.betfair.com/api/login"
+# Certificate (non-interactive / bot) login — the correct server-to-server method,
+# authenticated by a client certificate, NOT blocked by datacentre IP.
+CERT_LOGIN_URL = "https://identitysso-cert.betfair.com/api/certlogin"
 API_BASE = "https://api.betfair.com/exchange/betting/rest/v1.0"
 SOCCER_TYPE_ID = "1"
 TENNIS_TYPE_ID = "2"
+
+_CERT_PATHS = None
+
+
+def _cert_files():
+    """Write BETFAIR_CERT / BETFAIR_KEY (PEM contents stored in env vars) to temp
+    files so requests can use cert=(crt, key). Returns (crt_path, key_path) or None."""
+    global _CERT_PATHS
+    if _CERT_PATHS:
+        return _CERT_PATHS
+    cert_pem = os.environ.get("BETFAIR_CERT", "")
+    key_pem = os.environ.get("BETFAIR_KEY", "")
+    if not cert_pem or not key_pem:
+        return None
+    cert_pem = cert_pem.replace("\\n", "\n").strip() + "\n"
+    key_pem = key_pem.replace("\\n", "\n").strip() + "\n"
+    d = tempfile.gettempdir()
+    cpath, kpath = os.path.join(d, "bf_client.crt"), os.path.join(d, "bf_client.key")
+    try:
+        with open(cpath, "w") as f:
+            f.write(cert_pem)
+        with open(kpath, "w") as f:
+            f.write(key_pem)
+        _CERT_PATHS = (cpath, kpath)
+        return _CERT_PATHS
+    except Exception as e:
+        print(f"Betfair cert write error: {e}", flush=True)
+        return None
 
 
 def _norm(s):
@@ -34,25 +67,36 @@ def _norm(s):
 
 
 def _login(username, password, app_key):
-    """Returns (token, error). error is None on success, else Betfair's reason."""
+    """Returns (token, error). Prefers CERTIFICATE login (works from servers); the
+    interactive endpoint is geo/bot-blocked on datacentres (HTML 403)."""
+    certs = _cert_files()
+    headers = {
+        "X-Application": app_key,
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    data = {"username": username, "password": password}
     try:
-        r = requests.post(
-            LOGIN_URL,
-            data={"username": username, "password": password},
-            headers={
-                "X-Application": app_key,
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            timeout=15,
-        )
+        if certs:
+            r = requests.post(CERT_LOGIN_URL, data=data, headers=headers, cert=certs, timeout=20)
+            try:
+                j = r.json()
+            except Exception:
+                return None, f"certlogin HTTP {r.status_code}: {r.text[:120]}"
+            if j.get("loginStatus") == "SUCCESS":
+                return j["sessionToken"], None
+            print(f"Betfair certlogin failed: {j.get('loginStatus')}", flush=True)
+            return None, f"certlogin: {j.get('loginStatus', 'unknown')}"
+        # No cert configured → interactive (likely 403 from a datacentre).
+        r = requests.post(LOGIN_URL, data=data, headers=headers, timeout=15)
         try:
-            data = r.json()
+            j = r.json()
         except Exception:
-            return None, f"HTTP {r.status_code}: {r.text[:120]}"
-        if data.get("status") == "SUCCESS":
-            return data["token"], None
-        err = data.get("error") or data.get("status") or "unknown"
+            return None, (f"HTTP {r.status_code} (interactive login blocked — set up "
+                          f"BETFAIR_CERT/KEY for certificate login): {r.text[:80]}")
+        if j.get("status") == "SUCCESS":
+            return j["token"], None
+        err = j.get("error") or j.get("status") or "unknown"
         print(f"Betfair login failed: {err}", flush=True)
         return None, err
     except Exception as e:
@@ -138,6 +182,8 @@ def diagnose_betfair():
     out = {
         "app_key_set": bool(app_key), "username_set": bool(username),
         "password_set": bool(password), "app_key_len": len(app_key),
+        "cert_configured": _cert_files() is not None,
+        "login_method": "certificate" if _cert_files() else "interactive (datacentre-blocked)",
         "login_status": None, "login_error": None, "markets": None,
     }
     if not all([app_key, username, password]):
