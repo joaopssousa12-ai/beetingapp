@@ -512,15 +512,13 @@ function vbEval(b) {
   const isValue = !!bestPick && bestPick.edge_pct >= VB_VALUE_FLOOR
       && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD
       && !sharpConflict;
-  // Stars = the Pinnacle-earned base confidence (edge quality + liquidity + league),
-  // then a LIGHT second-opinion adjustment. Pinnacle is the gold-standard truth, so:
-  //  • single (Pinnacle only) → no penalty — fully trusted.
-  //  • our model agrees → no inflation (the green badge conveys the extra reassurance).
-  //  • our model disagrees → −1 only (it's a weaker cross-check, not a veto).
-  //  • two SHARP markets disagree (Betfair vs Pinnacle) → strong: cap 2 + block green.
+  // Stars = the Pinnacle-earned base confidence (edge quality + liquidity + league).
+  // Our xG/Elo model is a WEAKER cross-check than Pinnacle, so a model disagreement
+  // is shown as an INFORMATIONAL orange badge ONLY — it does NOT change stars or
+  // stake. The only star override is two SHARP markets disagreeing (Betfair vs
+  // Pinnacle), which is rare and genuinely means the truth is uncertain → cap 2.
   let stars = bestPick ? (bestPick.confidence || 0) : 0;
   if (sharpConflict) stars = Math.min(stars, 2);
-  else if (refAgree === 'diverge_model') stars = Math.max(1, stars - 1);
   return { realPicks, bestPick, isValue, stars, ceiling, refAgree };
 }
 
@@ -609,6 +607,14 @@ function applyVbFilters(rows) {
 
   // Always drop TBD bracket placeholders — never bettable, only clutter.
   out = out.filter(r => !isPlaceholderTeam(r.home_team) && !isPlaceholderTeam(r.away_team));
+
+  // PRE-MATCH ONLY: drop games that have already started. Our odds refresh every
+  // few hours, so a live (in-play) line is stale and its "edge" is just noise
+  // (e.g. a tennis player wins set 1 and the price jumps before we re-fetch).
+  out = out.filter(r => {
+    if (!r.commence_time) return true;
+    return new Date(r.commence_time).getTime() > Date.now();
+  });
 
   if (vbState.sportFilter) out = out.filter(r => r.sport_name === vbState.sportFilter);
   // Surface is a tennis concept → when set, show only matching-surface tennis events.
@@ -909,13 +915,11 @@ function renderCard(b) {
 
   // ── Kelly helper ────────────────────────────────────────────────
   const _br = vbState.bankroll || 0;
-  function _calcKelly(edge, odd, scale = 1) {
+  function _calcKelly(edge, odd) {
     if (!edge || !odd || edge <= 0 || odd <= 1) return null;
-    const kQ = (edge/100) / (odd - 1) * 0.25 * scale;
+    const kQ = (edge/100) / (odd - 1) * 0.25;   // ¼-Kelly on the edge — exactly as the backtest
     return _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
   }
-  // Confidence → stake multiplier (lower stars ⇒ smaller stake).
-  const _confScale = (s) => [0, 0.30, 0.45, 0.65, 0.85, 1.0][Math.max(0, Math.min(5, s|0))] || 1.0;
 
   // ── Compact probability line (replaces BetIQ big bar chart) ────
   let probLineHtml = '';
@@ -982,7 +986,7 @@ function renderCard(b) {
     const mine = _myBookPick(b, p);
     const stakeEdge = mine && mine.edge_pct != null ? mine.edge_pct : edge;
     const stakeOdd = mine ? mine.book_odd : p.book_odd;
-    const kelly = _calcKelly(stakeEdge, stakeOdd, _confScale(ev.stars));
+    const kelly = _calcKelly(stakeEdge, stakeOdd);   // ¼-Kelly on YOUR (1xBet) edge — no confidence multiplier
     const kellyZero = !!mine && (mine.edge_pct == null || mine.edge_pct <= 0);
     const fair = p.true_prob ? (100 / p.true_prob).toFixed(2) : null;
     const cls = celebrated ? 'vb-hero-pick has-value-pick' : 'vb-hero-pick below-floor';
@@ -1007,7 +1011,7 @@ function renderCard(b) {
         </div>
         ${kelly ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big kelly-val">${kelly}</span>
-          <span class="vb-hero-lbl">Stake · ${ev.stars}★</span>
+          <span class="vb-hero-lbl">¼ Kelly</span>
         </div>` : (kellyZero ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big" style="color:#dc2626">€0</span>
           <span class="vb-hero-lbl">no value at 1xBet</span>
@@ -1308,7 +1312,7 @@ function renderCard(b) {
         <span class="vb-sport">${b.sport_name || ''}</span>${tennisSurfaceBadge(b)}
         <div class="vb-head-right">
           ${edgeChipHtml}
-          <span class="vb-time">${_timeStr}${movementSparkline ? ' ' + movementSparkline : ''}</span>
+          <span class="vb-time">${_timeStr}</span>
         </div>
       </div>
       <div class="vb-match-name" onclick="window.location.href='/match/${b.event_id}'" style="cursor:pointer; transition:color 0.2s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color=''">
