@@ -1706,10 +1706,49 @@ function renderRealityCheck(bets) {
   vEl.innerHTML = `<strong>📊 Reality check:</strong> real <strong>${realizedRoi >= 0 ? '+' : ''}${realizedRoi.toFixed(1)}%</strong> vs model expected <strong>${expectedRoi >= 0 ? '+' : ''}${expectedRoi.toFixed(1)}%</strong>${clvTxt}. <span style="color:${color}">${verdict}</span>`;
 }
 
+// #8 Your real performance broken down by league/competition (from settled bets).
+// Early on, CLV is the trustworthy signal; ROI/win-rate need volume. This is what
+// we'll use later to favour/avoid leagues with YOUR own data (not the backtest's).
+function renderBetBreakdown(bets) {
+  const el = document.getElementById('bet-breakdown');
+  if (!el) return;
+  const settled = (bets || []).filter(b => b.status === 'settled');
+  if (settled.length < 3) { el.innerHTML = ''; return; }
+  const groups = {};
+  for (const b of settled) {
+    const key = b.sport_name || 'Unknown';
+    const g = groups[key] || (groups[key] = { bets: 0, wins: 0, staked: 0, profit: 0, clvSum: 0, clvN: 0 });
+    g.bets++;
+    if (b.result === 'won') g.wins++;
+    g.staked += b.stake || 0;
+    g.profit += b.profit || 0;
+    if (b.clv_pct != null) { g.clvSum += b.clv_pct; g.clvN++; }
+  }
+  const rows = Object.entries(groups).map(([k, g]) => ({
+    league: k, bets: g.bets,
+    win: g.bets ? g.wins / g.bets * 100 : 0,
+    roi: g.staked > 0 ? g.profit / g.staked * 100 : 0,
+    clv: g.clvN ? g.clvSum / g.clvN : null,
+  })).sort((a, b) => b.bets - a.bets);
+  el.innerHTML = `<div class="card" style="margin-top:1rem">
+    <div class="card-head">📊 Your performance by league / competition</div>
+    <p class="muted-text" style="font-size:12px;margin:0 0 8px">From your settled bets. Early on, <strong>CLV is the reliable signal</strong> (ROI/win-rate need volume). This will guide which leagues to favour or avoid with <em>your own</em> data later.</p>
+    <table><thead><tr><th>League</th><th style="text-align:right">Bets</th><th style="text-align:right">Win%</th><th style="text-align:right">ROI</th><th style="text-align:right">Avg CLV</th></tr></thead><tbody>`
+    + rows.map(r => `<tr>
+        <td>${r.league}</td>
+        <td style="text-align:right" class="mono">${r.bets}</td>
+        <td style="text-align:right" class="mono">${r.win.toFixed(0)}%</td>
+        <td style="text-align:right;color:${r.roi >= 0 ? 'var(--green)' : 'var(--red)'}">${r.roi >= 0 ? '+' : ''}${r.roi.toFixed(1)}%</td>
+        <td style="text-align:right;color:${r.clv == null ? 'var(--text3)' : r.clv >= 0 ? 'var(--green)' : 'var(--red)'}">${r.clv == null ? '—' : (r.clv >= 0 ? '+' : '') + r.clv.toFixed(1) + '%'}</td>
+      </tr>`).join('')
+    + `</tbody></table></div>`;
+}
+
 async function loadBetsTable() {
   const bets = await fetchJSON('/api/bets');
   const wrap = document.getElementById('bets-table-wrap');
   renderRealityCheck(bets || []);   // #6: real performance vs the model's expectation
+  renderBetBreakdown(bets || []);   // #8: performance by league/competition
   if (!bets || bets.length === 0) {
     wrap.innerHTML = '<div style="padding:2rem 1.25rem;color:#555b6e;font-size:13px">No bets yet. Click "+ New bet" to register your first one.</div>';
     return;
@@ -1989,6 +2028,22 @@ async function testTelegram() {
       st.textContent = (d.ok ? '✅ ' : '⚠ ') + (d.msg || (d.ok ? 'Sent — check Telegram.' : 'Failed.'));
       st.style.color = d.ok ? '#16a34a' : '#d97706';
     }
+  } catch (e) {
+    if (st) { st.textContent = '⚠ ' + e.message; st.style.color = '#d97706'; }
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
+async function testDigest() {
+  const btn = document.getElementById('tg-digest-btn');
+  const st = document.getElementById('tg-test-status');
+  if (!btn) return;
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = '⏳ Sending…';
+  try {
+    const r = await fetch('/api/telegram/digest', { method: 'POST' });
+    const d = await r.json();
+    if (st) { st.textContent = (d.ok ? '✅ ' : '⚠ ') + (d.msg || ''); st.style.color = d.ok ? '#16a34a' : '#d97706'; }
   } catch (e) {
     if (st) { st.textContent = '⚠ ' + e.message; st.style.color = '#d97706'; }
   } finally {

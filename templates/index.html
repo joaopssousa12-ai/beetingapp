@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BetIQ — Betting Intelligence</title>
-<link rel="stylesheet" href="/static/css/style.css?v=20260612j">
+<link rel="stylesheet" href="/static/css/style.css?v=20260612k">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -260,6 +260,7 @@
           <div class="stat-card"><div class="stat-label">Avg CLV</div><div class="stat-value" id="bs-clv">—</div></div>
         </div>
         <div id="bs-verdict" class="muted-text" style="margin:2px 0 4px;font-size:13px;line-height:1.5"></div>
+        <div id="bet-breakdown"></div>
 
         <div class="card" style="margin-top:1rem">
           <div class="card-head">
@@ -448,13 +449,15 @@
               <li>Add both as env vars on Render and redeploy → click Test.</li>
             </ol>
             <button class="btn-secondary" id="tg-test-btn" onclick="testTelegram()">📨 Test Telegram</button>
+            <button class="btn-secondary" id="tg-digest-btn" onclick="testDigest()" style="margin-left:8px">📅 Send daily digest now</button>
             <span id="tg-test-status" class="muted-text" style="margin-left:10px;font-size:12px"></span>
+            <p class="muted-text" style="margin-top:6px;font-size:12px">A digest with the day's value bets is also sent automatically every morning (09:00 UTC).</p>
           </div>
         </div>
       </section>
 
     </main>
   </div>
-<script src="/static/js/app.js?v=20260612j"></script>
+<script src="/static/js/app.js?v=20260612k"></script>
 </body>
 </html>

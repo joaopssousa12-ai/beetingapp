@@ -34,7 +34,7 @@ from collectors.elo import collect_elo
 from collectors.odds_collector import collect_odds_multiple_bookmakers, collect_tennis_odds
 from collectors.betfair import collect_betfair_odds
 from collectors.oddspapi import collect_oddspapi
-from collectors.telegram_alerts import send_alerts_for_value_bets
+from collectors.telegram_alerts import send_alerts_for_value_bets, send_daily_digest
 
 app = FastAPI(title="Betting Intelligence Platform")
 
@@ -63,6 +63,8 @@ async def startup():
         # Near-kickoff refresh: cheap, only re-fetches sports with imminent matches
         # (captures the sharpest near-closing line). Quota-guarded.
         scheduler.add_job(lambda: asyncio.create_task(run_imminent_refresh()), "cron", hour="*/3", minute=30)
+        # Daily digest: one Telegram message with the day's value bets (09:00 UTC).
+        scheduler.add_job(lambda: asyncio.create_task(run_daily_digest()), "cron", hour=9, minute=0)
         scheduler.start()
         print("Scheduler started.", flush=True)
     except Exception as e:
@@ -569,6 +571,29 @@ async def run_imminent_refresh():
     except Exception as e:
         import traceback
         print(f"IMMINENT_REFRESH ERROR: {e}\n{traceback.format_exc()[-400:]}", flush=True)
+
+
+async def run_daily_digest():
+    """Daily Telegram digest of the day's value bets (cron 09:00 UTC)."""
+    loop = asyncio.get_event_loop()
+    try:
+        vb = await loop.run_in_executor(None, get_value_bets)
+        await loop.run_in_executor(None, lambda: send_daily_digest(vb))
+    except Exception as e:
+        import traceback
+        print(f"DAILY_DIGEST ERROR: {e}\n{traceback.format_exc()[-300:]}", flush=True)
+
+
+@app.post("/api/telegram/digest")
+async def api_telegram_digest():
+    """Send the daily value-bets digest now (manual trigger / test)."""
+    loop = asyncio.get_event_loop()
+    try:
+        vb = await loop.run_in_executor(None, get_value_bets)
+        n = await loop.run_in_executor(None, lambda: send_daily_digest(vb))
+        return JSONResponse({"ok": bool(n), "msg": "Digest sent." if n else "No value bets in the next 24h (or Telegram not configured)."})
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": str(e)})
 
 
 @app.post("/api/odds/refresh")
