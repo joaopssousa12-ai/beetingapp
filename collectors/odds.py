@@ -226,6 +226,7 @@ def parse_and_store(events, sport_key, sport_name):
 
         ah_line, pin_ah_home, pin_ah_away = get_ah("pinnacle")
         best_ah_home = best_ah_away = None
+        x1_ah_home = x1_ah_away = None
         if ah_line is not None:
             for bm in book_odds:
                 l, hp, ap = get_ah(bm)
@@ -236,6 +237,10 @@ def parse_and_store(events, sport_key, sport_name):
                         best_ah_away = ap
             best_ah_home = best_ah_home or pin_ah_home
             best_ah_away = best_ah_away or pin_ah_away
+            # The user's 1xBet price — only if it offers Pinnacle's exact line.
+            xl, xh, xa = get_ah("onexbet")
+            if xl == ah_line:
+                x1_ah_home, x1_ah_away = xh, xa
 
         try:
             conn.execute("""
@@ -247,9 +252,9 @@ def parse_and_store(events, sport_key, sport_name):
                     b365_home, b365_draw, b365_away,
                     pin_over25, pin_under25, x1_over25, x1_under25, best_over25, best_under25,
                     pin_btts_yes, pin_btts_no, x1_btts_yes, x1_btts_no, best_btts_yes, best_btts_no,
-                    ah_line, pin_ah_home, pin_ah_away, best_ah_home, best_ah_away,
+                    ah_line, pin_ah_home, pin_ah_away, best_ah_home, best_ah_away, x1_ah_home, x1_ah_away,
                     updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 event_id, sport_key, sport_name, home, away, commence,
                 pin_home, pin_draw, pin_away,
@@ -258,7 +263,7 @@ def parse_and_store(events, sport_key, sport_name):
                 b365_home, b365_draw, b365_away,
                 pin_over25, pin_under25, x1_over25, x1_under25, best_over25, best_under25,
                 pin_btts_yes, pin_btts_no, x1_btts_yes, x1_btts_no, best_btts_yes, best_btts_no,
-                ah_line, pin_ah_home, pin_ah_away, best_ah_home, best_ah_away,
+                ah_line, pin_ah_home, pin_ah_away, best_ah_home, best_ah_away, x1_ah_home, x1_ah_away,
                 datetime.now().strftime("%Y-%m-%d %H:%M")
             ))
             # Also save snapshot to history for line movement tracking
@@ -381,6 +386,42 @@ def diagnose_tennis():
         conn.close()
     except Exception as e:
         out["stored_err"] = repr(e)
+    return out
+
+
+def diagnose_spreads(sport_key="soccer_fifa_world_cup"):
+    """Does The Odds API return Asian Handicap (spreads) for these games? Confirms
+    whether World Cup handicap value bets can populate. Open /api/diag/spreads."""
+    out = {"sport_key": sport_key, "events": 0, "with_spreads": 0,
+           "with_pinnacle_spreads": 0, "remaining": None, "samples": []}
+    if not API_KEY:
+        out["error"] = "ODDS_API_KEY not set"
+        return out
+    events, remaining = fetch_odds(sport_key)
+    out["remaining"] = remaining
+    if not events:
+        out["note"] = "no events returned for this sport_key right now"
+        return out
+    out["events"] = len(events)
+    for ev in events:
+        has_spreads = False
+        pin_spread = None
+        for bm in ev.get("bookmakers", []):
+            for mk in bm.get("markets", []):
+                if mk.get("key") == "spreads":
+                    has_spreads = True
+                    if bm.get("key") == "pinnacle":
+                        pin_spread = [{"name": o.get("name"), "point": o.get("point"),
+                                       "price": o.get("price")} for o in mk.get("outcomes", [])]
+        if has_spreads:
+            out["with_spreads"] += 1
+            if pin_spread:
+                out["with_pinnacle_spreads"] += 1
+            if len(out["samples"]) < 5:
+                out["samples"].append({
+                    "match": f"{ev.get('home_team')} vs {ev.get('away_team')}",
+                    "pinnacle_handicap": pin_spread,
+                })
     return out
 
 

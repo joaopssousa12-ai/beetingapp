@@ -487,11 +487,13 @@ def init_db():
         ("bf_home", "REAL"), ("bf_draw", "REAL"), ("bf_away", "REAL"),
         # Bet365 specific odds for edge calculation
         ("b365_home", "REAL"), ("b365_draw", "REAL"), ("b365_away", "REAL"),
-        # Asian Handicap (spreads): Pinnacle's main line + prices, and best price
-        # among books offering the SAME line. ah_line is the HOME handicap (e.g. -1.5).
+        # Asian Handicap (spreads): Pinnacle's main line + prices, the best price
+        # among books offering the SAME line, and the user's 1xBet price at that
+        # line. ah_line is the HOME handicap (e.g. -1.5).
         ("ah_line", "REAL"),
         ("pin_ah_home", "REAL"), ("pin_ah_away", "REAL"),
         ("best_ah_home", "REAL"), ("best_ah_away", "REAL"),
+        ("x1_ah_home", "REAL"), ("x1_ah_away", "REAL"),
     ]:
         try:
             c.execute(f"ALTER TABLE odds_events ADD COLUMN {col} {typ}")
@@ -1212,23 +1214,24 @@ def get_value_bets():
                 true_h_ah = dv["home"] / 100
                 true_a_ah = dv["away"] / 100
                 mkt_lbl = f"Asian Handicap {ah_line:+g}"
-                for sel, tp, best, pin_o in [
-                    (f"{d.get('home_team')} {ah_line:+g}", true_h_ah, d.get("best_ah_home"), pah_h),
-                    (f"{d.get('away_team')} {-ah_line:+g}", true_a_ah, d.get("best_ah_away"), pah_a),
+                for sel, tp, x1_ah, best_ah, pin_o in [
+                    (f"{d.get('home_team')} {ah_line:+g}", true_h_ah, d.get("x1_ah_home"), d.get("best_ah_home"), pah_h),
+                    (f"{d.get('away_team')} {-ah_line:+g}", true_a_ah, d.get("x1_ah_away"), d.get("best_ah_away"), pah_a),
                 ]:
-                    if not best:
-                        continue
-                    edge = (best * tp - 1) * 100
-                    picks.append({
-                        "market": mkt_lbl,
-                        "selection": sel,
-                        "true_prob": round(tp * 100, 1),
-                        "pin_odd": pin_o,
-                        "book": "Best",
-                        "book_odd": best,
-                        "edge_pct": round(edge, 2),
-                        "kelly_pct": round(kelly_stake(tp, best) * 100, 2),
-                    })
+                    for book, odd in (("1xBet", x1_ah), ("Best", best_ah)):
+                        if not odd:
+                            continue
+                        edge = (odd * tp - 1) * 100
+                        picks.append({
+                            "market": mkt_lbl,
+                            "selection": sel,
+                            "true_prob": round(tp * 100, 1),
+                            "pin_odd": pin_o,
+                            "book": book,
+                            "book_odd": odd,
+                            "edge_pct": round(edge, 2),
+                            "kelly_pct": round(kelly_stake(tp, odd) * 100, 2),
+                        })
 
         # Confidence per pick
         for p in picks:

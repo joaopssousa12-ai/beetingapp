@@ -403,6 +403,21 @@ async def api_diag_odds_sports():
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
 
 
+@app.get("/api/diag/spreads")
+async def api_diag_spreads(sport: str = "soccer_fifa_world_cup"):
+    """Does The Odds API return Asian Handicap (spreads) for these games? Open in
+    browser to confirm World Cup handicaps can populate. Send me the JSON."""
+    from collectors.odds import diagnose_spreads
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: diagnose_spreads(sport))
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"DIAG_ERROR (spreads): {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
 @app.get("/api/diag/betfair")
 async def api_diag_betfair():
     """Ground-truth diagnostic for Betfair login (the A+B 2nd source). Open this
