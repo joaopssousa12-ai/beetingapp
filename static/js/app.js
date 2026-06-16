@@ -763,6 +763,47 @@ function tennisSurfaceBadge(b) {
   const surface = tennisSurface(b);
   return surface ? ' ' + surfaceBadge(surface) : '';
 }
+
+// #5 Timing badge — distant games' lines move a lot; the optimal window is 1-48h.
+function timingBadge(b) {
+  if (!b.commence_time) return '';
+  const ms = new Date(b.commence_time) - Date.now();
+  if (ms <= 0) return '';
+  const h = ms / 3600000, d = h / 24;
+  if (d > 7) return `<span class="vb-tbadge tb-far" title="A linha vai mover muito até ao jogo. Timing ótimo: 1-48h antes — considera esperar.">⏳ ${Math.round(d)}d — linha vai mexer</span>`;
+  if (h < 24) return `<span class="vb-tbadge tb-soon">🕐 Hoje</span>`;
+  if (h < 48) return `<span class="vb-tbadge tb-soon">🕐 Amanhã</span>`;
+  return '';   // 2-7 days: neutral
+}
+
+// #6 Sharp-liquidity context by sport — the true prob is only as good as the sharp
+// line's liquidity. Informational; the user decides.
+function liquidityBadge(b) {
+  const s = (b.sport_name || '').toLowerCase();
+  let txt, cls;
+  if (s.includes('atp') || s.includes('wta') || s.includes('tennis')) { txt = 'Sharp: boa liquidez'; cls = 'lq-good'; }
+  else if (s.includes('boxing') || s.includes('mma') || s.includes('ufc')) { txt = 'Sharp: liquidez média — edge menos fiável'; cls = 'lq-mid'; }
+  else if (s.includes('cricket')) { txt = 'Sharp: liquidez variável'; cls = 'lq-var'; }
+  else if (s.includes('baseball') || s.includes('mlb') || s.includes('npb') || s.includes('kbo')) { txt = 'Sharp: boa liquidez'; cls = 'lq-good'; }
+  else if (s.includes('soccer') || s.includes('football') || s.includes('league') || s.includes('liga') || s.includes('serie') || s.includes('cup') || s.includes('premier') || s.includes('bundesliga') || s.includes('ligue') || s.includes('eredivisie')) { txt = 'Sharp: alta liquidez'; cls = 'lq-good'; }
+  else return '';
+  return `<span class="vb-lqbadge ${cls}" title="Liquidez da linha sharp (Pinnacle): quanto maior, mais fiável o edge">${txt}</span>`;
+}
+
+// #4 How old is the stored odd? Odds move; a stale price means the CLV was computed
+// on dead data. updated_at is stored UTC ("YYYY-MM-DD HH:MM").
+function oddsAgeLine(b) {
+  if (!b.updated_at) return '';
+  const t = new Date(String(b.updated_at).replace(' ', 'T') + 'Z');
+  if (isNaN(t)) return '';
+  const mins = (Date.now() - t) / 60000;
+  if (mins < 0) return '';
+  let label, cls;
+  if (mins < 120) { label = `🕒 Odds updated ${mins < 1 ? 'just now' : Math.round(mins) + ' min ago'}`; cls = 'oa-fresh'; }
+  else if (mins < 360) { label = `⚠ Odds ${(mins / 60).toFixed(1)}h old — verify price before placing`; cls = 'oa-warn'; }
+  else { label = `⛔ Odds ${Math.round(mins / 60)}h old — likely stale`; cls = 'oa-stale'; }
+  return `<span class="vb-oddsage ${cls}">${label}</span>`;
+}
 function fmtTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -858,16 +899,33 @@ function renderValueBets() {
     return;
   }
 
-  // Positive when there ARE value bets; honest "no value" when none.
+  // #8 Daily summary — decide the day in 3 seconds, CLV-first.
+  let clvPlus = 0, edgeNoClv = 0;
+  for (const b of data) {
+    const ev = vbEval(b);
+    if (!ev.bestPick) continue;
+    const clv = vbClv(b);
+    if (clv != null && clv > 0) clvPlus++;
+    else if (ev.bestPick.edge_pct >= VB_VALUE_FLOOR && clv != null && clv <= 0) edgeNoClv++;
+  }
+  const nextEv = data
+    .filter(b => b.commence_time && new Date(b.commence_time) > new Date())
+    .sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time))[0];
+  let nextStr = '';
+  if (nextEv) {
+    const hrs = (new Date(nextEv.commence_time) - Date.now()) / 3600000;
+    const when = hrs < 1 ? '<1h' : hrs < 24 ? `${Math.round(hrs)}h` : `${Math.round(hrs / 24)}d`;
+    nextStr = ` · próximo jogo em ${when} (${nextEv.home_team} v ${nextEv.away_team})`;
+  }
   let banner;
-  if (valueCount === 0) {
-    banner = `<div class="vb-novalue-banner">
-      <strong>No value detected today</strong> — 0 picks passed the quality gate
-      (edge ≥ ${_qMinEdge}%, odds ≤ ${_qMaxOdds}). Matches below are informational only.
-    </div>`;
+  if (clvPlus > 0) {
+    banner = `<div class="vb-daily-summary ds-good"><strong>Hoje:</strong> 🟢 ${clvPlus} pick${clvPlus === 1 ? '' : 's'} com CLV+`
+      + (edgeNoClv > 0 ? ` · ⚠ ${edgeNoClv} com edge mas CLV− (evitar)` : '')
+      + nextStr + `</div>`;
   } else {
-    banner = `<div class="vb-value-banner">🟢 <strong>${valueCount} value bet${valueCount === 1 ? '' : 's'} today</strong>
-      — edge ≥3% &amp; sharp-confirmed. Best picks first; size by the ¼-Kelly shown.</div>`;
+    banner = `<div class="vb-daily-summary ds-none"><strong>Nenhum pick com CLV positivo hoje</strong> — aguarda ou passa.`
+      + (edgeNoClv > 0 ? ` ${edgeNoClv} têm edge mas CLV− no 1xBet (valor noutra casa).` : '')
+      + nextStr + `</div>`;
   }
   wrap.innerHTML = banner + data.map(b => renderCard(b)).join('');
 
@@ -1271,10 +1329,8 @@ function renderCard(b) {
       banners.push(`<span class="movement-tag confirm">✓ Confirma o nosso pick</span>`);
     }
 
-    // Only show snapshot count if nothing else to say and history is building
-    if (banners.length === 0 && m.snapshots >= 3) {
-      banners.push(`<span class="movement-tag info">📈 ${m.snapshots} snapshots — sem movimento relevante</span>`);
-    }
+    // #7 No "X snapshots — no movement" filler. Only show the movement banner when
+    // there's a REAL signal (smart money / steam / sharp confirm), never empty noise.
 
     if (banners.length > 0) {
       movementBanner = `<div class="vb-movement-banner">${banners.join('')}</div>`;
@@ -1360,6 +1416,10 @@ function renderCard(b) {
         ${b.home_team} <span class="vs">vs</span> ${b.away_team}
         ${clvBadge ? `<span class="vb-clv-inline">${clvBadge}</span>` : ''}
       </div>
+      ${(() => {
+        const t = timingBadge(b), lq = liquidityBadge(b), oa = oddsAgeLine(b);
+        return (t || lq || oa) ? `<div class="vb-meta-row">${t}${lq}${oa}</div>` : '';
+      })()}
     </div>
     ${negLeagueBanner}
     ${movementBanner}
