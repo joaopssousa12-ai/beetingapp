@@ -2744,35 +2744,45 @@ def fuse_signals(pin_probs, xg_probs, elo_probs):
         
         # Calculate AGREEMENT between Pinnacle and other signals
         # (Used for confidence indication, NOT for adjusting probability)
+        #
+        # CRITICAL: a liquid sharp line (Pinnacle) is essentially never 25pp wrong.
+        # So when our (rough) model diverges by >25pp, OUR MODEL is the unreliable
+        # outlier — NOT the market. Letting it into the agreement std produced a
+        # FALSE "⚠ model diverges" seal (e.g. the national xG proxy rating Brazil at
+        # 12% vs a 60% market). We therefore EXCLUDE such an outlier signal from the
+        # agreement (still flagged separately for transparency).
+        XG_OUTLIER_PP = 25
         signals_compared = []
+        xg_unreliable = False
         if xg_probs and xg_probs.get("home") is not None:
-            signals_compared.append(("xg", xg_probs.get("home")))
+            if abs(xg_probs["home"] - pin_probs["home"]) > XG_OUTLIER_PP:
+                xg_unreliable = True   # wild outlier vs a sharp line → drop from agreement
+            else:
+                signals_compared.append(("xg", xg_probs.get("home")))
+        elo_unreliable = False
         if elo_probs and elo_probs.get("home") is not None:
-            signals_compared.append(("elo", elo_probs.get("home")))
-        
-        # Standard deviation of home estimates across all signals (including Pinnacle)
+            if abs(elo_probs["home"] - pin_probs["home"]) > XG_OUTLIER_PP:
+                elo_unreliable = True
+            else:
+                signals_compared.append(("elo", elo_probs.get("home")))
+
+        # Standard deviation of home estimates across reliable signals (incl. Pinnacle)
         all_home_estimates = [pin_probs["home"]] + [s[1] for s in signals_compared]
         if len(all_home_estimates) >= 2:
             mean = sum(all_home_estimates) / len(all_home_estimates)
             variance = sum((x - mean) ** 2 for x in all_home_estimates) / len(all_home_estimates)
             std = variance ** 0.5
-            
+
             if std < 5:
                 agreement = "high"  # Models confirm market
             elif std < 12:
                 agreement = "medium"
             else:
-                agreement = "low"  # Models diverge from market
+                agreement = "low"  # Models genuinely diverge (and are reliable enough to matter)
         else:
-            agreement = "single"  # Only Pinnacle available
-        
-        # Mismatch detection: if xG diverges massively from Pinnacle, flag it
-        # but DO NOT change the probability (Pinnacle is trusted)
-        mismatch_flag = None
-        if xg_probs and xg_probs.get("home") is not None:
-            xg_diff = abs(xg_probs["home"] - pin_probs["home"])
-            if xg_diff > 25:
-                mismatch_flag = "xg_diverges_strongly"
+            agreement = "single"  # Only Pinnacle reliable here
+
+        mismatch_flag = "xg_diverges_strongly" if xg_unreliable else None
         
         return {
             **fused,
@@ -2829,3 +2839,51 @@ def fuse_signals(pin_probs, xg_probs, elo_probs):
         "mismatch_flag": None,
         "primary_source": "models",
     }
+
+
+def diagnose_national_xg(limit=15):
+    """Diagnostic for the xG home/away bug report: for each current national/WC
+    event, show the market vs xG vs Elo home/away probs, the underlying gf/ga, and
+    whether the xG favourite matches the market favourite. Confirms whether the xG
+    is home/away-swapped (it isn't) or just a weak proxy on some teams."""
+    from collectors.national_xg import predict_national_match, _get_team_xg
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM odds_events ORDER BY commence_time ASC").fetchall()
+    except Exception as e:
+        conn.close()
+        return {"error": str(e)}
+    out = []
+    for r in rows:
+        d = dict(r)
+        sport = (d.get("sport_name") or "").lower()
+        if not any(k in sport for k in ("world cup", "nations", "euro", "copa")):
+            continue
+        home, away = d.get("home_team"), d.get("away_team")
+        ref_h = d.get("bf_home") or d.get("pin_home")
+        ref_a = d.get("bf_away") or d.get("pin_away")
+        ref_d = d.get("bf_draw") or d.get("pin_draw")
+        mkt = remove_vig_power(ref_h, ref_d, ref_a) if (ref_h and ref_a) else None
+        nat = predict_national_match(home, away)
+        elo = elo_based_probability(home, away, "national")
+        ghx, gax = _get_team_xg(conn, home), _get_team_xg(conn, away)
+        market_fav = (home if mkt["home"] >= mkt["away"] else away) if mkt else None
+        xg_fav = (home if nat["prob_home"] >= nat["prob_away"] else away) if nat else None
+        out.append({
+            "match": f"{home} (home) vs {away} (away)",
+            "market_home%": round(mkt["home"], 1) if mkt else None,
+            "market_away%": round(mkt["away"], 1) if mkt else None,
+            "xg_home%": nat["prob_home"] if nat else None,
+            "xg_away%": nat["prob_away"] if nat else None,
+            "elo_home%": elo["home"] if elo else None,
+            "elo_away%": elo["away"] if elo else None,
+            "home_gf/ga/n": [ghx["gf"], ghx["ga"], ghx["n"]] if ghx else "NOT FOUND",
+            "away_gf/ga/n": [gax["gf"], gax["ga"], gax["n"]] if gax else "NOT FOUND",
+            "market_favourite": market_fav,
+            "xg_favourite": xg_fav,
+            "xg_matches_market": (market_fav == xg_fav) if (market_fav and xg_fav) else None,
+        })
+        if len(out) >= limit:
+            break
+    conn.close()
+    return {"events": len(out), "matches": out}

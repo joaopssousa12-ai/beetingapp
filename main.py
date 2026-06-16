@@ -403,6 +403,21 @@ async def api_diag_odds_sports():
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
 
 
+@app.get("/api/diag/xg")
+async def api_diag_xg():
+    """Diagnostic for the xG home/away report: market vs xG vs Elo per national/WC
+    game + gf/ga + whether the xG favourite matches the market favourite."""
+    from collectors.database import diagnose_national_xg
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, diagnose_national_xg)
+        return JSONResponse(result)
+    except Exception as e:
+        import traceback
+        print(f"DIAG_ERROR (xg): {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
 @app.get("/api/diag/spreads")
 async def api_diag_spreads(sport: str = "soccer_fifa_world_cup"):
     """Does The Odds API return Asian Handicap (spreads) for these games? Open in
