@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BetIQ — Betting Intelligence</title>
-<link rel="stylesheet" href="/static/css/style.css?v=20260612k">
+<link rel="stylesheet" href="/static/css/style.css?v=20260612l">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -227,6 +227,12 @@
             <button class="vb-preset-save-btn" onclick="saveCurrentPreset()" title="Guardar filtros actuais num preset">💾 Guardar</button>
           </div>
           <div class="vb-toolbar-group">
+            <span class="vb-sort" title="Sort the picks">
+              <span class="vb-sort-lbl">Sort</span>
+              <button class="vb-sort-btn active" data-sort="clv" onclick="setSortMode('clv')">CLV</button>
+              <button class="vb-sort-btn" data-sort="edge" onclick="setSortMode('edge')">Edge</button>
+              <button class="vb-sort-btn" data-sort="date" onclick="setSortMode('date')">Date</button>
+            </span>
             <label class="vb-sound-label" title="Notificação sonora quando aparecem novas value bets">
               <input type="checkbox" id="vb-sound" checked> 🔔
             </label>
@@ -458,6 +464,6 @@
 
     </main>
   </div>
-<script src="/static/js/app.js?v=20260612k"></script>
+<script src="/static/js/app.js?v=20260612l"></script>
 </body>
 </html>

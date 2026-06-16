@@ -293,6 +293,7 @@ let vbState = {
   minConf: 0,
   collapsed: new Set(),
   viewMode: 'cards',  // 'cards' or 'table'
+  sortMode: 'clv',    // 'clv' (default) | 'edge' | 'date' — #2
 };
 let _prevValueBetCount = -1;
 
@@ -522,6 +523,16 @@ function vbEval(b) {
   return { realPicks, bestPick, isValue, stars, ceiling, refAgree };
 }
 
+// Est. CLV of a card = the edge at the price the USER can actually get (1xBet) for
+// the best pick, else the best-price edge. This is the #1 decision signal — used
+// to sort the page and as the dominant header chip. null = no actionable pick.
+function vbClv(b) {
+  const ev = vbEval(b);
+  if (!ev.bestPick) return null;
+  const mine = _myBookPick(b, ev.bestPick);
+  return (mine && mine.edge_pct != null) ? mine.edge_pct : ev.bestPick.edge_pct;
+}
+
 // ============================================================
 // COMPACT TABLE VIEW — dense row-per-event alternative to cards
 // ============================================================
@@ -587,6 +598,13 @@ function toggleViewMode() {
   vbState.viewMode = vbState.viewMode === 'cards' ? 'table' : 'cards';
   const btn = document.getElementById('vb-view-toggle');
   if (btn) btn.textContent = vbState.viewMode === 'cards' ? '☰ Table' : '▦ Cards';
+  renderValueBets();
+}
+
+function setSortMode(mode) {
+  vbState.sortMode = mode;
+  document.querySelectorAll('.vb-sort-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.sort === mode));
   renderValueBets();
 }
 
@@ -792,7 +810,22 @@ function vbRankScore(b) {
 function renderValueBets() {
   const wrap = document.getElementById('vb-cards');
   let data = applyVbFilters(vbState.raw);
-  data.sort((a, b) => vbRankScore(b) - vbRankScore(a));
+  // #2 Sort. Default = Est. CLV desc (the real decision signal), so positive-CLV
+  // picks lead and CLV-negative ones sink. Toggle: CLV / Edge / Date.
+  const sortMode = vbState.sortMode || 'clv';
+  if (sortMode === 'date') {
+    data.sort((a, b) => new Date(a.commence_time || 0) - new Date(b.commence_time || 0));
+  } else if (sortMode === 'edge') {
+    data.sort((a, b) => vbRankScore(b) - vbRankScore(a));
+  } else {
+    data.sort((a, b) => {
+      const ca = vbClv(a), cb = vbClv(b);
+      if (ca == null && cb == null) return vbRankScore(b) - vbRankScore(a);
+      if (ca == null) return 1;
+      if (cb == null) return -1;
+      return cb - ca;   // higher Est. CLV first
+    });
+  }
 
   const _qMinEdge = vbState.minEdge ?? 3;
   const _qMaxOdds = vbState.maxOdds ?? 8.0;
@@ -903,10 +936,13 @@ function renderCard(b) {
       </div>`
     : '';
 
-  // ── Edge chip for card header (reflects the real best pick only) ──
-  let edgeChipHtml = '';
+  // ── Header chips: CLV is the DOMINANT signal (big, green/red), edge secondary (#3) ──
+  let clvChipHtml = '', edgeChipHtml = '';
   if (bestPickReal) {
-    edgeChipHtml = `<span class="edge-chip pos">+${bestPickReal.edge_pct.toFixed(1)}%</span>`;
+    const _mineHdr = _myBookPick(b, bestPickReal);
+    const clvVal = (_mineHdr && _mineHdr.edge_pct != null) ? _mineHdr.edge_pct : bestPickReal.edge_pct;
+    clvChipHtml = `<span class="vb-clv-chip ${clvVal >= 0 ? 'clv-pos' : 'clv-neg'}" title="Est. CLV — your 1xBet price vs the sharp line (the #1 signal)">${clvVal >= 0 ? '+' : ''}${clvVal.toFixed(1)}% CLV</span>`;
+    edgeChipHtml = `<span class="edge-chip-sm" title="Best-price edge">edge ${bestPickReal.edge_pct >= 0 ? '+' : ''}${bestPickReal.edge_pct.toFixed(1)}%</span>`;
   }
 
   // ── Compact time string ─────────────────────────────────────────
@@ -1316,7 +1352,7 @@ function renderCard(b) {
       <div class="vb-card-meta">
         <span class="vb-sport">${b.sport_name || ''}</span>${tennisSurfaceBadge(b)}
         <div class="vb-head-right">
-          ${edgeChipHtml}
+          ${clvChipHtml}${edgeChipHtml}
           <span class="vb-time">${_timeStr}</span>
         </div>
       </div>
