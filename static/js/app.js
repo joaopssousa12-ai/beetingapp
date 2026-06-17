@@ -481,9 +481,23 @@ function playNewBetSound() {
 // ============================================================
 const VB_VALUE_FLOOR = 3;        // edge% needed to be a green / celebrated value bet
 const VB_ODD_FLOOR = 1.5;        // min odd for a celebrated pick
-const VB_GREEN_MAX_ODD = 5.0;    // green "Best Pick" sweet-spot odd cap
+const VB_GREEN_MAX_ODD = 4.0;    // green "Best Pick" sweet-spot odd cap; above this = informational only
+const VB_SHORT_ODD = 1.40;       // below this, soften the stake (calibration-sensitive favourites)
 const VB_HARD_CEILING = 8.0;     // above this odd, never shown as a pick (info only)
 function vbOddCeiling() { return Math.min(vbState.maxOdds ?? VB_HARD_CEILING, VB_HARD_CEILING); }
+
+// ¼-Kelly fraction of bankroll for a given edge% and odd, with two safety rules:
+//  • odd < 1.40 (≈>71% favourite): HALVE the stake AND hard-cap at 1.5% of bankroll.
+//    A 1-2pp calibration error on a heavy favourite flips +EV to −EV, so the raw
+//    ¼-Kelly (which grows as odds shrink) is too aggressive there.
+//  • odd 1.40–4.0: normal ¼-Kelly (untouched).
+// Bankroll-independent (returns a fraction); callers multiply by their bankroll.
+function vbKellyFraction(edge, odd) {
+  if (!edge || !odd || edge <= 0 || odd <= 1) return 0;
+  let f = (edge / 100) / (odd - 1) * 0.25;        // ¼-Kelly on the edge
+  if (odd < VB_SHORT_ODD) f = Math.min(f * 0.5, 0.015);  // short-odd: ½-size, cap 1.5% bankroll
+  return f;
+}
 
 function vbEval(b) {
   const minEdge = vbState.minEdge ?? 3;
@@ -530,7 +544,9 @@ function vbClv(b) {
   const ev = vbEval(b);
   if (!ev.bestPick) return null;
   const mine = _myBookPick(b, ev.bestPick);
-  return (mine && mine.edge_pct != null) ? mine.edge_pct : ev.bestPick.edge_pct;
+  // CLV only exists at the price YOU can bet (1xBet). No 1xBet quote ⇒ no CLV ⇒
+  // null, so the card sinks in the CLV sort instead of ranking on an unbettable price.
+  return (mine && mine.edge_pct != null) ? mine.edge_pct : null;
 }
 
 // ============================================================
@@ -567,10 +583,13 @@ function renderTableView(data) {
     const fairOdd = bv?.fair_odd
       ? bv.fair_odd.toFixed(2)
       : (bv?.book_odd && edgePct != null ? (bv.book_odd / (1 + edgePct / 100)).toFixed(2) : '—');
+    // Kelly sized on the 1xBet price only (same rule as the cards): no 1xBet quote
+    // or odd >4.0 ⇒ no stake. Short odds (<1.40) are softened by vbKellyFraction.
     let kellyStr = '—';
-    if (bv && edgePct > 0 && bv.book_odd > 1) {
-      const kQ = ((edgePct / 100) / (bv.book_odd - 1)) * 0.25;
-      kellyStr = _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
+    const _mineT = bv ? _myBookPick(b, bv) : null;
+    if (_mineT && _mineT.edge_pct > 0 && _mineT.book_odd <= VB_GREEN_MAX_ODD) {
+      const kQ = vbKellyFraction(_mineT.edge_pct, _mineT.book_odd);
+      if (kQ > 0) kellyStr = _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
     }
     const conf = ev.stars;
     const timeStr = (() => {
@@ -619,12 +638,50 @@ function isPlaceholderTeam(t) {
   return false;
 }
 
+// De-duplicate the same fixture appearing more than once. We saw the SAME match
+// (identical teams + odds) listed under two event records / two dates — e.g.
+// Portugal-DR Congo shown as both "today, 21h" and "17 Jun" — which inflates the
+// counts and risks betting the same game twice. Key = sport|home|away (normalised).
+// Within a key we keep the SOONEST upcoming entry and drop others that start within
+// DEDUP_WINDOW_DAYS of it — so two genuine meetings weeks apart (domestic leagues
+// from August) are NOT merged.
+const DEDUP_WINDOW_DAYS = 4;
+function dedupeEvents(rows) {
+  const norm = s => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+  const byKey = {};
+  for (const r of rows) {
+    const key = `${norm(r.sport_name)}|${norm(r.home_team)}|${norm(r.away_team)}`;
+    (byKey[key] = byKey[key] || []).push(r);
+  }
+  const out = [];
+  for (const group of Object.values(byKey)) {
+    if (group.length === 1) { out.push(group[0]); continue; }
+    // Sort by kickoff (soonest first; missing time goes last).
+    group.sort((a, b) => (new Date(a.commence_time || '9999').getTime()) - (new Date(b.commence_time || '9999').getTime()));
+    const kept = [];
+    for (const r of group) {
+      const t = r.commence_time ? new Date(r.commence_time).getTime() : null;
+      const dup = kept.find(k => {
+        const kt = k.commence_time ? new Date(k.commence_time).getTime() : null;
+        if (t == null || kt == null) return true;  // no time on either ⇒ treat as dup
+        return Math.abs(t - kt) <= DEDUP_WINDOW_DAYS * 86400000;
+      });
+      if (!dup) kept.push(r);
+    }
+    out.push(...kept);
+  }
+  return out;
+}
+
 function applyVbFilters(rows) {
   let out = rows.slice();
   const minConf = vbState.minConf ?? 0;
 
   // Always drop TBD bracket placeholders — never bettable, only clutter.
   out = out.filter(r => !isPlaceholderTeam(r.home_team) && !isPlaceholderTeam(r.away_team));
+
+  // Collapse duplicate fixtures (same teams listed twice) before anything else.
+  out = dedupeEvents(out);
 
   // PRE-MATCH ONLY: drop games that have already started. Our odds refresh every
   // few hours, so a live (in-play) line is stale and its "edge" is just noise
@@ -707,9 +764,14 @@ function clvEstLine(b, p) {
       else if (d > 0.03) trend = ' · drifting — bet now';
     }
   }
-  const book = mine ? '1xBet' : 'best';
+  // Only the 1xBet price is YOUR CLV. If 1xBet doesn't quote it, the edge belongs
+  // to another book — say so plainly instead of dressing a best-price edge as CLV.
+  if (!mine) {
+    return `<div class="vb-clvest vb-clv-flat">📈 Edge <strong>${e >= 0 ? '+' : ''}${e.toFixed(1)}%</strong>`
+      + ` <span class="vb-clv-note">noutra casa — a 1xBet não cota isto, logo não há CLV para ti</span></div>`;
+  }
   return `<div class="vb-clvest ${cls}">📈 Est. CLV <strong>${e >= 0 ? '+' : ''}${e.toFixed(1)}%</strong>`
-    + ` <span class="vb-clv-note">(${book} vs sharp close — the #1 profit signal)${trend}</span></div>`;
+    + ` <span class="vb-clv-note">(1xBet vs sharp close — the #1 profit signal)${trend}</span></div>`;
 }
 
 // Line movement for the recommended pick's own selection (sharp signal, front
@@ -998,9 +1060,16 @@ function renderCard(b) {
   let clvChipHtml = '', edgeChipHtml = '';
   if (bestPickReal) {
     const _mineHdr = _myBookPick(b, bestPickReal);
-    const clvVal = (_mineHdr && _mineHdr.edge_pct != null) ? _mineHdr.edge_pct : bestPickReal.edge_pct;
-    clvChipHtml = `<span class="vb-clv-chip ${clvVal >= 0 ? 'clv-pos' : 'clv-neg'}" title="Est. CLV — your 1xBet price vs the sharp line (the #1 signal)">${clvVal >= 0 ? '+' : ''}${clvVal.toFixed(1)}% CLV</span>`;
-    edgeChipHtml = `<span class="edge-chip-sm" title="Best-price edge">edge ${bestPickReal.edge_pct >= 0 ? '+' : ''}${bestPickReal.edge_pct.toFixed(1)}%</span>`;
+    if (_mineHdr && _mineHdr.edge_pct != null) {
+      // Real CLV: your bettable 1xBet price vs the sharp line.
+      const clvVal = _mineHdr.edge_pct;
+      clvChipHtml = `<span class="vb-clv-chip ${clvVal >= 0 ? 'clv-pos' : 'clv-neg'}" title="Est. CLV — your 1xBet price vs the sharp line (the #1 signal)">${clvVal >= 0 ? '+' : ''}${clvVal.toFixed(1)}% CLV</span>`;
+    } else {
+      // 1xBet doesn't quote this selection — the edge is at another book, so there
+      // is NO 1xBet CLV. Don't label a best-price edge as "CLV".
+      clvChipHtml = `<span class="vb-clv-chip clv-neg" title="A 1xBet não cota esta seleção — valor noutra casa, sem CLV para ti">noutra casa</span>`;
+    }
+    edgeChipHtml = `<span class="edge-chip-sm" title="Best-price edge (pode ser noutra casa)">edge ${bestPickReal.edge_pct >= 0 ? '+' : ''}${bestPickReal.edge_pct.toFixed(1)}%</span>`;
   }
 
   // ── Compact time string ─────────────────────────────────────────
@@ -1015,8 +1084,8 @@ function renderCard(b) {
   // ── Kelly helper ────────────────────────────────────────────────
   const _br = vbState.bankroll || 0;
   function _calcKelly(edge, odd) {
-    if (!edge || !odd || edge <= 0 || odd <= 1) return null;
-    const kQ = (edge/100) / (odd - 1) * 0.25;   // ¼-Kelly on the edge — exactly as the backtest
+    const kQ = vbKellyFraction(edge, odd);   // ¼-Kelly + short-odd softening (see vbKellyFraction)
+    if (kQ <= 0) return null;
     return _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
   }
 
@@ -1080,21 +1149,36 @@ function renderCard(b) {
   function renderHeroReal(p, celebrated) {
     const edge = p.edge_pct;
     const eCls = edge >= 3 ? 'pos' : edge >= 1 ? 'flat' : 'neg';
-    // Stake = ¼-Kelly on the price the USER can actually get (1xBet), scaled by
-    // confidence (fewer stars ⇒ smaller stake). If 1xBet has no value, stake = €0.
+    // Stake = ¼-Kelly sized STRICTLY on the price the user can actually get (1xBet).
+    // The big "Best Odd" / "Edge" above may be at another book (informational), but
+    // you only win the price YOU bet — so the stake never uses a best-price edge.
+    //   • 1xBet doesn't quote this selection  → €0 (value is at another book).
+    //   • 1xBet quotes it but edge ≤ 0         → €0 (no value at 1xBet).
+    //   • 1xBet odd > 4.0                      → informational only, no stake.
+    //   • otherwise                            → ¼-Kelly on the 1xBet edge (short-odd softened).
     const mine = _myBookPick(b, p);
-    const stakeEdge = mine && mine.edge_pct != null ? mine.edge_pct : edge;
-    const stakeOdd = mine ? mine.book_odd : p.book_odd;
-    const kelly = _calcKelly(stakeEdge, stakeOdd);   // ¼-Kelly on YOUR (1xBet) edge — no confidence multiplier
-    const kellyZero = !!mine && (mine.edge_pct == null || mine.edge_pct <= 0);
+    let kelly = null, stakeState = 'ok';
+    if (!mine) {
+      stakeState = 'na';                                   // não cotado na 1xBet
+    } else if (mine.edge_pct == null || mine.edge_pct <= 0) {
+      stakeState = 'zero';                                 // 1xBet sem valor
+    } else if (mine.book_odd > VB_GREEN_MAX_ODD) {
+      stakeState = 'info';                                 // odd > 4.0 → informativo
+    } else {
+      kelly = _calcKelly(mine.edge_pct, mine.book_odd);    // ¼-Kelly on YOUR (1xBet) edge
+    }
     const fair = p.true_prob ? (100 / p.true_prob).toFixed(2) : null;
     const cls = celebrated ? 'vb-hero-pick has-value-pick' : 'vb-hero-pick below-floor';
     const label = celebrated ? 'Best Pick' : 'Best available';
     const note = celebrated
       ? (fair ? `Fair odd ${fair} · ★ from ${refLabel} (real market)` : '')
-      : (b.ref_agreement === 'diverge_sharp'
+      : (stakeState === 'na'
+          ? `Melhor preço está NOUTRA CASA — a 1xBet não cota esta seleção, por isso não tens CLV aqui. Informativo.`
+          : b.ref_agreement === 'diverge_sharp'
           ? `Best available — the two sharp markets disagree, so we can't confirm value. Informational only.`
-          : `Best available — below the green value gate (edge ≥3% & odd ≤5). Size with care.`);
+          : stakeState === 'info'
+          ? `Best available — odd >4.0 (azarão, menos fiável). Informativo, sem stake sugerida.`
+          : `Best available — below the green value gate (edge ≥3% & odd 1.5–4.0). Size with care.`);
     return `<div class="${cls}">
       <div class="vb-pick-label">${trophyIcon}${label}<span class="vb-stars">${starsHtmlFor(ev.stars)}</span></div>
       <div class="vb-pick-selection">${p.selection}</div>
@@ -1111,9 +1195,15 @@ function renderCard(b) {
         ${kelly ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big kelly-val">${kelly}</span>
           <span class="vb-hero-lbl">¼ Kelly</span>
-        </div>` : (kellyZero ? `<div class="vb-hero-num-block">
+        </div>` : (stakeState === 'na' ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big" style="color:#dc2626">€0</span>
-          <span class="vb-hero-lbl">no value at 1xBet</span>
+          <span class="vb-hero-lbl">n/d na 1xBet</span>
+        </div>` : stakeState === 'zero' ? `<div class="vb-hero-num-block">
+          <span class="vb-hero-big" style="color:#dc2626">€0</span>
+          <span class="vb-hero-lbl">sem valor 1xBet</span>
+        </div>` : stakeState === 'info' ? `<div class="vb-hero-num-block">
+          <span class="vb-hero-big" style="color:var(--text3)">—</span>
+          <span class="vb-hero-lbl">odd >4.0 · info</span>
         </div>` : '')}
         <div class="vb-hero-num-block">
           <span class="vb-hero-big" style="opacity:.85">${p.true_prob != null ? p.true_prob + '%' : '—'}</span>
