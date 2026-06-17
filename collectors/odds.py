@@ -303,11 +303,13 @@ def _pretty_sport_name(key):
     return f"{tour} {rest}".strip() if rest else f"{tour} Tour"
 
 
-def refresh_imminent_odds(status_callback=None, within_hours=4):
+def refresh_imminent_odds(status_callback=None, within_hours=4, within_minutes=None):
     """Near-kickoff refresh: re-fetch ONLY the sports that have events starting in
-    the next `within_hours`. The line is sharpest close to kickoff, and this costs
-    almost nothing (often 0-2 requests) vs a full sweep — so we capture the
-    near-closing price where it matters without burning the free quota."""
+    the next `within_hours` (or `within_minutes` if given). The line is sharpest
+    close to kickoff, and this costs almost nothing (often 0-2 requests) vs a full
+    sweep — so we capture the near-closing price where it matters without burning
+    the free quota. Each fetch writes an odds_history snapshot, which is what
+    capture_pinnacle_close_for_started_events() later reads as the TRUE close."""
     def cb(msg):
         print(msg, flush=True)
         if status_callback:
@@ -320,13 +322,20 @@ def refresh_imminent_odds(status_callback=None, within_hours=4):
         cb(f"Imminent refresh: skipped (quota low: {_LAST_REMAINING['v']} left).")
         return 0
 
+    # Build the window as a LITERAL interval (int-derived, no injection) so the SQL
+    # translation layer can rewrite datetime('now','+N unit') -> NOW() + INTERVAL
+    # 'N unit' on Postgres. (A bound '?' param is NOT translated and fails on PG.)
+    if within_minutes is not None:
+        interval, window_desc = f"+{int(within_minutes)} minutes", f"{int(within_minutes)}min"
+    else:
+        interval, window_desc = f"+{int(within_hours)} hours", f"{int(within_hours)}h"
+
     try:
         conn = get_connection()
         rows = conn.execute(
             "SELECT DISTINCT sport_key FROM odds_events "
             "WHERE commence_time > datetime('now') "
-            "AND commence_time < datetime('now', ?)",
-            (f"+{int(within_hours)} hours",),
+            f"AND commence_time < datetime('now', '{interval}')"
         ).fetchall()
         conn.close()
     except Exception as e:
@@ -337,7 +346,7 @@ def refresh_imminent_odds(status_callback=None, within_hours=4):
     keys = [r["sport_key"] for r in rows
             if r["sport_key"] and r["sport_key"] != "soccer"]
     if not keys:
-        cb("Imminent refresh: no matches starting soon.")
+        cb(f"Imminent refresh: no matches starting in <{window_desc}.")
         return 0
 
     total, remaining = 0, "?"
@@ -345,7 +354,7 @@ def refresh_imminent_odds(status_callback=None, within_hours=4):
         events, remaining = fetch_odds(sk)
         if events:
             total += parse_and_store(events, sk, SPORT_GROUPS.get(sk) or _pretty_sport_name(sk))
-    cb(f"Imminent refresh: {total} events across {len(keys)} sport(s) starting <{within_hours}h. "
+    cb(f"Imminent refresh: {total} events across {len(keys)} sport(s) starting <{window_desc}. "
        f"Credits left: {remaining}")
     return total
 

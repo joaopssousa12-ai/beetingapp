@@ -63,6 +63,11 @@ async def startup():
         # Near-kickoff refresh: cheap, only re-fetches sports with imminent matches
         # (captures the sharpest near-closing line). Quota-guarded.
         scheduler.add_job(lambda: asyncio.create_task(run_imminent_refresh()), "cron", hour="*/3", minute=30)
+        # Closing-line capture: every 15 min, snapshot the Pinnacle line for games
+        # starting in the next ~20 min and backfill pin_close_odds on tracked bets
+        # whose match just kicked off. This makes the stored "close" a true
+        # ~15-min-pre-kickoff line, so My Bets shows REAL CLV (not a 3-6h-old line).
+        scheduler.add_job(lambda: asyncio.create_task(run_closing_capture()), "cron", minute="*/15")
         # Daily digest: one Telegram message with the day's value bets (09:00 UTC).
         scheduler.add_job(lambda: asyncio.create_task(run_daily_digest()), "cron", hour=9, minute=0)
         scheduler.start()
@@ -601,6 +606,35 @@ async def run_imminent_refresh():
     except Exception as e:
         import traceback
         print(f"IMMINENT_REFRESH ERROR: {e}\n{traceback.format_exc()[-400:]}", flush=True)
+
+
+async def run_closing_capture():
+    """Every 15 min: capture the near-closing Pinnacle line for imminent games and
+    fill pin_close_odds on tracked bets whose match just started — fully automatic.
+
+    Flow:
+      1) refresh_imminent_odds(within_minutes=20) → re-fetch only sports with a game
+         in the next ~20 min, writing a fresh odds_history snapshot (quota-guarded;
+         hits the API only when something is actually about to start).
+      2) capture_pinnacle_close_for_started_events() → for every bet whose
+         commence_time has just passed, store the LAST pre-kickoff Pinnacle snapshot
+         as pin_close_odds. Real CLV = (your_odds / pin_close - 1), shown in My Bets
+         and /api/backtest/clv. The user only registers the bet + result; this does
+         the rest."""
+    if collection_status.get("running"):
+        return
+    loop = asyncio.get_event_loop()
+    try:
+        from collectors.odds import refresh_imminent_odds
+        # 1) Snapshot the near-close line for games starting in the next ~20 min.
+        await loop.run_in_executor(None, lambda: refresh_imminent_odds(within_minutes=20))
+        # 2) Backfill pin_close_odds for any bet whose game has now kicked off.
+        n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
+        if n and n > 0:
+            print(f"CLOSING_CAPTURE: filled pin_close_odds for {n} bet(s).", flush=True)
+    except Exception as e:
+        import traceback
+        print(f"CLOSING_CAPTURE ERROR: {e}\n{traceback.format_exc()[-400:]}", flush=True)
 
 
 async def run_daily_digest():
