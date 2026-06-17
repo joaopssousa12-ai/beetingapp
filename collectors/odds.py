@@ -76,7 +76,14 @@ BOOKMAKERS = "pinnacle,bet365,unibet_eu,williamhill,betfair_ex_eu,bwin,betway,ma
 # Last known free-tier quota (set by fetch_odds from x-requests-remaining), so the
 # frequent near-kickoff refresh can back off before exhausting the monthly budget.
 _LAST_REMAINING = {"v": None}
-IMMINENT_MIN_QUOTA = 25  # don't run the cheap near-kickoff refresh below this
+IMMINENT_MIN_QUOTA = 50  # HARD BRAKE: skip ALL non-essential refreshes below this.
+
+# Per-sport throttle: the closing-capture job runs every 15 min, but the line for a
+# given sport doesn't need re-fetching that often. Remember when each sport was last
+# pulled and skip it if it was fetched within the dedupe window — so one game in the
+# pre-kickoff window costs at most ONE fetch, not one every 15 min.
+_LAST_IMMINENT_FETCH = {}        # sport_key -> datetime of last imminent fetch
+_IMMINENT_DEDUP_MINUTES = 25
 
 
 def get_active_sports():
@@ -98,9 +105,13 @@ def fetch_odds(sport_key):
     # to stay quota-neutral: swap the low-value BTTS for Asian Handicap (spreads),
     # which is sharper/more valuable. (h2h works for every sport.)
     markets = "h2h,totals,spreads" if sport_key.startswith("soccer_") else "h2h"
+    # QUOTA: The Odds API bills 1 credit per (region × market). We only need the
+    # 'eu' region — 1xBet (onexbet), Pinnacle and every book in BOOKMAKERS live
+    # there; 'us' only added US-only books we never read. Dropping it halves the
+    # cost of every call (soccer: was 2×3=6 credits, now 1×3=3; tennis: 2→1).
     params = {
         "apiKey": API_KEY,
-        "regions": "eu,us",
+        "regions": "eu",
         "markets": markets,
         "bookmakers": BOOKMAKERS,
         "oddsFormat": "decimal",
@@ -349,13 +360,25 @@ def refresh_imminent_odds(status_callback=None, within_hours=4, within_minutes=N
         cb(f"Imminent refresh: no matches starting in <{window_desc}.")
         return 0
 
-    total, remaining = 0, "?"
+    total, remaining, fetched, skipped = 0, "?", 0, 0
+    now = datetime.now()
     for sk in keys:
+        # Throttle: don't re-pull a sport we already refreshed in the last window.
+        last = _LAST_IMMINENT_FETCH.get(sk)
+        if last and (now - last).total_seconds() < _IMMINENT_DEDUP_MINUTES * 60:
+            skipped += 1
+            continue
         events, remaining = fetch_odds(sk)
+        _LAST_IMMINENT_FETCH[sk] = now
+        fetched += 1
         if events:
             total += parse_and_store(events, sk, SPORT_GROUPS.get(sk) or _pretty_sport_name(sk))
-    cb(f"Imminent refresh: {total} events across {len(keys)} sport(s) starting <{window_desc}. "
-       f"Credits left: {remaining}")
+        # Re-check the budget after each call so we stop the moment we dip too low.
+        if _LAST_REMAINING["v"] is not None and _LAST_REMAINING["v"] < IMMINENT_MIN_QUOTA:
+            cb(f"Imminent refresh: stopping early (quota low: {_LAST_REMAINING['v']} left).")
+            break
+    cb(f"Imminent refresh: {total} events, {fetched} fetched / {skipped} throttled "
+       f"(of {len(keys)} imminent sport(s) <{window_desc}). Credits left: {remaining}")
     return total
 
 

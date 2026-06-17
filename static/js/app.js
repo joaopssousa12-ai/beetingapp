@@ -1225,11 +1225,19 @@ function renderCard(b) {
   if (bestPickReal) {
     heroBlock = renderHeroReal(bestPickReal, isCelebrated);
   } else {
-    // No real pick clears the gate at odds ≤ ceiling — say so cleanly, don't fake one.
-    heroBlock = `<div class="vb-hero-pick no-value">
-      <div class="vb-pick-label">${trophyIcon}Best Pick</div>
-      <div style="color:var(--text3);font-size:13px;padding:10px 0">No value at odds ≤ ${ODDS_CEILING.toFixed(1)} — informational only</div>
-    </div>`;
+    // Distinguish "we analysed and found no value" from "we had NO odds to analyse".
+    // If the event has no bookmaker price at all, the quota/source is down — saying
+    // "No value" would be a lie (it implies we looked and the price wasn't worth it).
+    const hasAnyPrice = (b.all_picks || []).some(p => p.book_odd && p.book_odd > 1);
+    heroBlock = hasAnyPrice
+      ? `<div class="vb-hero-pick no-value">
+          <div class="vb-pick-label">${trophyIcon}Best Pick</div>
+          <div style="color:var(--text3);font-size:13px;padding:10px 0">No value at odds ≤ ${ODDS_CEILING.toFixed(1)} — informational only</div>
+        </div>`
+      : `<div class="vb-hero-pick no-value">
+          <div class="vb-pick-label">${trophyIcon}Best Pick</div>
+          <div style="color:#b45309;font-size:13px;padding:10px 0">⚠ Sem odds disponíveis (quota/fonte esgotada) — jogo não analisado, não é "sem valor".</div>
+        </div>`;
   }
   const standaloneValueHtml = ''; // removed: Best Pick is always real-odds-derived now
 

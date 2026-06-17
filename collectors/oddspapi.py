@@ -74,6 +74,45 @@ def _fetch_pinnacle_odds(sport_key):
         return None, "?"
 
 
+def diagnose_oddspapi():
+    """Ground-truth: actually call OddsPapi and report what it returns, so we know
+    WHY it gave 0 (bad key? sport key not recognised? no Pinnacle on free tier?).
+    Open /api/oddspapi/test in the browser."""
+    out = {"key_set": bool(API_KEY), "base": BASE, "probes": []}
+    if not API_KEY:
+        out["error"] = "ODDSPAPI_KEY not set on the server"
+        return out
+    # Probe a couple of representative sport keys and report status/remaining/sample.
+    for sk in ("soccer_fifa_world_cup", "soccer_epl"):
+        try:
+            r = requests.get(
+                f"{BASE}/sports/{sk}/odds",
+                params={"apiKey": API_KEY, "regions": "eu", "markets": "h2h",
+                        "bookmakers": "pinnacle", "oddsFormat": "decimal"},
+                timeout=20,
+            )
+            probe = {
+                "sport_key": sk,
+                "http_status": r.status_code,
+                "remaining": r.headers.get("x-requests-remaining"),
+                "used": r.headers.get("x-requests-used"),
+            }
+            try:
+                body = r.json()
+                probe["events_returned"] = len(body) if isinstance(body, list) else None
+                if isinstance(body, list) and body:
+                    ev = body[0]
+                    bks = [b.get("key") for b in ev.get("bookmakers", [])]
+                    probe["sample"] = {"match": f"{ev.get('home_team')} v {ev.get('away_team')}",
+                                       "bookmakers": bks, "has_pinnacle": "pinnacle" in bks}
+            except Exception:
+                probe["body_text"] = r.text[:200]
+            out["probes"].append(probe)
+        except Exception as e:
+            out["probes"].append({"sport_key": sk, "error": repr(e)})
+    return out
+
+
 def collect_oddspapi(status_callback=None):
     """
     Fetch Pinnacle odds from OddsPapi and update pin_home/draw/away in DB.

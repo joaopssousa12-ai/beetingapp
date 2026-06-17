@@ -76,6 +76,12 @@ def _login(username, password, app_key):
         "Content-Type": "application/x-www-form-urlencoded",
     }
     data = {"username": username, "password": password}
+    # No certificate → the interactive endpoint is geo/bot-blocked on datacentres
+    # (Render) and ALWAYS returns 403. Don't even try it: that just spams an error
+    # on every refresh. Skip cleanly and tell the user how to enable cert login.
+    if not certs:
+        return None, ("NO_CERT — interactive login is datacentre-blocked (403). Set "
+                      "BETFAIR_CERT and BETFAIR_KEY on Render to enable certificate login.")
     try:
         if certs:
             r = requests.post(CERT_LOGIN_URL, data=data, headers=headers, cert=certs, timeout=20)
@@ -229,7 +235,10 @@ def collect_betfair_odds(status_callback=None):
     cb("Betfair Exchange: logging in...")
     token, err = _login(username, password, app_key)
     if not token:
-        cb(f"Betfair: login failed — {err}")
+        if err and err.startswith("NO_CERT"):
+            cb("Betfair: disabled (no certificate configured) — skipping cleanly.")
+        else:
+            cb(f"Betfair: login failed — {err}")
         return 0
 
     # Fetch soccer + tennis markets

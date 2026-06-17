@@ -59,10 +59,15 @@ async def startup():
         # Don't crash — continue without DB
     try:
         scheduler.add_job(lambda: asyncio.create_task(run_full_collection()), "cron", hour=3, minute=0)
-        scheduler.add_job(lambda: asyncio.create_task(run_odds_only()), "cron", hour="*/6", minute=15)
+        # Full odds sweep: was every 6h (4×/day) — the single biggest quota burn.
+        # Cut to every 12h (2×/day); the daily full collection + near-kickoff refresh
+        # keep prices fresh where it matters, at a fraction of the credits.
+        scheduler.add_job(lambda: asyncio.create_task(run_odds_only()), "cron", hour="*/12", minute=15)
         # Near-kickoff refresh: cheap, only re-fetches sports with imminent matches
-        # (captures the sharpest near-closing line). Quota-guarded.
-        scheduler.add_job(lambda: asyncio.create_task(run_imminent_refresh()), "cron", hour="*/3", minute=30)
+        # (captures the sharpest near-closing line). Quota-guarded + per-sport throttled.
+        # Was every 3h; */6h is plenty since the */15 closing-capture covers the final
+        # pre-kickoff line.
+        scheduler.add_job(lambda: asyncio.create_task(run_imminent_refresh()), "cron", hour="*/6", minute=30)
         # Closing-line capture: every 15 min, snapshot the Pinnacle line for games
         # starting in the next ~20 min and backfill pin_close_odds on tracked bets
         # whose match just kicked off. This makes the stored "close" a true
@@ -684,25 +689,48 @@ async def api_telegram_test():
         return JSONResponse({"ok": False, "msg": str(e)})
 
 @app.get("/api/oddspapi/test")
-def test_oddspapi():
-    """Test OddsPapi connection and credits."""
+async def test_oddspapi():
+    """ACTUALLY call OddsPapi and report what it returns (status, remaining credits,
+    sample, whether Pinnacle is present) — so we know WHY it gave 0."""
+    from collectors.oddspapi import diagnose_oddspapi
+    loop = asyncio.get_event_loop()
     try:
-        api_key = os.getenv("ODDSPAPI_KEY")
-        if not api_key:
-            return JSONResponse({"ok": False, "msg": "ODDSPAPI_KEY not set"})
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) as event_count FROM odds_events WHERE pin_home IS NOT NULL")
-        result = cursor.fetchone()
-        conn.close()
-        return JSONResponse({
-            "ok": True,
-            "msg": "OddsPapi configured",
-            "events_with_pinnacle": result[0] if result else 0,
-            "api_key_set": True,
-        })
+        result = await loop.run_in_executor(None, diagnose_oddspapi)
+        # Also report how many DB events currently carry a Pinnacle price (any source).
+        try:
+            conn = get_connection()
+            row = conn.execute("SELECT COUNT(*) AS c FROM odds_events WHERE pin_home IS NOT NULL").fetchone()
+            result["db_events_with_pinnacle"] = (row["c"] if row else 0)
+            conn.close()
+        except Exception:
+            pass
+        return JSONResponse(result)
     except Exception as e:
-        return JSONResponse({"ok": False, "msg": str(e)})
+        import traceback
+        print(f"DIAG_ERROR (oddspapi): {e}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@app.get("/api/diag/quota")
+async def api_diag_quota():
+    """Live quota counter for the paid/limited The Odds API + the brake state.
+    `remaining` is the last value seen on an x-requests-remaining header; it resets
+    to null after a cold start until the next fetch. brake_active=true means all
+    non-essential refreshes (imminent/closing) are being skipped."""
+    from collectors.odds import _LAST_REMAINING, IMMINENT_MIN_QUOTA
+    rem = _LAST_REMAINING.get("v")
+    return JSONResponse({
+        "the_odds_api": {
+            "remaining": rem,
+            "brake_threshold": IMMINENT_MIN_QUOTA,
+            "brake_active": (rem is not None and rem < IMMINENT_MIN_QUOTA),
+            "note": "null = unknown until next fetch (resets on redeploy/cold start).",
+        },
+        "free_sources": {
+            "oddspapi": "see /api/oddspapi/test for live status + remaining",
+            "betfair": "see /api/diag/betfair (free; needs BETFAIR_CERT/KEY)",
+        },
+    })
 
 @app.get("/api/value-bets")
 async def api_value_bets():
