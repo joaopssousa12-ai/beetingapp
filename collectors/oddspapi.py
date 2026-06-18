@@ -17,6 +17,7 @@ What this does:
 """
 
 import os
+import time
 import requests
 import unicodedata
 from datetime import datetime
@@ -49,9 +50,10 @@ def _norm(s):
     return " ".join(s.encode("ascii", "ignore").decode("ascii").lower().split())
 
 
-def _api_get(path, params):
+def _api_get(path, params, _retries=2):
     """GET on the OddsPapi v4 API. Returns (json|None, remaining, status_code).
-    A 401 maps remaining to 'invalid_key' so callers can report it clearly."""
+    A 401 maps remaining to 'invalid_key'. On 429 (rate limit) it honours the tiny
+    retryAfter and retries, so rapid sequential calls don't drop data."""
     try:
         r = requests.get(f"{BASE}{path}", params={**params, "apiKey": API_KEY}, timeout=25)
         remaining = r.headers.get("x-requests-remaining", "?")
@@ -62,6 +64,14 @@ def _api_get(path, params):
                 return None, remaining, 200
         if r.status_code == 401:
             return None, "invalid_key", 401
+        if r.status_code == 429 and _retries > 0:
+            wait = 0.5
+            try:
+                wait = float((r.json() or {}).get("retryAfter", 0.5)) + 0.25
+            except Exception:
+                pass
+            time.sleep(min(wait, 3.0))
+            return _api_get(path, params, _retries - 1)
         return None, remaining, r.status_code
     except Exception as e:
         print(f"OddsPapi {path} error: {e}", flush=True)
@@ -353,43 +363,59 @@ def collect_oddspapi(status_callback=None):
            f"(team-name mismatch?).")
         return 0
     cb(f"OddsPapi: {len(fid_to_event)} fixture(s) in {len(wanted_tournaments)} tournament(s) "
-       f"match our events — fetching Pinnacle 1X2...")
+       f"match our events — fetching Pinnacle + 1xBet 1X2...")
 
-    # 3) Pull Pinnacle odds for those tournaments (batched); match by fixtureId, extract 1X2.
-    by_event = {}  # event_id -> (home, draw, away)
     tids = list(wanted_tournaments)
-    for i in range(0, len(tids), 20):
-        batch = tids[i:i + 20]
-        odds_fx, remaining, status = _api_get("/odds-by-tournaments", {
-            "bookmaker": "pinnacle",
-            "tournamentIds": ",".join(str(t) for t in batch),
-        })
-        if not isinstance(odds_fx, list):
-            continue
-        for fx in odds_fx:
-            if not isinstance(fx, dict):
-                continue
-            eid = fid_to_event.get(fx.get("fixtureId"))
-            if not eid:
-                continue
-            h, d, a = _pin_moneyline(fx)
-            if h and a:
-                by_event[eid] = (h, d, a)
 
-    if not by_event:
-        cb(f"OddsPapi: matched tournaments but extracted no Pinnacle 1X2 (credits {remaining}).")
+    def _odds_for(bookmaker):
+        """event_id -> (home, draw, away) 1X2 for one bookmaker, matched by fixtureId."""
+        res, rem = {}, "?"
+        for i in range(0, len(tids), 20):
+            batch = tids[i:i + 20]
+            odds_fx, rem, _st = _api_get("/odds-by-tournaments", {
+                "bookmaker": bookmaker,
+                "tournamentIds": ",".join(str(t) for t in batch),
+            })
+            if not isinstance(odds_fx, list):
+                continue
+            for fx in odds_fx:
+                if not isinstance(fx, dict):
+                    continue
+                eid = fid_to_event.get(fx.get("fixtureId"))
+                if not eid:
+                    continue
+                h, d, a = _extract_1x2((fx.get("bookmakerOdds") or {}).get(bookmaker) or {})
+                if h and a:
+                    res[eid] = (h, d, a)
+        return res, rem
+
+    # 3) Pinnacle = sharp reference (true prob); 1xBet = the price you actually bet.
+    pin_by_event, remaining = _odds_for("pinnacle")
+    time.sleep(0.4)  # small gap to stay under OddsPapi's per-second rate limit
+    x1_by_event, remaining = _odds_for("1xbet")
+
+    if not pin_by_event and not x1_by_event:
+        cb(f"OddsPapi: matched tournaments but extracted no 1X2 (credits {remaining}).")
         return 0
 
-    # 4) Update pin_home/draw/away on the matched DB events (keyed by event_id).
+    # 4) Update: pin_* (sharp) and x1_* (your book) where we have them; best_* only when
+    #    empty, so The Odds API's multi-book best isn't clobbered when it's available.
     conn = get_connection()
     updated = 0
-    for eid, (ph, pd, pa) in by_event.items():
+    for eid in (set(pin_by_event) | set(x1_by_event)):
+        ph, pd, pa = pin_by_event.get(eid, (None, None, None))
+        xh, xd, xa = x1_by_event.get(eid, (None, None, None))
         conn.execute(
-            "UPDATE odds_events SET pin_home=?, pin_draw=?, pin_away=? WHERE event_id=?",
-            (ph, pd, pa, eid),
+            "UPDATE odds_events SET "
+            "pin_home=COALESCE(?,pin_home), pin_draw=COALESCE(?,pin_draw), pin_away=COALESCE(?,pin_away), "
+            "x1_home=COALESCE(?,x1_home), x1_draw=COALESCE(?,x1_draw), x1_away=COALESCE(?,x1_away), "
+            "best_home=COALESCE(best_home,?), best_draw=COALESCE(best_draw,?), best_away=COALESCE(best_away,?) "
+            "WHERE event_id=?",
+            (ph, pd, pa, xh, xd, xa, xh, xd, xa, eid),
         )
         updated += 1
     conn.commit()
     conn.close()
-    cb(f"OddsPapi: updated {updated} events with Pinnacle 1X2. Credits left: {remaining}")
+    cb(f"OddsPapi: updated {updated} events (Pinnacle {len(pin_by_event)}, 1xBet {len(x1_by_event)}). "
+       f"Credits left: {remaining}")
     return updated
