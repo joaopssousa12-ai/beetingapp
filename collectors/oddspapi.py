@@ -23,11 +23,13 @@ from datetime import datetime
 
 API_KEY = os.environ.get("ODDSPAPI_KEY", "")
 
-# OddsPapi — aggregator with 350+ bookmakers including Pinnacle (free 250 req/month)
-# Compatible endpoint format with The Odds API
+# OddsPapi — aggregator with 350+ bookmakers including Pinnacle (free tier).
+# Fixture-based API (NOT Odds-API-compatible): numeric sportId, /fixtures and
+# /odds-by-tournaments. apiKey goes in the query string.
 BASE = "https://api.oddspapi.io/v4"
+SOCCER_SPORT_ID = 10  # OddsPapi's numeric sportId for soccer (covers all competitions)
 
-# Known soccer sports to fetch (same list as odds.py — reuses existing events)
+# Legacy Odds-API sport keys — no longer used to call OddsPapi; kept for reference.
 SOCCER_SPORTS = [
     "soccer_fifa_world_cup",
     "soccer_fifa_club_world_cup",
@@ -47,31 +49,48 @@ def _norm(s):
     return " ".join(s.encode("ascii", "ignore").decode("ascii").lower().split())
 
 
-def _fetch_pinnacle_odds(sport_key):
-    """Fetch Pinnacle h2h odds for a sport via OddsPapi."""
+def _api_get(path, params):
+    """GET on the OddsPapi v4 API. Returns (json|None, remaining, status_code).
+    A 401 maps remaining to 'invalid_key' so callers can report it clearly."""
     try:
-        r = requests.get(
-            f"{BASE}/sports/{sport_key}/odds",
-            params={
-                "apiKey": API_KEY,
-                "regions": "eu,us",
-                "markets": "h2h",
-                "bookmakers": "pinnacle",
-                "oddsFormat": "decimal",
-            },
-            timeout=20,
-        )
+        r = requests.get(f"{BASE}{path}", params={**params, "apiKey": API_KEY}, timeout=25)
         remaining = r.headers.get("x-requests-remaining", "?")
         if r.status_code == 200:
-            return r.json(), remaining
+            try:
+                return r.json(), remaining, 200
+            except Exception:
+                return None, remaining, 200
         if r.status_code == 401:
-            return None, "invalid_key"
-        if r.status_code == 422:
-            return [], remaining  # sport not available right now
-        return None, remaining
+            return None, "invalid_key", 401
+        return None, remaining, r.status_code
     except Exception as e:
-        print(f"OddsPapi fetch error ({sport_key}): {e}", flush=True)
-        return None, "?"
+        print(f"OddsPapi {path} error: {e}", flush=True)
+        return None, "?", None
+
+
+def _pin_moneyline(fixture):
+    """Extract Pinnacle 1X2 (home, draw, away) decimals from an odds-by-tournaments
+    fixture. Shape: bookmakerOdds.pinnacle["101"].outcomes[*].players["0"], where
+    bookmakerOutcomeId ∈ {home,draw,away} and `price` is the decimal odd. We prefer
+    the documented moneyline marketId "101" but fall back to scanning every market
+    for one whose outcomes are labelled home/draw/away (so a marketId change can't
+    silently break it)."""
+    bo = (fixture.get("bookmakerOdds") or {}).get("pinnacle") or {}
+    if not isinstance(bo, dict):
+        return None, None, None
+    markets = ([bo["101"]] if "101" in bo else []) + [m for k, m in bo.items() if k != "101"]
+    for mkt in markets:
+        if not isinstance(mkt, dict):
+            continue
+        got = {}
+        for _oid, outcome in (mkt.get("outcomes") or {}).items():
+            player = (outcome.get("players") or {}).get("0") or {}
+            side, price = player.get("bookmakerOutcomeId"), player.get("price")
+            if side in ("home", "draw", "away") and price:
+                got[side] = price
+        if "home" in got and "away" in got:        # a valid 1X2 market
+            return got.get("home"), got.get("draw"), got.get("away")
+    return None, None, None
 
 
 def diagnose_oddspapi():
@@ -168,80 +187,78 @@ def collect_oddspapi(status_callback=None):
         return 0
 
     from collectors.database import get_connection
+    from datetime import timedelta
 
-    # Load existing events from DB for name matching
+    # Load upcoming DB events for name matching: (norm_home, norm_away) -> event_id.
     conn = get_connection()
     existing = conn.execute(
         "SELECT event_id, home_team, away_team FROM odds_events "
         "WHERE commence_time > datetime('now', '-1 day')"
     ).fetchall()
     conn.close()
-
     db_lookup = {
         (_norm(r["home_team"]), _norm(r["away_team"])): r["event_id"]
         for r in existing
     }
-
     if not db_lookup:
         cb("OddsPapi: no upcoming events in DB — skipping.")
         return 0
 
-    # Only fetch sports that have upcoming events in DB — saves credits
-    active_sports = set()
-    conn_check = get_connection()
-    for row in conn_check.execute(
-        "SELECT DISTINCT sport_key FROM odds_events WHERE commence_time > datetime('now', '-1 day')"
-    ).fetchall():
-        active_sports.add(row["sport_key"])
-    conn_check.close()
-
-    sports_to_fetch = [s for s in SOCCER_SPORTS if s in active_sports]
-    if not sports_to_fetch:
-        cb("OddsPapi: no active soccer sports in DB — skipping.")
+    # 1) Soccer fixtures with odds over the next 10 days (the API's max range).
+    today = datetime.utcnow().date()
+    fixtures, remaining, status = _api_get("/fixtures", {
+        "sportId": SOCCER_SPORT_ID,
+        "from": today.isoformat(),
+        "to": (today + timedelta(days=10)).isoformat(),
+        "hasOdds": "true",
+    })
+    if status == 401 or remaining == "invalid_key":
+        cb("OddsPapi: invalid API key — check ODDSPAPI_KEY in Render (no spaces/newlines).")
+        return 0
+    if not isinstance(fixtures, list) or not fixtures:
+        cb(f"OddsPapi: no soccer fixtures returned (HTTP {status}, credits {remaining}).")
         return 0
 
-    cb(f"OddsPapi: fetching Pinnacle odds for {len(sports_to_fetch)} active sports (of {len(SOCCER_SPORTS)} configured)...")
-
-    # Collect all Pinnacle odds across active sports
-    pin_odds = {}  # (norm_home, norm_away) → {home, draw, away}
-    remaining = "?"
-
-    for sport_key in sports_to_fetch:
-        events, remaining = _fetch_pinnacle_odds(sport_key)
-        if remaining == "invalid_key":
-            cb("OddsPapi: invalid API key — check ODDSPAPI_KEY in Render.")
-            return 0
-        if not events:
+    # 2) Keep only tournaments that contain a fixture matching one of our DB events —
+    #    so we request Pinnacle odds for the relevant comps only (saves quota).
+    wanted_tournaments = set()
+    for fx in fixtures:
+        if not isinstance(fx, dict):
             continue
+        key = (_norm(fx.get("participant1Name")), _norm(fx.get("participant2Name")))
+        if key in db_lookup and fx.get("tournamentId"):
+            wanted_tournaments.add(fx["tournamentId"])
+    if not wanted_tournaments:
+        cb(f"OddsPapi: {len(fixtures)} fixtures fetched, none matched our DB events "
+           f"(team-name mismatch?).")
+        return 0
+    cb(f"OddsPapi: {len(wanted_tournaments)} tournament(s) match our events — "
+       f"fetching Pinnacle 1X2...")
 
-        for ev in events:
-            home = ev.get("home_team", "")
-            away = ev.get("away_team", "")
-
-            # Extract Pinnacle h2h
-            pin_h2h = {}
-            for bm in ev.get("bookmakers", []):
-                if bm.get("key") == "pinnacle":
-                    for mkt in bm.get("markets", []):
-                        if mkt.get("key") == "h2h":
-                            for o in mkt.get("outcomes", []):
-                                pin_h2h[o["name"]] = o["price"]
-
-            pin_home = pin_h2h.get(home)
-            pin_away = pin_h2h.get(away)
-            pin_draw = pin_h2h.get("Draw")
-
-            if pin_home and pin_away:
-                key = (_norm(home), _norm(away))
-                pin_odds[key] = (pin_home, pin_draw, pin_away)
+    # 3) Pull Pinnacle odds for those tournaments (batched) and extract 1X2.
+    pin_odds = {}  # (norm_home, norm_away) -> (home, draw, away)
+    tids = list(wanted_tournaments)
+    for i in range(0, len(tids), 20):
+        batch = tids[i:i + 20]
+        odds_fx, remaining, status = _api_get("/odds-by-tournaments", {
+            "bookmaker": "pinnacle",
+            "tournamentIds": ",".join(str(t) for t in batch),
+        })
+        if not isinstance(odds_fx, list):
+            continue
+        for fx in odds_fx:
+            if not isinstance(fx, dict):
+                continue
+            h, d, a = _pin_moneyline(fx)
+            if h and a:
+                key = (_norm(fx.get("participant1Name")), _norm(fx.get("participant2Name")))
+                pin_odds[key] = (h, d, a)
 
     if not pin_odds:
-        cb(f"OddsPapi: no Pinnacle odds returned. Credits left: {remaining}")
+        cb(f"OddsPapi: matched tournaments but extracted no Pinnacle 1X2 (credits {remaining}).")
         return 0
 
-    cb(f"OddsPapi: {len(pin_odds)} events with Pinnacle odds. Credits left: {remaining}")
-
-    # Update DB
+    # 4) Update pin_home/draw/away on the matching DB events.
     conn = get_connection()
     updated = 0
     for (nh, na), (ph, pd, pa) in pin_odds.items():
@@ -252,8 +269,7 @@ def collect_oddspapi(status_callback=None):
                 (ph, pd, pa, eid),
             )
             updated += 1
-
     conn.commit()
     conn.close()
-    cb(f"OddsPapi: updated {updated} events with Pinnacle reference odds.")
+    cb(f"OddsPapi: updated {updated} events with Pinnacle 1X2. Credits left: {remaining}")
     return updated
