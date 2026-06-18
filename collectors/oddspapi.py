@@ -70,29 +70,30 @@ def _api_get(path, params):
 
 def _extract_1x2(book):
     """Extract 1X2 (home, draw, away) decimals from ONE bookmaker's odds block, i.e.
-    bookmakerOdds[<bookmaker>]. Markets live under book["markets"] ({marketId: mkt});
-    moneyline is marketId "101" — outcomes[*].players["0"] carry bookmakerOutcomeId
-    ∈ {home,draw,away} and a decimal `price`. We prefer "101" but fall back to
-    scanning any market whose outcomes are labelled home/draw/away (so a marketId
-    change can't silently break it). Generic so it serves Pinnacle AND 1xBet."""
+    bookmakerOdds[<bookmaker>]. Markets live under book["markets"] ({marketId: mkt}).
+    Moneyline = OddsPapi normalised marketId "101"; within it the OUTCOME keys are
+    normalised too: 101=home, 102=draw, 103=away (consistent across bookmakers). We key
+    on those normalised IDs — NOT the bookmaker's own `bookmakerOutcomeId`, which is
+    "home"/"draw"/"away" for Pinnacle but numeric ("7","8"...) for 1xBet. Prefer "101",
+    else scan markets for one carrying outcomes 101/102/103. Serves Pinnacle AND 1xBet."""
     if not isinstance(book, dict):
         return None, None, None
     container = book.get("markets") if isinstance(book.get("markets"), dict) else book
     if not isinstance(container, dict):
         return None, None, None
-    markets = ([container["101"]] if "101" in container else []) + \
-              [m for k, m in container.items() if k != "101"]
-    for mkt in markets:
+
+    def price_of(mkt, oid):
+        p = ((mkt.get("outcomes") or {}).get(oid) or {}).get("players") or {}
+        return (p.get("0") or {}).get("price")
+
+    candidates = ([container["101"]] if "101" in container else []) + \
+                 [m for k, m in container.items() if k != "101"]
+    for mkt in candidates:
         if not isinstance(mkt, dict):
             continue
-        got = {}
-        for _oid, outcome in (mkt.get("outcomes") or {}).items():
-            player = (outcome.get("players") or {}).get("0") or {}
-            side, price = player.get("bookmakerOutcomeId"), player.get("price")
-            if side in ("home", "draw", "away") and price:
-                got[side] = price
-        if "home" in got and "away" in got:        # a valid 1X2 market
-            return got.get("home"), got.get("draw"), got.get("away")
+        h, d, a = price_of(mkt, "101"), price_of(mkt, "102"), price_of(mkt, "103")
+        if h and a:          # a valid 1X2 market (home + away present)
+            return h, d, a
     return None, None, None
 
 
@@ -274,8 +275,7 @@ def diagnose_oddspapi():
                     b["sample_bookmakerOdds_keys"] = list((fx.get("bookmakerOdds") or {}).keys())
                     b["sample_block_keys"] = list(book.keys())
                     b["sample_markets_keys"] = (list(mk.keys())[:15] if isinstance(mk, dict) else None)
-                    b["sample_market_first"] = (next(iter(mk.values()))
-                                                if isinstance(mk, dict) and mk else None)
+                    b["sample_market_101"] = (mk.get("101") if isinstance(mk, dict) else None)
                     break
         elif bb is not None:
             b["body"] = bb
