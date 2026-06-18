@@ -75,41 +75,81 @@ def _fetch_pinnacle_odds(sport_key):
 
 
 def diagnose_oddspapi():
-    """Ground-truth: actually call OddsPapi and report what it returns, so we know
-    WHY it gave 0 (bad key? sport key not recognised? no Pinnacle on free tier?).
-    Open /api/oddspapi/test in the browser."""
-    out = {"key_set": bool(API_KEY), "base": BASE, "probes": []}
+    """INSTRUMENTATION: walk OddsPapi's REAL (fixture-based) API and dump raw samples
+    so we can see the exact response shape from prod (the server can reach the API even
+    when a dev sandbox can't). OddsPapi is NOT Odds-API-compatible: it uses a numeric
+    sportId, /fixtures (sportId + from/to date range, max 10 days) and
+    /odds-by-tournaments?bookmaker=pinnacle&tournamentIds=... — our old code called
+    /sports/{sport_key}/odds, which 404s. Open /api/oddspapi/test to read the shape."""
+    from datetime import timedelta
+    out = {"key_set": bool(API_KEY), "base": BASE, "steps": {}}
     if not API_KEY:
         out["error"] = "ODDSPAPI_KEY not set on the server"
         return out
-    # Probe a couple of representative sport keys and report status/remaining/sample.
-    for sk in ("soccer_fifa_world_cup", "soccer_epl"):
+
+    def _call(path, params):
+        info = {"path": path, "params": params}
         try:
-            r = requests.get(
-                f"{BASE}/sports/{sk}/odds",
-                params={"apiKey": API_KEY, "regions": "eu", "markets": "h2h",
-                        "bookmakers": "pinnacle", "oddsFormat": "decimal"},
-                timeout=20,
-            )
-            probe = {
-                "sport_key": sk,
-                "http_status": r.status_code,
-                "remaining": r.headers.get("x-requests-remaining"),
-                "used": r.headers.get("x-requests-used"),
-            }
+            r = requests.get(f"{BASE}{path}", params={**params, "apiKey": API_KEY}, timeout=25)
+            info["http_status"] = r.status_code
+            info["remaining"] = r.headers.get("x-requests-remaining")
             try:
-                body = r.json()
-                probe["events_returned"] = len(body) if isinstance(body, list) else None
-                if isinstance(body, list) and body:
-                    ev = body[0]
-                    bks = [b.get("key") for b in ev.get("bookmakers", [])]
-                    probe["sample"] = {"match": f"{ev.get('home_team')} v {ev.get('away_team')}",
-                                       "bookmakers": bks, "has_pinnacle": "pinnacle" in bks}
+                info["body"] = r.json()
             except Exception:
-                probe["body_text"] = r.text[:200]
-            out["probes"].append(probe)
+                info["text"] = r.text[:500]
         except Exception as e:
-            out["probes"].append({"sport_key": sk, "error": repr(e)})
+            info["error"] = repr(e)
+        return info
+
+    # 1) /sports — small list; keep enough to read soccer's numeric sportId.
+    s = _call("/sports", {})
+    body = s.pop("body", None)
+    s["sample"] = body[:5] if isinstance(body, list) else body
+    soccer_id = None
+    if isinstance(body, list):
+        for sp in body:
+            if str(sp.get("slug", "")).lower() in ("soccer", "football"):
+                soccer_id = sp.get("sportId") or sp.get("id")
+                break
+    out["steps"]["sports"] = s
+    out["soccer_sportId"] = soccer_id or 10
+
+    sid = out["soccer_sportId"]
+    today = datetime.utcnow().date()
+
+    # 2) /fixtures for soccer over the next 7 days — dump first item to read its shape.
+    tournament_ids = []
+    f = _call("/fixtures", {"sportId": sid, "from": today.isoformat(),
+                            "to": (today + timedelta(days=7)).isoformat(), "hasOdds": "true"})
+    fb = f.pop("body", None)
+    if isinstance(fb, list):
+        f["count"] = len(fb)
+        f["first"] = fb[0] if fb else None
+        for it in fb[:60]:
+            if not isinstance(it, dict):
+                continue
+            tid = it.get("tournamentId") or (it.get("tournament") or {}).get("id")
+            if tid and tid not in tournament_ids:
+                tournament_ids.append(tid)
+    elif fb is not None:
+        f["body"] = fb
+    out["steps"]["fixtures"] = f
+    out["tournament_ids_found"] = tournament_ids[:10]
+
+    # 3) /odds-by-tournaments for Pinnacle on the first few tournaments — dump first item.
+    if tournament_ids:
+        o = _call("/odds-by-tournaments", {"bookmaker": "pinnacle",
+                  "tournamentIds": ",".join(str(t) for t in tournament_ids[:3])})
+        ob = o.pop("body", None)
+        if isinstance(ob, list):
+            o["count"] = len(ob)
+            o["first"] = ob[0] if ob else None
+        elif ob is not None:
+            o["body"] = ob
+        out["steps"]["odds_by_tournaments"] = o
+    else:
+        out["steps"]["odds_by_tournaments"] = {"skipped": "no tournament_ids from /fixtures"}
+
     return out
 
 
