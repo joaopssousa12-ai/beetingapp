@@ -136,38 +136,72 @@ def diagnose_oddspapi():
     sid = out["soccer_sportId"]
     today = datetime.utcnow().date()
 
-    # 2) /fixtures for soccer over the next 7 days — dump first item to read its shape.
-    tournament_ids = []
+    # DB event name-pairs (same matching collect_oddspapi uses) — to see where odds are lost.
+    db_pairs = set()
+    try:
+        from collectors.database import get_connection
+        conn = get_connection()
+        for r in conn.execute("SELECT home_team, away_team FROM odds_events "
+                              "WHERE commence_time > datetime('now', '-1 day')").fetchall():
+            db_pairs.add((_norm(r["home_team"]), _norm(r["away_team"])))
+        conn.close()
+    except Exception as e:
+        out["db_error"] = repr(e)
+    out["db_event_pairs"] = len(db_pairs)
+
+    # 2) /fixtures — match against DB, collect matched tournamentIds + samples.
+    matched_tids, matched_samples = [], []
     f = _call("/fixtures", {"sportId": sid, "from": today.isoformat(),
-                            "to": (today + timedelta(days=7)).isoformat(), "hasOdds": "true"})
+                            "to": (today + timedelta(days=10)).isoformat(), "hasOdds": "true"})
     fb = f.pop("body", None)
     if isinstance(fb, list):
         f["count"] = len(fb)
         f["first"] = fb[0] if fb else None
-        for it in fb[:60]:
+        for it in fb:
             if not isinstance(it, dict):
                 continue
-            tid = it.get("tournamentId") or (it.get("tournament") or {}).get("id")
-            if tid and tid not in tournament_ids:
-                tournament_ids.append(tid)
+            key = (_norm(it.get("participant1Name")), _norm(it.get("participant2Name")))
+            if key in db_pairs:
+                tid = it.get("tournamentId")
+                if tid and tid not in matched_tids:
+                    matched_tids.append(tid)
+                if len(matched_samples) < 5:
+                    matched_samples.append({"home": it.get("participant1Name"),
+                                            "away": it.get("participant2Name"),
+                                            "tournamentId": tid,
+                                            "tournamentName": it.get("tournamentName")})
     elif fb is not None:
         f["body"] = fb
     out["steps"]["fixtures"] = f
-    out["tournament_ids_found"] = tournament_ids[:10]
+    out["matched_tournamentIds"] = matched_tids[:10]
+    out["matched_fixture_samples"] = matched_samples
 
-    # 3) /odds-by-tournaments for Pinnacle on the first few tournaments — dump first item.
-    if tournament_ids:
+    # 3) /odds-by-tournaments for OUR matched tournaments — TRACE 1X2 extraction per fixture.
+    if matched_tids:
         o = _call("/odds-by-tournaments", {"bookmaker": "pinnacle",
-                  "tournamentIds": ",".join(str(t) for t in tournament_ids[:3])})
+                  "tournamentIds": ",".join(str(t) for t in matched_tids[:5])})
         ob = o.pop("body", None)
+        trace = []
         if isinstance(ob, list):
             o["count"] = len(ob)
-            o["first"] = ob[0] if ob else None
+            for fx in ob[:10]:
+                if not isinstance(fx, dict):
+                    continue
+                pin = (fx.get("bookmakerOdds") or {}).get("pinnacle") or {}
+                h, d, a = _pin_moneyline(fx)
+                key = (_norm(fx.get("participant1Name")), _norm(fx.get("participant2Name")))
+                trace.append({"home": fx.get("participant1Name"),
+                              "away": fx.get("participant2Name"),
+                              "in_db": key in db_pairs,
+                              "has_pinnacle": bool(pin),
+                              "pinnacle_marketIds": (list(pin.keys())[:10] if isinstance(pin, dict) else None),
+                              "extracted_1x2": [h, d, a]})
         elif ob is not None:
             o["body"] = ob
+        o["trace"] = trace
         out["steps"]["odds_by_tournaments"] = o
     else:
-        out["steps"]["odds_by_tournaments"] = {"skipped": "no tournament_ids from /fixtures"}
+        out["steps"]["odds_by_tournaments"] = {"skipped": "no DB-matched tournaments from /fixtures"}
 
     return out
 
