@@ -75,10 +75,16 @@ def _pin_moneyline(fixture):
     the documented moneyline marketId "101" but fall back to scanning every market
     for one whose outcomes are labelled home/draw/away (so a marketId change can't
     silently break it)."""
-    bo = (fixture.get("bookmakerOdds") or {}).get("pinnacle") or {}
-    if not isinstance(bo, dict):
+    pin = (fixture.get("bookmakerOdds") or {}).get("pinnacle") or {}
+    if not isinstance(pin, dict):
         return None, None, None
-    markets = ([bo["101"]] if "101" in bo else []) + [m for k, m in bo.items() if k != "101"]
+    # Markets live under pin["markets"] ({marketId: marketObj}); tolerate a flatter
+    # shape where pin is already the marketId dict.
+    container = pin.get("markets") if isinstance(pin.get("markets"), dict) else pin
+    if not isinstance(container, dict):
+        return None, None, None
+    markets = ([container["101"]] if "101" in container else []) + \
+              [m for k, m in container.items() if k != "101"]
     for mkt in markets:
         if not isinstance(mkt, dict):
             continue
@@ -149,8 +155,8 @@ def diagnose_oddspapi():
         out["db_error"] = repr(e)
     out["db_event_pairs"] = len(db_pairs)
 
-    # 2) /fixtures — match against DB, collect matched tournamentIds + samples.
-    matched_tids, matched_samples = [], []
+    # 2) /fixtures — match against DB; collect matched tournamentIds + fixtureIds + samples.
+    matched_tids, matched_samples, matched_fids = [], [], set()
     f = _call("/fixtures", {"sportId": sid, "from": today.isoformat(),
                             "to": (today + timedelta(days=10)).isoformat(), "hasOdds": "true"})
     fb = f.pop("body", None)
@@ -165,6 +171,8 @@ def diagnose_oddspapi():
                 tid = it.get("tournamentId")
                 if tid and tid not in matched_tids:
                     matched_tids.append(tid)
+                if it.get("fixtureId"):
+                    matched_fids.add(it["fixtureId"])
                 if len(matched_samples) < 5:
                     matched_samples.append({"home": it.get("participant1Name"),
                                             "away": it.get("participant2Name"),
@@ -176,7 +184,8 @@ def diagnose_oddspapi():
     out["matched_tournamentIds"] = matched_tids[:10]
     out["matched_fixture_samples"] = matched_samples
 
-    # 3) /odds-by-tournaments for OUR matched tournaments — TRACE 1X2 extraction per fixture.
+    # 3) /odds-by-tournaments for OUR matched tournaments — TRACE 1X2 extraction per fixture
+    #    (matched by fixtureId, since the odds endpoint carries no team names).
     if matched_tids:
         o = _call("/odds-by-tournaments", {"bookmaker": "pinnacle",
                   "tournamentIds": ",".join(str(t) for t in matched_tids[:5])})
@@ -184,18 +193,24 @@ def diagnose_oddspapi():
         trace = []
         if isinstance(ob, list):
             o["count"] = len(ob)
-            for fx in ob[:10]:
+            for fx in ob[:12]:
                 if not isinstance(fx, dict):
                     continue
                 pin = (fx.get("bookmakerOdds") or {}).get("pinnacle") or {}
+                mkts = pin.get("markets") if isinstance(pin, dict) else None
                 h, d, a = _pin_moneyline(fx)
-                key = (_norm(fx.get("participant1Name")), _norm(fx.get("participant2Name")))
-                trace.append({"home": fx.get("participant1Name"),
-                              "away": fx.get("participant2Name"),
-                              "in_db": key in db_pairs,
-                              "has_pinnacle": bool(pin),
-                              "pinnacle_marketIds": (list(pin.keys())[:10] if isinstance(pin, dict) else None),
-                              "extracted_1x2": [h, d, a]})
+                fid = fx.get("fixtureId")
+                row = {"fixtureId": fid,
+                       "in_matched_fids": fid in matched_fids,
+                       "has_pinnacle": bool(pin),
+                       "markets_keys": (list(mkts.keys())[:12] if isinstance(mkts, dict) else None),
+                       "extracted_1x2": [h, d, a]}
+                trace.append(row)
+            # Dump the raw moneyline market of the first odds item to confirm the shape.
+            if ob and isinstance(ob[0], dict):
+                p0 = (ob[0].get("bookmakerOdds") or {}).get("pinnacle") or {}
+                m0 = p0.get("markets") if isinstance(p0, dict) else None
+                o["market_101_raw"] = (m0 or {}).get("101") if isinstance(m0, dict) else None
         elif ob is not None:
             o["body"] = ob
         o["trace"] = trace
@@ -253,24 +268,31 @@ def collect_oddspapi(status_callback=None):
         cb(f"OddsPapi: no soccer fixtures returned (HTTP {status}, credits {remaining}).")
         return 0
 
-    # 2) Keep only tournaments that contain a fixture matching one of our DB events —
-    #    so we request Pinnacle odds for the relevant comps only (saves quota).
+    # 2) Map fixtureId -> our event_id for fixtures that match a DB event, and collect
+    #    their tournamentIds. The /odds-by-tournaments response does NOT carry team
+    #    names, so fixtureId is the reliable join key (names only exist on /fixtures).
+    fid_to_event = {}
     wanted_tournaments = set()
     for fx in fixtures:
         if not isinstance(fx, dict):
             continue
         key = (_norm(fx.get("participant1Name")), _norm(fx.get("participant2Name")))
-        if key in db_lookup and fx.get("tournamentId"):
-            wanted_tournaments.add(fx["tournamentId"])
-    if not wanted_tournaments:
+        eid = db_lookup.get(key)
+        if eid:
+            fid = fx.get("fixtureId")
+            if fid:
+                fid_to_event[fid] = eid
+            if fx.get("tournamentId"):
+                wanted_tournaments.add(fx["tournamentId"])
+    if not fid_to_event:
         cb(f"OddsPapi: {len(fixtures)} fixtures fetched, none matched our DB events "
            f"(team-name mismatch?).")
         return 0
-    cb(f"OddsPapi: {len(wanted_tournaments)} tournament(s) match our events — "
-       f"fetching Pinnacle 1X2...")
+    cb(f"OddsPapi: {len(fid_to_event)} fixture(s) in {len(wanted_tournaments)} tournament(s) "
+       f"match our events — fetching Pinnacle 1X2...")
 
-    # 3) Pull Pinnacle odds for those tournaments (batched) and extract 1X2.
-    pin_odds = {}  # (norm_home, norm_away) -> (home, draw, away)
+    # 3) Pull Pinnacle odds for those tournaments (batched); match by fixtureId, extract 1X2.
+    by_event = {}  # event_id -> (home, draw, away)
     tids = list(wanted_tournaments)
     for i in range(0, len(tids), 20):
         batch = tids[i:i + 20]
@@ -283,26 +305,26 @@ def collect_oddspapi(status_callback=None):
         for fx in odds_fx:
             if not isinstance(fx, dict):
                 continue
+            eid = fid_to_event.get(fx.get("fixtureId"))
+            if not eid:
+                continue
             h, d, a = _pin_moneyline(fx)
             if h and a:
-                key = (_norm(fx.get("participant1Name")), _norm(fx.get("participant2Name")))
-                pin_odds[key] = (h, d, a)
+                by_event[eid] = (h, d, a)
 
-    if not pin_odds:
+    if not by_event:
         cb(f"OddsPapi: matched tournaments but extracted no Pinnacle 1X2 (credits {remaining}).")
         return 0
 
-    # 4) Update pin_home/draw/away on the matching DB events.
+    # 4) Update pin_home/draw/away on the matched DB events (keyed by event_id).
     conn = get_connection()
     updated = 0
-    for (nh, na), (ph, pd, pa) in pin_odds.items():
-        eid = db_lookup.get((nh, na))
-        if eid:
-            conn.execute(
-                "UPDATE odds_events SET pin_home=?, pin_draw=?, pin_away=? WHERE event_id=?",
-                (ph, pd, pa, eid),
-            )
-            updated += 1
+    for eid, (ph, pd, pa) in by_event.items():
+        conn.execute(
+            "UPDATE odds_events SET pin_home=?, pin_draw=?, pin_away=? WHERE event_id=?",
+            (ph, pd, pa, eid),
+        )
+        updated += 1
     conn.commit()
     conn.close()
     cb(f"OddsPapi: updated {updated} events with Pinnacle 1X2. Credits left: {remaining}")
