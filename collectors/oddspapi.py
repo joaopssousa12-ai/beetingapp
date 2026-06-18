@@ -263,6 +263,20 @@ def diagnose_oddspapi():
                 fid = fx.get("fixtureId")
                 btrace.append({"fixtureId": fid, "in_matched_fids": fid in matched_fids,
                                "has_book": bool(book), "extracted_1x2": [h, d, a]})
+            # Dump the raw 1xbet block of the first fixture that has it, to see its shape
+            # (why extraction fails: empty markets? different marketId/outcome labels?).
+            for fx in bb:
+                if not isinstance(fx, dict):
+                    continue
+                book = (fx.get("bookmakerOdds") or {}).get(slug)
+                if isinstance(book, dict) and book:
+                    mk = book.get("markets")
+                    b["sample_bookmakerOdds_keys"] = list((fx.get("bookmakerOdds") or {}).keys())
+                    b["sample_block_keys"] = list(book.keys())
+                    b["sample_markets_keys"] = (list(mk.keys())[:15] if isinstance(mk, dict) else None)
+                    b["sample_market_first"] = (next(iter(mk.values()))
+                                                if isinstance(mk, dict) and mk else None)
+                    break
         elif bb is not None:
             b["body"] = bb
         b["trace"] = btrace
