@@ -68,19 +68,16 @@ def _api_get(path, params):
         return None, "?", None
 
 
-def _pin_moneyline(fixture):
-    """Extract Pinnacle 1X2 (home, draw, away) decimals from an odds-by-tournaments
-    fixture. Shape: bookmakerOdds.pinnacle["101"].outcomes[*].players["0"], where
-    bookmakerOutcomeId ∈ {home,draw,away} and `price` is the decimal odd. We prefer
-    the documented moneyline marketId "101" but fall back to scanning every market
-    for one whose outcomes are labelled home/draw/away (so a marketId change can't
-    silently break it)."""
-    pin = (fixture.get("bookmakerOdds") or {}).get("pinnacle") or {}
-    if not isinstance(pin, dict):
+def _extract_1x2(book):
+    """Extract 1X2 (home, draw, away) decimals from ONE bookmaker's odds block, i.e.
+    bookmakerOdds[<bookmaker>]. Markets live under book["markets"] ({marketId: mkt});
+    moneyline is marketId "101" — outcomes[*].players["0"] carry bookmakerOutcomeId
+    ∈ {home,draw,away} and a decimal `price`. We prefer "101" but fall back to
+    scanning any market whose outcomes are labelled home/draw/away (so a marketId
+    change can't silently break it). Generic so it serves Pinnacle AND 1xBet."""
+    if not isinstance(book, dict):
         return None, None, None
-    # Markets live under pin["markets"] ({marketId: marketObj}); tolerate a flatter
-    # shape where pin is already the marketId dict.
-    container = pin.get("markets") if isinstance(pin.get("markets"), dict) else pin
+    container = book.get("markets") if isinstance(book.get("markets"), dict) else book
     if not isinstance(container, dict):
         return None, None, None
     markets = ([container["101"]] if "101" in container else []) + \
@@ -97,6 +94,11 @@ def _pin_moneyline(fixture):
         if "home" in got and "away" in got:        # a valid 1X2 market
             return got.get("home"), got.get("draw"), got.get("away")
     return None, None, None
+
+
+def _pin_moneyline(fixture):
+    """Pinnacle 1X2 from an odds-by-tournaments fixture (thin wrapper over _extract_1x2)."""
+    return _extract_1x2((fixture.get("bookmakerOdds") or {}).get("pinnacle") or {})
 
 
 def diagnose_oddspapi():
@@ -217,6 +219,54 @@ def diagnose_oddspapi():
         out["steps"]["odds_by_tournaments"] = o
     else:
         out["steps"]["odds_by_tournaments"] = {"skipped": "no DB-matched tournaments from /fixtures"}
+
+    # 4) BETTABLE PROBE — does OddsPapi expose 1xBet (the price the user actually bets)?
+    #    If yes we can pull BOTH sides free and stop depending on The Odds API's quota.
+    bm = _call("/bookmakers", {})
+    bml = bm.pop("body", None)
+    cand = []
+    if isinstance(bml, list):
+        bm["count"] = len(bml)
+        for b in bml:
+            if not isinstance(b, dict):
+                continue
+            blob = " ".join(str(b.get(k, "")) for k in
+                            ("slug", "key", "name", "bookmakerName", "title")).lower()
+            if "1x" in blob or "onexbet" in blob:
+                cand.append(b)
+        bm["onexbet_candidates"] = cand
+        bm["sample"] = bml[:3]
+    elif bml is not None:
+        bm["body"] = bml
+    out["steps"]["bookmakers"] = bm
+
+    slug = None
+    for c in cand:
+        slug = c.get("slug") or c.get("key") or c.get("bookmakerSlug")
+        if slug:
+            break
+    out["onexbet_slug"] = slug
+
+    # If a 1xBet slug exists, try its odds on our matched tournaments + trace 1X2.
+    if slug and matched_tids:
+        b = _call("/odds-by-tournaments", {"bookmaker": slug,
+                  "tournamentIds": ",".join(str(t) for t in matched_tids[:5])})
+        bb = b.pop("body", None)
+        btrace = []
+        if isinstance(bb, list):
+            b["count"] = len(bb)
+            for fx in bb[:12]:
+                if not isinstance(fx, dict):
+                    continue
+                book = (fx.get("bookmakerOdds") or {}).get(slug) or {}
+                h, d, a = _extract_1x2(book)
+                fid = fx.get("fixtureId")
+                btrace.append({"fixtureId": fid, "in_matched_fids": fid in matched_fids,
+                               "has_book": bool(book), "extracted_1x2": [h, d, a]})
+        elif bb is not None:
+            b["body"] = bb
+        b["trace"] = btrace
+        out["steps"]["onexbet_odds"] = b
 
     return out
 
