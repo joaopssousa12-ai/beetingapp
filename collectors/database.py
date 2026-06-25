@@ -1000,7 +1000,13 @@ def get_value_bets():
 
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT * FROM odds_events ORDER BY commence_time ASC").fetchall()
+        # Only analyse upcoming events (3h grace for in-play). Past games are dead
+        # weight: they bloat the slow engine and, when a stale cache keeps them, the
+        # page shows finished matches and hides the real upcoming ones.
+        rows = conn.execute(
+            "SELECT * FROM odds_events WHERE commence_time > datetime('now', '-3 hours') "
+            "ORDER BY commence_time ASC"
+        ).fetchall()
     except Exception as e:
         import traceback
         print(f"VALUE_BETS_ERROR: failed to load odds_events: {e}\n{traceback.format_exc()}", flush=True)
@@ -1259,6 +1265,12 @@ def get_value_bets():
         d["best_confidence"] = best_value["confidence"] if best_value else 0
 
         # === xG SIGNAL (alternative independent model) ===
+        # MUST init before the branches: a national/World Cup fixture whose teams
+        # can't be modelled (e.g. knockout bracket placeholders "1C", "W85") makes
+        # predict_national_match return None, and without this the `else` path leaves
+        # xg_sig unbound → UnboundLocalError crashes the WHOLE engine mid-loop (the
+        # cache then never refreshes and the page freezes on stale data).
+        xg_sig = None
         sport_check = (d.get("sport_name") or "").lower()
         is_national = ("world cup" in sport_check or "nations" in sport_check
                        or "euro" in sport_check or "copa" in sport_check
