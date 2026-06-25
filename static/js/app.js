@@ -648,6 +648,10 @@ function isPlaceholderTeam(t) {
 const DEDUP_WINDOW_DAYS = 4;
 function dedupeEvents(rows) {
   const norm = s => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+  // Does this copy actually carry a bettable line? (Duplicates of the same fixture
+  // often come from two sources/times where only ONE has odds.)
+  const hasOdds = r => (r.all_picks || []).some(p => p.book_odd && p.book_odd > 1)
+      || !!(r.x1_home || r.best_home || r.pin_home);
   const byKey = {};
   for (const r of rows) {
     const key = `${norm(r.sport_name)}|${norm(r.home_team)}|${norm(r.away_team)}`;
@@ -661,12 +665,16 @@ function dedupeEvents(rows) {
     const kept = [];
     for (const r of group) {
       const t = r.commence_time ? new Date(r.commence_time).getTime() : null;
-      const dup = kept.find(k => {
+      const dupIdx = kept.findIndex(k => {
         const kt = k.commence_time ? new Date(k.commence_time).getTime() : null;
         if (t == null || kt == null) return true;  // no time on either ⇒ treat as dup
         return Math.abs(t - kt) <= DEDUP_WINDOW_DAYS * 86400000;
       });
-      if (!dup) kept.push(r);
+      if (dupIdx === -1) { kept.push(r); continue; }
+      // Same fixture already kept within the window: prefer the copy WITH odds, so a
+      // no-odds duplicate doesn't win and then get dropped by the "already started"
+      // filter — which made the whole fixture vanish even though a priced copy existed.
+      if (hasOdds(r) && !hasOdds(kept[dupIdx])) kept[dupIdx] = r;
     }
     out.push(...kept);
   }
