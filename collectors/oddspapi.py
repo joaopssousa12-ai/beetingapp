@@ -125,6 +125,51 @@ def diagnose_oddspapi():
         out["error"] = "ODDSPAPI_KEY not set on the server"
         return out
 
+    # ── 403 DIAGNOSIS ────────────────────────────────────────────────────────
+    # Dashboard shows only ~75/250 used, so the 403 is NOT quota. Probe the likely
+    # causes and dump the FULL response (status + key headers + body) so we can see
+    # exactly why: key shape (spaces/truncation), auth method (query vs header vs
+    # Bearer), or a WAF/bot block (datacentre IP + python-requests UA → Cloudflare
+    # 403; their docs site already blocks our fetcher).
+    import re as _re
+    out["key_diag"] = {
+        "length": len(API_KEY),
+        "masked": (API_KEY[:4] + "…" + API_KEY[-4:]) if len(API_KEY) > 8 else "(short)",
+        "surrounding_whitespace": API_KEY != API_KEY.strip(),
+        "inner_whitespace_or_newline": bool(_re.search(r"\s", API_KEY)),
+    }
+    _BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    _KEEP_HDRS = ("server", "content-type", "cf-ray", "cf-mitigated", "via",
+                  "x-requests-remaining", "retry-after", "www-authenticate",
+                  "x-ratelimit-remaining", "x-cache")
+
+    def _probe(label, headers=None, auth="query"):
+        info = {"label": label}
+        try:
+            params, hdrs = {}, dict(headers or {})
+            if auth == "query":
+                params = {"apiKey": API_KEY}
+            elif auth == "x-api-key":
+                hdrs["x-api-key"] = API_KEY
+            elif auth == "bearer":
+                hdrs["Authorization"] = f"Bearer {API_KEY}"
+            r = requests.get(f"{BASE}/sports", params=params, headers=hdrs, timeout=25)
+            info["http_status"] = r.status_code
+            info["resp_headers"] = {k: v for k, v in r.headers.items() if k.lower() in _KEEP_HDRS}
+            info["body_text"] = r.text[:600]
+        except Exception as e:
+            info["error"] = repr(e)
+        return info
+
+    out["auth_probes"] = [
+        _probe("A: default python-requests UA, apiKey query"),
+        _probe("B: browser UA, apiKey query", headers={"User-Agent": _BROWSER_UA,
+                                                       "Accept": "application/json"}),
+        _probe("C: browser UA, x-api-key header", headers={"User-Agent": _BROWSER_UA}, auth="x-api-key"),
+        _probe("D: browser UA, Bearer header", headers={"User-Agent": _BROWSER_UA}, auth="bearer"),
+    ]
+
     def _call(path, params):
         info = {"path": path, "params": params}
         try:
