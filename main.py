@@ -59,15 +59,16 @@ async def startup():
         # Don't crash — continue without DB
     try:
         scheduler.add_job(lambda: asyncio.create_task(run_full_collection()), "cron", hour=3, minute=0)
-        # Full odds sweep: was every 6h (4×/day) — the single biggest quota burn.
-        # Cut to every 12h (2×/day); the daily full collection + near-kickoff refresh
-        # keep prices fresh where it matters, at a fraction of the credits.
-        scheduler.add_job(lambda: asyncio.create_task(run_odds_only()), "cron", hour="*/12", minute=15)
-        # Near-kickoff refresh: cheap, only re-fetches sports with imminent matches
-        # (captures the sharpest near-closing line). Quota-guarded + per-sport throttled.
-        # Was every 3h; */6h is plenty since the */15 closing-capture covers the final
-        # pre-kickoff line.
-        scheduler.add_job(lambda: asyncio.create_task(run_imminent_refresh()), "cron", hour="*/6", minute=30)
+        # The heavy full sweep runs ONCE a day (inside run_full_collection, now h2h-only
+        # = 1 credit/call) as the baseline that gives upcoming games a price — plus
+        # on-demand via /api/odds/refresh. We no longer run it every 12h: automatic
+        # freshness comes from the cheap imminent + closing jobs below, so we don't burn
+        # the 500/mo budget on repeated full sweeps.
+        # Near-kickoff refresh: re-fetches ONLY sports with a game in the next 6h (the
+        # 2-6h-before-kickoff betting window). h2h-only, per-sport throttled (30 min),
+        # quota-braked. Every 2h so a game is re-priced ~3× as it approaches kickoff;
+        # the */15 closing-capture handles the final pre-kickoff line.
+        scheduler.add_job(lambda: asyncio.create_task(run_imminent_refresh()), "cron", hour="*/2", minute=30)
         # Closing-line capture: every 15 min, snapshot the Pinnacle line for games
         # starting in the next ~20 min and backfill pin_close_odds on tracked bets
         # whose match just kicked off. This makes the stored "close" a true
@@ -138,12 +139,9 @@ async def run_full_collection():
         except Exception as e:
             import traceback
             cb(f"ODDS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-        try:
-            n_opa = await loop.run_in_executor(None, lambda: collect_oddspapi(status_callback=cb))
-            if n_opa:
-                cb(f"  OddsPapi (Pinnacle no-vig): {n_opa} events.")
-        except Exception as e:
-            cb(f"OddsPapi ERROR (non-critical): {repr(e)}")
+        # OddsPapi DISABLED: its API 403-blocks the Render datacentre IP (Cloudflare),
+        # so it can't be reached from prod. The Odds API now supplies both the sharp
+        # (Pinnacle) and bettable (1xBet/onexbet) sides via parse_and_store.
         try:
             n_bf = await loop.run_in_executor(None, lambda: collect_betfair_odds(status_callback=cb))
             if n_bf:
@@ -548,13 +546,7 @@ async def run_odds_only():
             cb(f"✓ Collected {len(football_odds)} football odds + {len(tennis_odds)} tennis odds from API")
         except Exception as e:
             cb(f"The-Odds-API ERROR (non-critical): {repr(e)}")
-        # OddsPapi — Pinnacle no-vig via aggregator (free 250 req/month, sharp reference)
-        try:
-            n_opa = await loop.run_in_executor(None, lambda: collect_oddspapi(status_callback=cb))
-            if n_opa > 0:
-                cb(f"✓ OddsPapi (Pinnacle): {n_opa} events updated.")
-        except Exception as e:
-            cb(f"OddsPapi ERROR (non-critical): {repr(e)}")
+        # OddsPapi DISABLED — 403-blocked from the Render datacentre IP (see startup note).
         # Betfair Exchange — primary reference for liquid markets (peer-to-peer, 0% margin)
         try:
             n_bf = await loop.run_in_executor(None, lambda: collect_betfair_odds(status_callback=cb))

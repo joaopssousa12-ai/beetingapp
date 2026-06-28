@@ -83,7 +83,7 @@ IMMINENT_MIN_QUOTA = 50  # HARD BRAKE: skip ALL non-essential refreshes below th
 # pulled and skip it if it was fetched within the dedupe window — so one game in the
 # pre-kickoff window costs at most ONE fetch, not one every 15 min.
 _LAST_IMMINENT_FETCH = {}        # sport_key -> datetime of last imminent fetch
-_IMMINENT_DEDUP_MINUTES = 25
+_IMMINENT_DEDUP_MINUTES = 30
 
 
 def get_active_sports():
@@ -96,19 +96,15 @@ def get_active_sports():
     return set()
 
 
-def fetch_odds(sport_key):
-    # CRITICAL: totals/btts are SOCCER-only markets. Requesting them for tennis
-    # makes The Odds API reject the WHOLE request (HTTP 422 "unknown market"),
-    # which silently returned zero tennis events. h2h works for every sport, so
-    # only ask for totals/btts on soccer.
-    # The Odds API bills per market × region, so keep the soccer market count at 3
-    # to stay quota-neutral: swap the low-value BTTS for Asian Handicap (spreads),
-    # which is sharper/more valuable. (h2h works for every sport.)
-    markets = "h2h,totals,spreads" if sport_key.startswith("soccer_") else "h2h"
-    # QUOTA: The Odds API bills 1 credit per (region × market). We only need the
-    # 'eu' region — 1xBet (onexbet), Pinnacle and every book in BOOKMAKERS live
-    # there; 'us' only added US-only books we never read. Dropping it halves the
-    # cost of every call (soccer: was 2×3=6 credits, now 1×3=3; tennis: 2→1).
+def fetch_odds(sport_key, markets=None):
+    # QUOTA: The Odds API bills 1 credit per (region × market). We use 1 region ('eu'
+    # — 1xBet/onexbet, Pinnacle and every book in BOOKMAKERS live there; 'us' only
+    # added US-only books) and **h2h ONLY** by default = 1 credit/call. The value
+    # engine is 1X2-centric (edge/CLV/Kelly all on the match-result line); O/U and
+    # Asian Handicap are secondary and not worth 3× the quota on a 500/mo free tier.
+    # Callers that genuinely need more (e.g. diagnostics) pass `markets` explicitly.
+    if markets is None:
+        markets = "h2h"
     params = {
         "apiKey": API_KEY,
         "regions": "eu",
@@ -314,7 +310,7 @@ def _pretty_sport_name(key):
     return f"{tour} {rest}".strip() if rest else f"{tour} Tour"
 
 
-def refresh_imminent_odds(status_callback=None, within_hours=4, within_minutes=None):
+def refresh_imminent_odds(status_callback=None, within_hours=6, within_minutes=None):
     """Near-kickoff refresh: re-fetch ONLY the sports that have events starting in
     the next `within_hours` (or `within_minutes` if given). The line is sharpest
     close to kickoff, and this costs almost nothing (often 0-2 requests) vs a full
@@ -429,7 +425,7 @@ def diagnose_spreads(sport_key="soccer_fifa_world_cup"):
     if not API_KEY:
         out["error"] = "ODDS_API_KEY not set"
         return out
-    events, remaining = fetch_odds(sport_key)
+    events, remaining = fetch_odds(sport_key, markets="h2h,totals,spreads")
     out["remaining"] = remaining
     if not events:
         out["note"] = "no events returned for this sport_key right now"
