@@ -479,9 +479,13 @@ function playNewBetSound() {
 // filters can't pull a game in just because some >ceiling longshot looked good
 // (that was the "5★ but Best Pick = no value" bug).
 // ============================================================
-const VB_VALUE_FLOOR = 3;        // edge% needed to be a green / celebrated value bet
-const VB_ODD_FLOOR = 1.5;        // min odd for a celebrated pick
-const VB_GREEN_MAX_ODD = 4.0;    // green "Best Pick" sweet-spot odd cap; above this = informational only
+const VB_VALUE_FLOOR = 2;        // edge% needed to be a green / celebrated value bet
+                                 // (lowered 3→2: calibration MAE 0.75pp makes 2% real
+                                 //  signal in the mid-range; picks here carry +CLV)
+const VB_ODD_FLOOR = 1.4;        // min odd for a celebrated pick (1.4 = just above the
+                                 //  short-odd stake softener; favourites aren't overpriced)
+const VB_GREEN_MAX_ODD = 4.0;    // green "Best Pick" sweet-spot odd cap (KEEP at 4.0: devig
+                                 //  over-estimates longshots >4.0, so those 2% edges are false)
 const VB_SHORT_ODD = 1.40;       // below this, soften the stake (calibration-sensitive favourites)
 const VB_HARD_CEILING = 8.0;     // above this odd, never shown as a pick (info only)
 function vbOddCeiling() { return Math.min(vbState.maxOdds ?? VB_HARD_CEILING, VB_HARD_CEILING); }
@@ -1186,7 +1190,7 @@ function renderCard(b) {
           ? `Best available — the two sharp markets disagree, so we can't confirm value. Informational only.`
           : stakeState === 'info'
           ? `Best available — odd >4.0 (azarão, menos fiável). Informativo, sem stake sugerida.`
-          : `Best available — below the green value gate (edge ≥3% & odd 1.5–4.0). Size with care.`);
+          : `Best available — below the green value gate (edge ≥2% & odd 1.4–4.0). Size with care.`);
     return `<div class="${cls}">
       <div class="vb-pick-label">${trophyIcon}${label}<span class="vb-stars">${starsHtmlFor(ev.stars)}</span></div>
       <div class="vb-pick-selection">${p.selection}</div>

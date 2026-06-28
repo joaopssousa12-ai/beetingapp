@@ -1279,7 +1279,11 @@ def get_value_bets():
         if is_national:
             # Use national team xG proxy (Dixon-Coles on historical matches)
             from collectors.national_xg import predict_national_match
-            nat_pred = predict_national_match(d.get("home_team"), d.get("away_team"))
+            try:
+                nat_pred = predict_national_match(d.get("home_team"), d.get("away_team"))
+            except Exception as e:
+                print(f"WARN: national_xg error ({d.get('home_team')} v {d.get('away_team')}): {e}", flush=True)
+                nat_pred = None
             if nat_pred:
                 xg_sig = {
                     "home": nat_pred["prob_home"],
@@ -1320,7 +1324,11 @@ def get_value_bets():
                     except Exception as e:
                         print(f"WARN: Goals markets error: {e}", flush=True)
         else:
-            xg_sig = xg_based_probability(d.get("home_team"), d.get("away_team"))
+            try:
+                xg_sig = xg_based_probability(d.get("home_team"), d.get("away_team"))
+            except Exception as e:
+                print(f"WARN: xg_based error: {e}", flush=True)
+                xg_sig = None
         d["xg_signal"] = xg_sig
         
         # ========== RECENT FORM (4th signal) ==========
@@ -1355,12 +1363,16 @@ def get_value_bets():
         # === ELO SIGNAL ===
         sport = (d.get("sport_name") or "").lower()
         elo_sig = None
-        if "world cup" in sport or "nations" in sport or "euro" in sport or "copa" in sport:
-            elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "national")
-        elif "tennis" in sport or "atp" in sport or "wta" in sport:
-            elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "tennis", surface="All")
-        else:
-            elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "football_club")
+        try:
+            if "world cup" in sport or "nations" in sport or "euro" in sport or "copa" in sport:
+                elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "national")
+            elif "tennis" in sport or "atp" in sport or "wta" in sport:
+                elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "tennis", surface="All")
+            else:
+                elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "football_club")
+        except Exception as e:
+            print(f"WARN: elo error: {e}", flush=True)
+            elo_sig = None
         d["elo_signal"] = elo_sig
 
         # === BETIQ UNIFIED PROBABILITY (fuse all signals) ===
@@ -1371,7 +1383,11 @@ def get_value_bets():
                 "draw": d.get("true_draw_pct"),
                 "away": d.get("true_away_pct"),
             }
-        betiq = fuse_signals(pin_probs, xg_sig, elo_sig)
+        try:
+            betiq = fuse_signals(pin_probs, xg_sig, elo_sig)
+        except Exception as e:
+            print(f"WARN: fuse_signals error: {e}", flush=True)
+            betiq = None
         d["betiq_probs"] = betiq
 
         # ── A+B v2: when there's no 2nd SHARP market (Betfair), use our own
