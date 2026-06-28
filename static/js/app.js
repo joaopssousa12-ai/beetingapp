@@ -704,7 +704,7 @@ function applyVbFilters(rows) {
   if (vbState.surfaceFilter) out = out.filter(r => isTennisEvent(r) && tennisSurface(r) === vbState.surfaceFilter);
   if (vbState.whenFilter !== 'all') {
     const now = Date.now();
-    const hoursMap = {'24h': 24, '48h': 48, '7d': 168, '14d': 336, '30d': 720};
+    const hoursMap = {'3h': 3, '6h': 6, '12h': 12, '24h': 24, '48h': 48, '7d': 168, '14d': 336, '30d': 720};
     const hours = hoursMap[vbState.whenFilter] || 168;
     const cutoff = now + hours * 3600 * 1000;
     out = out.filter(r => {
