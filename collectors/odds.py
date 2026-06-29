@@ -76,14 +76,19 @@ BOOKMAKERS = "pinnacle,bet365,unibet_eu,williamhill,betfair_ex_eu,bwin,betway,ma
 # Last known free-tier quota (set by fetch_odds from x-requests-remaining), so the
 # frequent near-kickoff refresh can back off before exhausting the monthly budget.
 _LAST_REMAINING = {"v": None}
-IMMINENT_MIN_QUOTA = 50  # HARD BRAKE: skip ALL non-essential refreshes below this.
+IMMINENT_MIN_QUOTA = int(os.environ.get("IMMINENT_MIN_QUOTA", "50"))  # HARD BRAKE: skip ALL non-essential refreshes below this.
+
+# Near-kickoff window: only re-fetch sports with a game starting within this many
+# hours. Env-tunable (IMMINENT_WINDOW_HOURS) so quota can be dialed in without a deploy.
+IMMINENT_WINDOW_HOURS = int(os.environ.get("IMMINENT_WINDOW_HOURS", "6"))
 
 # Per-sport throttle: the closing-capture job runs every 15 min, but the line for a
 # given sport doesn't need re-fetching that often. Remember when each sport was last
 # pulled and skip it if it was fetched within the dedupe window — so one game in the
-# pre-kickoff window costs at most ONE fetch, not one every 15 min.
+# pre-kickoff window costs at most ONE fetch, not one every 15 min. Min ~25-30 min;
+# env-tunable via IMMINENT_DEDUP_MINUTES.
 _LAST_IMMINENT_FETCH = {}        # sport_key -> datetime of last imminent fetch
-_IMMINENT_DEDUP_MINUTES = 30
+_IMMINENT_DEDUP_MINUTES = int(os.environ.get("IMMINENT_DEDUP_MINUTES", "30"))
 
 
 def get_active_sports():
@@ -310,7 +315,7 @@ def _pretty_sport_name(key):
     return f"{tour} {rest}".strip() if rest else f"{tour} Tour"
 
 
-def refresh_imminent_odds(status_callback=None, within_hours=6, within_minutes=None):
+def refresh_imminent_odds(status_callback=None, within_hours=IMMINENT_WINDOW_HOURS, within_minutes=None):
     """Near-kickoff refresh: re-fetch ONLY the sports that have events starting in
     the next `within_hours` (or `within_minutes` if given). The line is sharpest
     close to kickoff, and this costs almost nothing (often 0-2 requests) vs a full
