@@ -58,11 +58,16 @@ def calculate_recent_form(team_name, match_list, last_n=5):
             losses += 1
     
     points = wins * 3 + draws
-    max_possible = len(recent) * 3
-    ppg = points / max_possible if max_possible else 0
-    
-    # Map to 0.85-1.15 range
-    form_mult = 0.85 + (ppg * 0.30)  # Scale 0-1 to 0.85-1.15
+    games = len(recent)
+    max_possible = games * 3
+    # ppg = true points-per-game (0-3 scale) so the strength thresholds below
+    # (2.4/1.8/1.2/0.6) actually fire. Previously ppg was points/max_possible
+    # (a 0-1 ratio), which capped it at 1.0 and made Excellent/Good/Average
+    # unreachable — even a perfect record was classified "Poor".
+    ppg = points / games if games else 0
+
+    # Map points-per-game (0-3) onto the 0.85-1.15 form multiplier range
+    form_mult = 0.85 + (ppg / 3.0) * 0.30
     form_mult = max(0.85, min(1.15, form_mult))
     
     # Classify strength
