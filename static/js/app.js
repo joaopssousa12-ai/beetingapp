@@ -294,6 +294,7 @@ let vbState = {
   collapsed: new Set(),
   viewMode: 'cards',  // 'cards' or 'table'
   sortMode: 'clv',    // 'clv' (default) | 'edge' | 'date' — #2
+  hideReds: false,    // #3 traffic-light: hide 🔴 (IGNORAR) cards when true
 };
 let _prevValueBetCount = -1;
 
@@ -553,6 +554,30 @@ function vbClv(b) {
   return (mine && mine.edge_pct != null) ? mine.edge_pct : null;
 }
 
+// #3 Traffic-light decision signal per card, judged on the price YOU can bet
+// (1xBet) for the best pick. CLV here = the 1xBet edge vs the sharp close.
+//   🟢 green  (APOSTAR) : odd 1.8-4.0 & CLV>=2%   OR   odd 1.3-1.8 & CLV>=3%
+//   🟡 yellow (VER)     : odd 1.3-1.8 & CLV 2-3%
+//   🔴 red   (IGNORAR)  : odd >4.0, OR CLV <2%, OR no bettable/negative 1xBet edge
+function vbSignal(b) {
+  const ev = vbEval(b);
+  if (!ev.bestPick) return { light: 'red', clv: null, odd: null };
+  const mine = _myBookPick(b, ev.bestPick);
+  const clv = (mine && mine.edge_pct != null) ? mine.edge_pct : null;
+  const odd = mine ? mine.book_odd : null;
+  if (clv == null || odd == null) return { light: 'red', clv, odd };
+  if (clv < 2 || odd > 4.0) return { light: 'red', clv, odd };
+  if (odd >= 1.8 && odd <= 4.0) return { light: 'green', clv, odd };            // CLV>=2 here
+  if (odd >= 1.3 && odd < 1.8) return { light: clv >= 3 ? 'green' : 'yellow', clv, odd };
+  return { light: 'red', clv, odd };                                            // odd <1.3 (too short)
+}
+const VB_LIGHT_RANK = { green: 0, yellow: 1, red: 2 };
+const VB_LIGHT_META = {
+  green:  { dot: '🟢', label: 'APOSTAR', cls: 'sig-green' },
+  yellow: { dot: '🟡', label: 'VER',     cls: 'sig-yellow' },
+  red:    { dot: '🔴', label: 'IGNORAR', cls: 'sig-red' },
+};
+
 // ============================================================
 // COMPACT TABLE VIEW — dense row-per-event alternative to cards
 // ============================================================
@@ -628,6 +653,17 @@ function setSortMode(mode) {
   vbState.sortMode = mode;
   document.querySelectorAll('.vb-sort-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.sort === mode));
+  renderValueBets();
+}
+
+// #3 Toggle hiding 🔴 (IGNORAR) cards.
+function toggleHideReds() {
+  vbState.hideReds = !vbState.hideReds;
+  const btn = document.getElementById('vb-hidered');
+  if (btn) {
+    btn.classList.toggle('active', vbState.hideReds);
+    btn.textContent = vbState.hideReds ? '🔴 Mostrar ignorados' : '🔴 Esconder ignorados';
+  }
   renderValueBets();
 }
 
@@ -925,33 +961,43 @@ function vbRankScore(b) {
 function renderValueBets() {
   const wrap = document.getElementById('vb-cards');
   let data = applyVbFilters(vbState.raw);
-  // #2 Sort. Default = Est. CLV desc (the real decision signal), so positive-CLV
-  // picks lead and CLV-negative ones sink. Toggle: CLV / Edge / Date.
+  // #3 Sort: traffic-light tier FIRST (🟢 then 🟡 then 🔴), then the chosen sort
+  // (CLV / Edge / Date) WITHIN each tier — so green "bet" picks always lead, by CLV.
   const sortMode = vbState.sortMode || 'clv';
-  if (sortMode === 'date') {
-    data.sort((a, b) => new Date(a.commence_time || 0) - new Date(b.commence_time || 0));
-  } else if (sortMode === 'edge') {
-    data.sort((a, b) => vbRankScore(b) - vbRankScore(a));
-  } else {
-    data.sort((a, b) => {
-      const ca = vbClv(a), cb = vbClv(b);
-      if (ca == null && cb == null) return vbRankScore(b) - vbRankScore(a);
-      if (ca == null) return 1;
-      if (cb == null) return -1;
-      return cb - ca;   // higher Est. CLV first
-    });
+  const _within = (a, b) => {
+    if (sortMode === 'date') return new Date(a.commence_time || 0) - new Date(b.commence_time || 0);
+    if (sortMode === 'edge') return vbRankScore(b) - vbRankScore(a);
+    const ca = vbClv(a), cb = vbClv(b);
+    if (ca == null && cb == null) return vbRankScore(b) - vbRankScore(a);
+    if (ca == null) return 1;
+    if (cb == null) return -1;
+    return cb - ca;   // higher Est. CLV first
+  };
+  data.sort((a, b) => {
+    const ra = VB_LIGHT_RANK[vbSignal(a).light], rb = VB_LIGHT_RANK[vbSignal(b).light];
+    return ra !== rb ? ra - rb : _within(a, b);
+  });
+
+  // Traffic-light counts (computed on the FULL filtered set, before hiding 🔴).
+  let greenCount = 0, yellowCount = 0, redCount = 0;
+  for (const b of data) {
+    const l = vbSignal(b).light;
+    if (l === 'green') greenCount++; else if (l === 'yellow') yellowCount++; else redCount++;
   }
+  // "Mostrar ignorados" toggle off ⇒ drop 🔴 cards from the view entirely.
+  if (vbState.hideReds) data = data.filter(b => vbSignal(b).light !== 'red');
 
   const _qMinEdge = vbState.minEdge ?? 3;
   const _qMaxOdds = vbState.maxOdds ?? 8.0;
-  const valueCount = data.filter(b => vbEval(b).isValue).length;   // green, actionable value bets
+  const valueCount = greenCount;   // 🟢 = actionable "bet" picks
 
   const countEl = document.getElementById('vb-count');
   if (countEl) countEl.innerHTML =
-    `<span class="vb-count-value" style="color:${valueCount > 0 ? '#16a34a' : 'var(--text3)'}">🟢 ${valueCount} value</span>`
+    `<span class="vb-count-value" style="color:${greenCount > 0 ? '#16a34a' : 'var(--text3)'}">🟢 ${greenCount}</span>`
+    + ` <span style="color:#d97706">🟡 ${yellowCount}</span> <span style="color:#9aa0ad">🔴 ${redCount}</span>`
     + ` · ${data.length} shown · ${vbState.raw.length} total`;
 
-  // Sound notification — fire when new value bets appear
+  // Sound notification — fire when new green (bet) picks appear
   if (_prevValueBetCount >= 0 && valueCount > _prevValueBetCount) playNewBetSound();
   _prevValueBetCount = valueCount;
 
@@ -992,13 +1038,14 @@ function renderValueBets() {
     nextStr = ` · próximo jogo em ${when} (${nextEv.home_team} v ${nextEv.away_team})`;
   }
   let banner;
-  if (clvPlus > 0) {
-    banner = `<div class="vb-daily-summary ds-good"><strong>Hoje:</strong> 🟢 ${clvPlus} pick${clvPlus === 1 ? '' : 's'} com CLV+`
-      + (edgeNoClv > 0 ? ` · ⚠ ${edgeNoClv} com edge mas CLV− (evitar)` : '')
+  if (greenCount > 0) {
+    banner = `<div class="vb-daily-summary ds-good"><strong>🟢 ${greenCount} aposta${greenCount === 1 ? '' : 's'} verde${greenCount === 1 ? '' : 's'} hoje</strong>`
+      + (yellowCount > 0 ? ` · 🟡 ${yellowCount} para ver` : '')
+      + (redCount > 0 ? ` · 🔴 ${redCount} a ignorar` : '')
       + nextStr + `</div>`;
   } else {
-    banner = `<div class="vb-daily-summary ds-none"><strong>Nenhum pick com CLV positivo hoje</strong> — aguarda ou passa.`
-      + (edgeNoClv > 0 ? ` ${edgeNoClv} têm edge mas CLV− no 1xBet (valor noutra casa).` : '')
+    banner = `<div class="vb-daily-summary ds-none"><strong>Sem value hoje</strong> — nenhuma aposta verde.`
+      + (yellowCount > 0 ? ` 🟡 ${yellowCount} para vigiar.` : '')
       + nextStr + `</div>`;
   }
   wrap.innerHTML = banner + data.map(b => renderCard(b)).join('');
@@ -1053,6 +1100,7 @@ function renderCard(b) {
   // ceiling. Stars/value belong to the Best Pick; below the 3% floor it shows
   // muted/informational, never as a green rec. No more "Safest Pick".
   const ev = vbEval(b);
+  const sig = vbSignal(b);   // #3 traffic-light tier (green/yellow/red) for this card
   const ODDS_CEILING = ev.ceiling;
   const realPicks = ev.realPicks;
   const bestPickReal = ev.bestPick;
@@ -1482,7 +1530,7 @@ function renderCard(b) {
   }
 
   const cardAgreement = (b.betiq_probs && b.betiq_probs.agreement) || 'high';
-  const cardCls = `vb-card${hasValue ? ' has-value' : ''}${isExpanded ? ' expanded' : ''}`;
+  const cardCls = `vb-card ${VB_LIGHT_META[sig.light].cls}${hasValue ? ' has-value' : ''}${isExpanded ? ' expanded' : ''}`;
   const detailsCount = (() => {
     const seen = new Set();
     for (const p of (b.all_picks||[])) seen.add(`${p.market}|||${p.selection}`);
@@ -1516,6 +1564,7 @@ function renderCard(b) {
   return `<div class="${cardCls}" data-id="${b.event_id}" data-agreement="${cardAgreement}">
     <div class="vb-card-head">
       <div class="vb-card-meta">
+        <span class="vb-signal ${VB_LIGHT_META[sig.light].cls}" title="${sig.light === 'green' ? 'APOSTAR — bom value no preço da 1xBet' : sig.light === 'yellow' ? 'VER — value marginal, vigia a linha' : 'IGNORAR — sem value suficiente na 1xBet'}">${VB_LIGHT_META[sig.light].dot} ${VB_LIGHT_META[sig.light].label}</span>
         <span class="vb-sport">${b.sport_name || ''}</span>${tennisSurfaceBadge(b)}
         <div class="vb-head-right">
           ${clvChipHtml}${edgeChipHtml}

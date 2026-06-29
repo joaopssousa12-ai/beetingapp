@@ -1973,6 +1973,32 @@ tbody tr.value-row td.strong { color: var(--text); }
 .vb-odd-edge .vb-odd-val { color: var(--green); font-size: 13px; }
 [data-theme="dark"] .vb-odd-edge .vb-odd-val { color: var(--green); }
 
+/* ============================================================
+   #3 TRAFFIC-LIGHT SIGNAL — per-card 🟢🟡🔴 decision indicator
+   ============================================================ */
+.vb-signal {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 2px 9px;
+  border-radius: 11px;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+.vb-signal.sig-green  { background: #16a34a1a; color: #16a34a; border: 1px solid #16a34a44; }
+.vb-signal.sig-yellow { background: #d977061a; color: #d97706; border: 1px solid #d9770644; }
+.vb-signal.sig-red    { background: #9aa0ad1a; color: #8b90a0; border: 1px solid #9aa0ad33; }
+/* Colored left rail so tiers are scannable at a glance */
+.vb-card.sig-green  { border-left: 4px solid #16a34a; }
+.vb-card.sig-yellow { border-left: 4px solid #d97706; }
+.vb-card.sig-red    { border-left: 4px solid #c2c7d0; opacity: 0.9; }
+[data-theme="dark"] .vb-card.sig-red { border-left-color: #4a4f5a; }
+/* Hide-ignored toggle active state */
+.vb-hidered-btn.active { background: #16a34a; color: #fff; border-color: #16a34a; }
+
 /* Value pick block: green left accent when value passes gate */
 .vb-pick-block.has-value-pick {
   background: linear-gradient(135deg, rgba(52,211,153,0.06) 0%, transparent 60%);
