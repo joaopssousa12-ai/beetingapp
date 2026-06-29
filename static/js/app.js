@@ -1800,6 +1800,20 @@ function quickAddBet(b) {
     // Store edge for later analysis (the 1xBet edge — your real one)
     const edgeField = document.getElementById('bet-edge-pct');
     if (edgeField) edgeField.value = (useEdge != null ? useEdge : '');
+    // CRITICAL for realized CLV: stash event_id (+ pin true-prob) on the form so the
+    // closing-line capture can link this bet to odds_history. The match dropdown is
+    // slow to populate (it fetches /api/value-bets), so we DON'T rely on it — submitBet
+    // reads these dataset fields as the source of truth.
+    if (f) {
+      f.dataset.eventId = b.event_id || '';
+      let pinImp = null;
+      if (pick.selection === b.home_team) pinImp = b.true_home_pct;
+      else if (pick.selection === b.away_team) pinImp = b.true_away_pct;
+      else if (pick.selection === 'Draw') pinImp = b.true_draw_pct;
+      f.dataset.pinImplied = (pinImp != null ? String(pinImp) : '');
+    }
+    const mkSel = document.getElementById('bet-market');
+    if (mkSel) mkSel.value = /over|under/i.test(pick.market || '') ? 'over_under' : 'h2h';
   }, 100);
 }
 
@@ -2053,9 +2067,12 @@ function toggleBetForm() {
 
 async function submitBet() {
   const sel = document.getElementById('bet-event-select');
-  const eventId = sel.value || null;
+  const betForm = document.getElementById('bet-form');
+  // event_id from the dropdown if chosen, else from what Track Bet stashed on the form
+  // (so the bet links to odds_history and realized CLV can be captured).
+  const eventId = sel.value || (betForm && betForm.dataset.eventId) || null;
   let pinImplied = null;
-  if (eventId) {
+  if (sel.value) {
     const opt = sel.options[sel.selectedIndex];
     if (opt && opt.dataset.event) {
       const ev = JSON.parse(opt.dataset.event);
@@ -2064,6 +2081,8 @@ async function submitBet() {
       else if (selection === (ev.away_team||'').toLowerCase()) pinImplied = ev.true_away_pct;
       else if (selection === 'draw') pinImplied = ev.true_draw_pct;
     }
+  } else if (betForm && betForm.dataset.pinImplied) {
+    pinImplied = parseFloat(betForm.dataset.pinImplied) || null;
   }
   const data = {
     event_id: eventId,
@@ -2096,6 +2115,7 @@ async function submitBet() {
       const el = document.getElementById(id); if (el) el.value = '';
     });
     document.getElementById('bet-event-select').value = '';
+    if (betForm) { betForm.dataset.eventId = ''; betForm.dataset.pinImplied = ''; }
     toggleBetForm();
     loadMyBets();
   }
