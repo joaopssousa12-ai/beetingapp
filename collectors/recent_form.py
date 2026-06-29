@@ -23,15 +23,17 @@ def calculate_recent_form(team_name, match_list, last_n=5):
     team_matches = []
     for match in match_list:
         if match.get('home_team') == team_name:
-            team_matches.append({
-                'goals_for': match.get('home_score', 0),
-                'goals_against': match.get('away_score', 0)
-            })
+            gf, ga = match.get('home_score'), match.get('away_score')
         elif match.get('away_team') == team_name:
-            team_matches.append({
-                'goals_for': match.get('away_score', 0),
-                'goals_against': match.get('home_score', 0)
-            })
+            gf, ga = match.get('away_score'), match.get('home_score')
+        else:
+            continue
+        # Skip fixtures without a recorded result (None scores): an unplayed
+        # match isn't "form", and comparing None > None raised TypeError that
+        # was silently degrading the recent-form signal for many events.
+        if gf is None or ga is None:
+            continue
+        team_matches.append({'goals_for': gf, 'goals_against': ga})
     
     # Get last N matches (most recent first, so reverse)
     recent = team_matches[-last_n:] if team_matches else []
