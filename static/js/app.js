@@ -1769,6 +1769,13 @@ function quickAddBet(b) {
   if (!b) return;
   const pick = vbEval(b).bestPick || b.best_value;
   if (!pick) return;
+  // The user bets at 1xBet — record THEIR price + edge (so P&L and the realized CLV
+  // are computed against what they actually got), falling back to the best-price pick
+  // only if 1xBet doesn't quote this selection.
+  const mine = _myBookPick(b, pick);
+  const useOdd  = (mine && mine.book_odd) ? mine.book_odd : pick.book_odd;
+  const useBook = (mine && mine.book_odd) ? '1xBet' : (pick.book || '1xBet');
+  const useEdge = (mine && mine.edge_pct != null) ? mine.edge_pct : pick.edge_pct;
   document.querySelector('[data-section="mybets"]').click();
   setTimeout(() => {
     const f = document.getElementById('bet-form');
@@ -1782,17 +1789,17 @@ function quickAddBet(b) {
       document.getElementById('bet-commence').value = iso;
     }
     document.getElementById('bet-selection').value = pick.selection || '';
-    document.getElementById('bet-odds').value = pick.book_odd || '';
-    document.getElementById('bet-bookmaker').value = pick.book || '1xBet';
+    document.getElementById('bet-odds').value = useOdd || '';
+    document.getElementById('bet-bookmaker').value = useBook;
     const stakeField = document.getElementById('bet-stake');
-    const kellyQ = (pick.edge_pct > 0 && pick.book_odd > 1)
-      ? (pick.edge_pct / 100) / (pick.book_odd - 1) * 0.25 : (pick.kelly_pct || 0) / 100;
+    const kellyQ = (useEdge > 0 && useOdd > 1)
+      ? (useEdge / 100) / (useOdd - 1) * 0.25 : (pick.kelly_pct || 0) / 100;
     if (vbState.bankroll > 0 && kellyQ > 0 && !stakeField.value) {
       stakeField.value = (vbState.bankroll * kellyQ).toFixed(2);
     }
-    // Store edge for later analysis
+    // Store edge for later analysis (the 1xBet edge — your real one)
     const edgeField = document.getElementById('bet-edge-pct');
-    if (edgeField) edgeField.value = pick.edge_pct || '';
+    if (edgeField) edgeField.value = (useEdge != null ? useEdge : '');
   }, 100);
 }
 
