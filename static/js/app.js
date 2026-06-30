@@ -964,14 +964,26 @@ function renderValueBets() {
   // #3 Sort: traffic-light tier FIRST (🟢 then 🟡 then 🔴), then the chosen sort
   // (CLV / Edge / Date) WITHIN each tier — so green "bet" picks always lead, by CLV.
   const sortMode = vbState.sortMode || 'clv';
+  // #5 Multi-key compare so date and CLV COMBINE (not either/or):
+  //   • Date sort  → soonest first, CLV (desc) as the tie-breaker.
+  //   • CLV sort   → highest CLV first, soonest game as the tie-breaker
+  //                  (catches value before the market corrects).
+  // The time-window dropdown (vb-when: 12h/24h/…) is an independent DATE FILTER that
+  // stacks on top of either sort — e.g. "próximas 12h ordenadas por CLV decrescente".
   const _within = (a, b) => {
-    if (sortMode === 'date') return new Date(a.commence_time || 0) - new Date(b.commence_time || 0);
-    if (sortMode === 'edge') return vbRankScore(b) - vbRankScore(a);
+    const ta = +new Date(a.commence_time || 0), tb = +new Date(b.commence_time || 0);
     const ca = vbClv(a), cb = vbClv(b);
+    if (sortMode === 'date') {
+      if (ta !== tb) return ta - tb;                 // soonest first
+      return (cb ?? -1e9) - (ca ?? -1e9);            // tie → higher CLV first
+    }
+    if (sortMode === 'edge') return vbRankScore(b) - vbRankScore(a);
+    // default: CLV
     if (ca == null && cb == null) return vbRankScore(b) - vbRankScore(a);
     if (ca == null) return 1;
     if (cb == null) return -1;
-    return cb - ca;   // higher Est. CLV first
+    if (cb !== ca) return cb - ca;                   // higher Est. CLV first
+    return ta - tb;                                  // tie → soonest first
   };
   data.sort((a, b) => {
     const ra = VB_LIGHT_RANK[vbSignal(a).light], rb = VB_LIGHT_RANK[vbSignal(b).light];
