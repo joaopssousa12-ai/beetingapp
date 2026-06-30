@@ -2000,6 +2000,16 @@ function renderRealityCheck(bets) {
   const clvs = bets.filter(b => b.clv_pct != null).map(b => b.clv_pct);
   const avgClv = clvs.length ? clvs.reduce((a, b) => a + b, 0) / clvs.length : null;
 
+  // #TR 95% confidence band on realized ROI (from per-bet unit returns). Small
+  // samples → wide band → don't trust the ROI point estimate yet (CLV is the judge).
+  let roiCi = null;
+  if (settled.length >= 5 && staked > 0) {
+    const rets = settled.map(b => (b.profit || 0) / (b.stake || 1));
+    const m = rets.reduce((a, x) => a + x, 0) / rets.length;
+    const variance = rets.reduce((a, x) => a + (x - m) ** 2, 0) / (rets.length - 1);
+    roiCi = 1.96 * Math.sqrt(variance / rets.length) * 100;   // half-width, percentage points
+  }
+
   exEl.textContent = expectedRoi != null ? (expectedRoi >= 0 ? '+' : '') + expectedRoi.toFixed(1) + '%' : '—';
 
   if (realizedRoi == null || expectedRoi == null || settled.length < 5) {
@@ -2013,7 +2023,8 @@ function renderRealityCheck(bets) {
   else if (Math.abs(realizedRoi - expectedRoi) <= 3) { verdict = 'Tracking the model within normal variance'; color = 'var(--text2)'; }
   else if (realizedRoi < expectedRoi) { verdict = 'Below model — likely variance; CLV is the final judge'; color = '#d97706'; }
   else { verdict = 'Above model — positive variance/luck'; color = '#16a34a'; }
-  vEl.innerHTML = `<strong>📊 Reality check:</strong> real <strong>${realizedRoi >= 0 ? '+' : ''}${realizedRoi.toFixed(1)}%</strong> vs model expected <strong>${expectedRoi >= 0 ? '+' : ''}${expectedRoi.toFixed(1)}%</strong>${clvTxt}. <span style="color:${color}">${verdict}</span>`;
+  const ciTxt = roiCi != null ? ` <span style="color:var(--text3)">(±${roiCi.toFixed(1)}pp, 95%${roiCi > Math.abs(realizedRoi) ? ' — banda larga, amostra pequena' : ''})</span>` : '';
+  vEl.innerHTML = `<strong>📊 Reality check:</strong> real <strong>${realizedRoi >= 0 ? '+' : ''}${realizedRoi.toFixed(1)}%</strong>${ciTxt} vs model expected <strong>${expectedRoi >= 0 ? '+' : ''}${expectedRoi.toFixed(1)}%</strong>${clvTxt}. <span style="color:${color}">${verdict}</span>`;
 }
 
 // #8 Your real performance broken down by league/competition (from settled bets).
@@ -2040,7 +2051,7 @@ function renderBetBreakdown(bets) {
     roi: g.staked > 0 ? g.profit / g.staked * 100 : 0,
     clv: g.clvN ? g.clvSum / g.clvN : null,
   })).sort((a, b) => b.bets - a.bets);
-  el.innerHTML = `<div class="card" style="margin-top:1rem">
+  const leagueHtml = `<div class="card" style="margin-top:1rem">
     <div class="card-head">📊 Your performance by league / competition</div>
     <p class="muted-text" style="font-size:12px;margin:0 0 8px">From your settled bets. Early on, <strong>CLV is the reliable signal</strong> (ROI/win-rate need volume). This will guide which leagues to favour or avoid with <em>your own</em> data later.</p>
     <table><thead><tr><th>League</th><th style="text-align:right">Bets</th><th style="text-align:right">Win%</th><th style="text-align:right">ROI</th><th style="text-align:right">Avg CLV</th></tr></thead><tbody>`
@@ -2052,6 +2063,52 @@ function renderBetBreakdown(bets) {
         <td style="text-align:right;color:${r.clv == null ? 'var(--text3)' : r.clv >= 0 ? 'var(--green)' : 'var(--red)'}">${r.clv == null ? '—' : (r.clv >= 0 ? '+' : '') + r.clv.toFixed(1) + '%'}</td>
       </tr>`).join('')
     + `</tbody></table></div>`;
+
+  // #TR Breakdown by ODD BAND — where is your edge real (favourites vs longshots)?
+  const bands = [
+    { label: '< 1.40', lo: 0, hi: 1.40 },
+    { label: '1.40 – 2.00', lo: 1.40, hi: 2.00 },
+    { label: '2.00 – 3.00', lo: 2.00, hi: 3.00 },
+    { label: '3.00 – 4.00', lo: 3.00, hi: 4.00 },
+    { label: '> 4.00', lo: 4.00, hi: Infinity },
+  ];
+  const bandRows = bands.map(bd => {
+    const inB = settled.filter(b => (b.odds || 0) >= bd.lo && (b.odds || 0) < bd.hi);
+    if (!inB.length) return null;
+    const st = inB.reduce((s, b) => s + (b.stake || 0), 0);
+    const pr = inB.reduce((s, b) => s + (b.profit || 0), 0);
+    const cl = inB.filter(b => b.clv_pct != null);
+    return { label: bd.label, n: inB.length, win: inB.filter(b => b.result === 'won').length / inB.length * 100,
+             roi: st > 0 ? pr / st * 100 : 0, clv: cl.length ? cl.reduce((a, b) => a + b.clv_pct, 0) / cl.length : null };
+  }).filter(Boolean);
+  const bandHtml = bandRows.length ? `<div class="card" style="margin-top:1rem">
+    <div class="card-head">🎯 Performance by odd band</div>
+    <p class="muted-text" style="font-size:12px;margin:0 0 8px">Onde o teu edge é real? Favoritos (odd baixa) vs azarões (odd alta).</p>
+    <table><thead><tr><th>Odd</th><th style="text-align:right">Bets</th><th style="text-align:right">Win%</th><th style="text-align:right">ROI</th><th style="text-align:right">Avg CLV</th></tr></thead><tbody>`
+    + bandRows.map(r => `<tr><td class="mono">${r.label}</td>
+        <td style="text-align:right" class="mono">${r.n}</td>
+        <td style="text-align:right" class="mono">${r.win.toFixed(0)}%</td>
+        <td style="text-align:right;color:${r.roi >= 0 ? 'var(--green)' : 'var(--red)'}">${r.roi >= 0 ? '+' : ''}${r.roi.toFixed(1)}%</td>
+        <td style="text-align:right;color:${r.clv == null ? 'var(--text3)' : r.clv >= 0 ? 'var(--green)' : 'var(--red)'}">${r.clv == null ? '—' : (r.clv >= 0 ? '+' : '') + r.clv.toFixed(1) + '%'}</td>
+      </tr>`).join('') + `</tbody></table></div>` : '';
+
+  // #TR CLV vs RESULT — does beating the close actually win? (the core validation)
+  const withClv = settled.filter(b => b.clv_pct != null && (b.result === 'won' || b.result === 'lost'));
+  let clvHtml = '';
+  if (withClv.length >= 5) {
+    const pos = withClv.filter(b => b.clv_pct > 0), neg = withClv.filter(b => b.clv_pct <= 0);
+    const wr = a => a.length ? (a.filter(b => b.result === 'won').length / a.length * 100) : null;
+    const wp = wr(pos), wn = wr(neg);
+    clvHtml = `<div class="card" style="margin-top:1rem">
+      <div class="card-head">🔬 CLV vs resultado <span style="font-weight:400;font-size:12px;color:var(--text3)">— a validação que importa</span></div>
+      <p class="muted-text" style="font-size:12px;margin:0 0 8px">Se bater a linha de fecho (CLV+) prevê vitórias, os CLV+ ganham mais que os CLV−. É isto que prova que o edge é real.</p>
+      <div style="display:flex;gap:1.5rem">
+        <div><div style="font-size:12px;color:var(--text3)">CLV+ win-rate</div><div style="font-size:20px;color:var(--green)">${wp != null ? wp.toFixed(0) + '%' : '—'} <span style="font-size:12px;color:var(--text3)">(${pos.length})</span></div></div>
+        <div><div style="font-size:12px;color:var(--text3)">CLV− win-rate</div><div style="font-size:20px;color:var(--red)">${wn != null ? wn.toFixed(0) + '%' : '—'} <span style="font-size:12px;color:var(--text3)">(${neg.length})</span></div></div>
+      </div></div>`;
+  }
+
+  el.innerHTML = leagueHtml + bandHtml + clvHtml;
 }
 
 async function loadBetsTable() {
