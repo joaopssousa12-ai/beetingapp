@@ -78,17 +78,37 @@ BOOKMAKERS = "pinnacle,bet365,unibet_eu,williamhill,betfair_ex_eu,bwin,betway,ma
 _LAST_REMAINING = {"v": None}
 IMMINENT_MIN_QUOTA = int(os.environ.get("IMMINENT_MIN_QUOTA", "50"))  # HARD BRAKE: skip ALL non-essential refreshes below this.
 
-# Near-kickoff window: only re-fetch sports with a game starting within this many
-# hours. Env-tunable (IMMINENT_WINDOW_HOURS) so quota can be dialed in without a deploy.
-IMMINENT_WINDOW_HOURS = int(os.environ.get("IMMINENT_WINDOW_HOURS", "6"))
+# SCOPE (free-tier conservation): auto-collection — full sweep + imminent + closing —
+# is limited to FOOTBALL and TENNIS only. All other sports (basketball, cricket, MMA,
+# NFL, baseball, boxing, …) are dropped until the paid plan is active.
+#
+# Near-kickoff config PER SPORT (env-tunable; retune without a deploy):
+#   window_h     = hours before kickoff we start re-fetching the line.
+#   throttle_min = min minutes between fetches of the SAME sport key. This is what caps
+#                  an all-day tournament: a tennis Slam has matches all day, so without
+#                  a throttle the */15 closing job would re-pull it dozens of times/day.
+IMMINENT_CFG = {
+    "football": {
+        "window_h":     int(os.environ.get("IMMINENT_WINDOW_HOURS_FOOTBALL", "6")),
+        "throttle_min": int(os.environ.get("IMMINENT_DEDUP_FOOTBALL", "45")),
+    },
+    "tennis": {
+        "window_h":     int(os.environ.get("IMMINENT_WINDOW_HOURS_TENNIS", "3")),
+        "throttle_min": int(os.environ.get("IMMINENT_DEDUP_TENNIS", "60")),
+    },
+}
+_LAST_IMMINENT_FETCH = {}        # sport_key -> datetime of last imminent/closing fetch
 
-# Per-sport throttle: the closing-capture job runs every 15 min, but the line for a
-# given sport doesn't need re-fetching that often. Remember when each sport was last
-# pulled and skip it if it was fetched within the dedupe window — so one game in the
-# pre-kickoff window costs at most ONE fetch, not one every 15 min. Min ~25-30 min;
-# env-tunable via IMMINENT_DEDUP_MINUTES.
-_LAST_IMMINENT_FETCH = {}        # sport_key -> datetime of last imminent fetch
-_IMMINENT_DEDUP_MINUTES = int(os.environ.get("IMMINENT_DEDUP_MINUTES", "30"))
+
+def _sport_class(key):
+    """football | tennis | None  (None = out of scope, not auto-collected)."""
+    if not key:
+        return None
+    if key.startswith("soccer"):
+        return "football"
+    if key.startswith("tennis"):
+        return "tennis"
+    return None
 
 
 def get_active_sports():
@@ -315,13 +335,18 @@ def _pretty_sport_name(key):
     return f"{tour} {rest}".strip() if rest else f"{tour} Tour"
 
 
-def refresh_imminent_odds(status_callback=None, within_hours=IMMINENT_WINDOW_HOURS, within_minutes=None):
-    """Near-kickoff refresh: re-fetch ONLY the sports that have events starting in
-    the next `within_hours` (or `within_minutes` if given). The line is sharpest
-    close to kickoff, and this costs almost nothing (often 0-2 requests) vs a full
-    sweep — so we capture the near-closing price where it matters without burning
-    the free quota. Each fetch writes an odds_history snapshot, which is what
-    capture_pinnacle_close_for_started_events() later reads as the TRUE close."""
+def refresh_imminent_odds(status_callback=None, within_minutes=None):
+    """Near-kickoff refresh for FOOTBALL + TENNIS only.
+
+    Imminent mode (within_minutes=None, the */2h job): re-fetch each in-scope sport
+    that has a game inside its OWN window (football 6h, tennis 3h), throttled per
+    sport (football 45min, tennis 60min) so an all-day tennis Slam can't drain quota.
+
+    Closing mode (within_minutes set, the */15 closing-capture job): re-fetch
+    in-scope sports with a game in the next `within_minutes`. FOOTBALL is fetched
+    UNTHROTTLED here (games are clustered + cheap → a true ~15-min close); TENNIS keeps
+    its throttle (all-day → unthrottled would be dozens of fetches/day). Each fetch
+    writes an odds_history snapshot read by capture_pinnacle_close_for_started_events()."""
     def cb(msg):
         print(msg, flush=True)
         if status_callback:
@@ -329,44 +354,55 @@ def refresh_imminent_odds(status_callback=None, within_hours=IMMINENT_WINDOW_HOU
 
     if not API_KEY:
         return 0
-    # Quota guard: protect the monthly budget for the daily full refresh.
     if _LAST_REMAINING["v"] is not None and _LAST_REMAINING["v"] < IMMINENT_MIN_QUOTA:
         cb(f"Imminent refresh: skipped (quota low: {_LAST_REMAINING['v']} left).")
         return 0
 
-    # Build the window as a LITERAL interval (int-derived, no injection) so the SQL
-    # translation layer can rewrite datetime('now','+N unit') -> NOW() + INTERVAL
-    # 'N unit' on Postgres. (A bound '?' param is NOT translated and fails on PG.)
+    def keys_in_window(interval):
+        # Literal interval (int-derived, no injection) so the SQL-translation layer can
+        # rewrite datetime('now','+N unit') -> NOW() + INTERVAL on Postgres.
+        try:
+            conn = get_connection()
+            rows = conn.execute(
+                "SELECT DISTINCT sport_key FROM odds_events "
+                "WHERE commence_time > datetime('now') "
+                f"AND commence_time < datetime('now', '{interval}')"
+            ).fetchall()
+            conn.close()
+            return [r["sport_key"] for r in rows if r["sport_key"]]
+        except Exception as e:
+            cb(f"Imminent refresh DB error: {e}")
+            return []
+
+    # Build the in-scope (football/tennis) target list, per-sport window.
+    targets = []
     if within_minutes is not None:
-        interval, window_desc = f"+{int(within_minutes)} minutes", f"{int(within_minutes)}min"
+        window_desc = f"{int(within_minutes)}min"
+        for k in keys_in_window(f"+{int(within_minutes)} minutes"):
+            if _sport_class(k):
+                targets.append(k)
     else:
-        interval, window_desc = f"+{int(within_hours)} hours", f"{int(within_hours)}h"
+        window_desc = "F6h/T3h"
+        seen = set()
+        for cls, cfg in IMMINENT_CFG.items():
+            for k in keys_in_window(f"+{int(cfg['window_h'])} hours"):
+                if _sport_class(k) == cls and k not in seen:
+                    seen.add(k)
+                    targets.append(k)
 
-    try:
-        conn = get_connection()
-        rows = conn.execute(
-            "SELECT DISTINCT sport_key FROM odds_events "
-            "WHERE commence_time > datetime('now') "
-            f"AND commence_time < datetime('now', '{interval}')"
-        ).fetchall()
-        conn.close()
-    except Exception as e:
-        cb(f"Imminent refresh DB error: {e}")
-        return 0
-
-    # 'soccer' is the openfootball fixtures key (no The-Odds-API endpoint) — skip.
-    keys = [r["sport_key"] for r in rows
-            if r["sport_key"] and r["sport_key"] != "soccer"]
-    if not keys:
-        cb(f"Imminent refresh: no matches starting in <{window_desc}.")
+    if not targets:
+        cb(f"Imminent refresh: no football/tennis match starting in <{window_desc}.")
         return 0
 
     total, remaining, fetched, skipped = 0, "?", 0, 0
     now = datetime.now()
-    for sk in keys:
-        # Throttle: don't re-pull a sport we already refreshed in the last window.
+    for sk in targets:
+        cls = _sport_class(sk)
+        # Closing job + football → no throttle (cheap, true 15-min close). Otherwise
+        # the per-sport throttle (esp. tennis) caps an all-day tournament.
+        throttle = 0 if (within_minutes is not None and cls == "football") else IMMINENT_CFG[cls]["throttle_min"]
         last = _LAST_IMMINENT_FETCH.get(sk)
-        if last and (now - last).total_seconds() < _IMMINENT_DEDUP_MINUTES * 60:
+        if throttle and last and (now - last).total_seconds() < throttle * 60:
             skipped += 1
             continue
         events, remaining = fetch_odds(sk)
@@ -374,12 +410,11 @@ def refresh_imminent_odds(status_callback=None, within_hours=IMMINENT_WINDOW_HOU
         fetched += 1
         if events:
             total += parse_and_store(events, sk, SPORT_GROUPS.get(sk) or _pretty_sport_name(sk))
-        # Re-check the budget after each call so we stop the moment we dip too low.
         if _LAST_REMAINING["v"] is not None and _LAST_REMAINING["v"] < IMMINENT_MIN_QUOTA:
             cb(f"Imminent refresh: stopping early (quota low: {_LAST_REMAINING['v']} left).")
             break
     cb(f"Imminent refresh: {total} events, {fetched} fetched / {skipped} throttled "
-       f"(of {len(keys)} imminent sport(s) <{window_desc}). Credits left: {remaining}")
+       f"(of {len(targets)} in-scope sport(s) <{window_desc}). Credits left: {remaining}")
     return total
 
 
@@ -506,7 +541,11 @@ def collect_odds(status_callback=None):
         if k.startswith("tennis_") and k not in to_fetch:
             to_fetch[k] = SPORT_GROUPS.get(k) or _pretty_sport_name(k)
 
-    cb(f"Fetching odds for {len(to_fetch)} sports from our watchlist...")
+    # SCOPE: free-tier conservation — keep ONLY football + tennis (drop baseball,
+    # MMA, boxing, basketball, cricket, NFL, … from the daily sweep too).
+    to_fetch = {k: v for k, v in to_fetch.items() if _sport_class(k)}
+
+    cb(f"Fetching odds for {len(to_fetch)} football/tennis sports...")
 
     if not to_fetch:
         cb("No watched sports currently in season.")
