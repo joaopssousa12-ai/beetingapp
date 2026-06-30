@@ -1999,6 +1999,16 @@ tbody tr.value-row td.strong { color: var(--text); }
 /* Hide-ignored toggle active state */
 .vb-hidered-btn.active { background: #16a34a; color: #fff; border-color: #16a34a; }
 
+/* #4 Track Bet — "already registered" state (links to My Bets) */
+.vb-track-btn.is-tracked {
+  background: #16a34a18;
+  color: #16a34a;
+  border: 1px solid #16a34a55;
+  font-weight: 600;
+  cursor: pointer;
+}
+.vb-track-btn.is-tracked:hover { background: #16a34a2a; }
+
 /* Value pick block: green left accent when value passes gate */
 .vb-pick-block.has-value-pick {
   background: linear-gradient(135deg, rgba(52,211,153,0.06) 0%, transparent 60%);

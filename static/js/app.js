@@ -1228,6 +1228,14 @@ function renderCard(b) {
       kelly = _calcKelly(mine.edge_pct, mine.book_odd);    // ¼-Kelly on YOUR (1xBet) edge
     }
     const fair = p.true_prob ? (100 / p.true_prob).toFixed(2) : null;
+    // #4 If this exact pick (same selection) is already tracked in My Bets, swap the
+    // Track button for a "Ver em My Bets" link. Persists across reloads because
+    // trackedBetsMap is rebuilt from /api/bets (the DB) on every page load.
+    const _isTracked = trackedBets.some(tb =>
+      (tb.selection || '').trim().toLowerCase() === (p.selection || '').trim().toLowerCase());
+    const actionBtn = _isTracked
+      ? `<button class="add-bet-btn vb-track-btn is-tracked" onclick='event.stopPropagation();goToMyBets()' title="Já registada — abrir My Bets">✓ Registada · Ver em My Bets</button>`
+      : `<button class="add-bet-btn vb-track-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track Bet</button>`;
     const cls = celebrated ? 'vb-hero-pick has-value-pick' : 'vb-hero-pick below-floor';
     const label = celebrated ? 'Best Pick' : 'Best available';
     const note = celebrated
@@ -1276,7 +1284,7 @@ function renderCard(b) {
       ${refChip ? `<div class="vb-ref-row">${refChip}</div>` : ''}
       ${note ? `<div class="vb-hero-model">${note}</div>` : ''}
       <div class="vb-pick-action">
-        <button class="add-bet-btn vb-track-btn" onclick='event.stopPropagation();quickAddBet(${JSON.stringify(b).replace(/'/g, "&apos;")})'>+ Track Bet</button>
+        ${actionBtn}
       </div>
     </div>`;
   }
@@ -1866,6 +1874,12 @@ function quickAddBet(b) {
   }, 100);
 }
 
+// #4 Open the My Bets page (used by the "✓ Registada · Ver em My Bets" button).
+function goToMyBets() {
+  const link = document.querySelector('[data-section="mybets"]');
+  if (link) link.click();
+}
+
 let oddsPoller = null;
 async function refreshOdds() {
   const btn = document.getElementById('refresh-odds-btn');
@@ -2165,6 +2179,13 @@ async function submitBet() {
     });
     document.getElementById('bet-event-select').value = '';
     if (betForm) { betForm.dataset.eventId = ''; betForm.dataset.pinImplied = ''; }
+    // #4 Reflect the new bet on the value-bets cards right away (also DB-persistent:
+    // a reload rebuilds trackedBetsMap from /api/bets, so the state survives reloads).
+    if (data.event_id) {
+      (trackedBetsMap[data.event_id] = trackedBetsMap[data.event_id] || []).push(
+        { event_id: data.event_id, selection: data.selection, market: data.market });
+      if (typeof renderValueBets === 'function') renderValueBets();
+    }
     toggleBetForm();
     loadMyBets();
   }
