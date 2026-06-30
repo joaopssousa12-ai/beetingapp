@@ -1841,10 +1841,18 @@ function quickAddBet(b) {
   // The user bets at 1xBet — record THEIR price + edge (so P&L and the realized CLV
   // are computed against what they actually got), falling back to the best-price pick
   // only if 1xBet doesn't quote this selection.
+  // #3 ALWAYS register the 1xBet price + edge — never the best-house number. You
+  // only bet 1xBet, so a best-house edge (e.g. 4.5% when your 1xBet edge is 3.5%)
+  // would be illusory. If 1xBet doesn't quote this selection, it isn't a bet you
+  // can place → block tracking instead of recording someone else's price.
   const mine = _myBookPick(b, pick);
-  const useOdd  = (mine && mine.book_odd) ? mine.book_odd : pick.book_odd;
-  const useBook = (mine && mine.book_odd) ? '1xBet' : (pick.book || '1xBet');
-  const useEdge = (mine && mine.edge_pct != null) ? mine.edge_pct : pick.edge_pct;
+  if (!mine || !mine.book_odd) {
+    alert('A 1xBet não cota esta seleção — não dá para registar (só registamos o teu preço/edge da 1xBet).');
+    return;
+  }
+  const useOdd  = mine.book_odd;
+  const useBook = '1xBet';
+  const useEdge = mine.edge_pct;
   document.querySelector('[data-section="mybets"]').click();
   setTimeout(() => {
     const f = document.getElementById('bet-form');
@@ -2164,7 +2172,7 @@ async function submitBet() {
     sport_name: document.getElementById('bet-sport').value.trim() || null,
     home_team: document.getElementById('bet-home').value.trim() || null,
     away_team: document.getElementById('bet-away').value.trim() || null,
-    commence_time: document.getElementById('bet-commence').value || null,
+    commence_time: (() => { const _cv = document.getElementById('bet-commence').value; return _cv ? new Date(_cv).toISOString().slice(0, 16) : null; })(),  // local input -> UTC (same YYYY-MM-DDTHH:MM format, fixes the UTC skew)
     market: document.getElementById('bet-market').value,
     selection: document.getElementById('bet-selection').value.trim(),
     bookmaker: document.getElementById('bet-bookmaker').value.trim() || null,

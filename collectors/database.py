@@ -1877,7 +1877,11 @@ def get_bets(limit=200):
         # CLV: if we have pinnacle close odds, compute closing line value
         # CLV % = (your_odds / pin_close_odds - 1) * 100 inverse, or use implied probs:
         # Better: CLV = (implied_prob_close - implied_prob_yours) where positive means you beat the close
-        if d.get("odds") and d.get("pin_close_odds"):
+        # Realized CLV only once the bet is SETTLED — i.e. the match has actually
+        # happened. Before that, a captured "close" can be premature (esp. tennis,
+        # whose scheduled time != actual start), so we report it as pending (None)
+        # rather than a definitive-looking number.
+        if d.get("status") == "settled" and d.get("odds") and d.get("pin_close_odds"):
             your_implied = 1.0 / d["odds"]
             close_implied = 1.0 / d["pin_close_odds"]
             d["clv_pct"] = round((close_implied - your_implied) / your_implied * 100, 2)
@@ -1906,10 +1910,11 @@ def get_bet_stats():
         FROM bets WHERE status='pending'
     """).fetchone()
 
-    # CLV stats - only count bets that have pinnacle close odds
+    # CLV stats - only SETTLED bets with a real captured close (consistent with the
+    # per-bet rule: no premature/pending closes in the aggregate CLV).
     clv = conn.execute("""
         SELECT odds, pin_close_odds FROM bets
-        WHERE pin_close_odds IS NOT NULL AND odds IS NOT NULL
+        WHERE status='settled' AND pin_close_odds IS NOT NULL AND odds IS NOT NULL
     """).fetchall()
 
     clv_values = []
@@ -2007,27 +2012,10 @@ def capture_pinnacle_close_for_started_events():
             ORDER BY captured_at DESC LIMIT 1
         """, (event_id, r["commence_time"])).fetchone()
 
-        # Fallback: use any latest snapshot if no pre-kickoff one found
-        if not snapshot:
-            snapshot = conn.execute("""
-                SELECT pin_home, pin_draw, pin_away,
-                       pin_over25, pin_under25,
-                       pin_btts_yes, pin_btts_no,
-                       captured_at
-                FROM odds_history
-                WHERE event_id = ?
-                ORDER BY captured_at DESC LIMIT 1
-            """, (event_id,)).fetchone()
-
-        if not snapshot:
-            # Final fallback: current odds_events
-            snapshot = conn.execute("""
-                SELECT pin_home, pin_draw, pin_away,
-                       pin_over25, pin_under25,
-                       pin_btts_yes, pin_btts_no
-                FROM odds_events WHERE event_id = ?
-            """, (event_id,)).fetchone()
-
+        # NO fallback to "latest snapshot" or current odds_events: those are the
+        # live/near-now price, which would fabricate a closing line (= CLV vs now,
+        # not a real close). If there is no genuine PRE-kickoff snapshot, leave
+        # pin_close NULL so the CLV stays pending — never a faked number.
         if not snapshot:
             continue
 
