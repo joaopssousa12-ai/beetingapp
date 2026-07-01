@@ -739,12 +739,14 @@ function applyVbFilters(rows) {
     return new Date(r.commence_time).getTime() > Date.now();
   });
 
-  // #stale Hide events whose odds are dead (>12h old) — the edge/CLV would be
-  // computed on a price that no longer exists. updated_at is stored UTC.
+  // #stale Hard-hide events whose odds are truly dead (>24h old — dead/rotting
+  // prices). The loud "⚠ Odds Xh old" badge already warns from 6h, so 24h keeps the
+  // list populated (on the free tier the server sleeps and odds routinely age past
+  // 12h, which would otherwise empty the whole page). updated_at is stored UTC.
   out = out.filter(r => {
     if (!r.updated_at) return true;
     const ageH = (Date.now() - new Date(String(r.updated_at).replace(' ', 'T') + 'Z').getTime()) / 3600000;
-    return ageH <= 12;
+    return ageH <= 24;
   });
 
   if (vbState.sportFilter) out = out.filter(r => r.sport_name === vbState.sportFilter);

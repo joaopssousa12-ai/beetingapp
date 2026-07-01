@@ -1665,16 +1665,21 @@ tbody tr.value-row td.strong { color: var(--text); }
   .nav-links {
     display: flex;
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;             /* single row... */
+    overflow-x: auto;             /* ...that you swipe horizontally */
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
     padding: 0.25rem 0 0;
     width: 100%;
     gap: 2px;
   }
-  .nav-links li { margin-bottom: 0; }
+  .nav-links::-webkit-scrollbar { display: none; }
+  .nav-links li { margin-bottom: 0; flex: 0 0 auto; }
   .nav-link {
     padding: 0.35rem 0.6rem;
     font-size: 12px;
     gap: 6px;
+    white-space: nowrap;
   }
   .nav-link svg { width: 13px; height: 13px; }
 

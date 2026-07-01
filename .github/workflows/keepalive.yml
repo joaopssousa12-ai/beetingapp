@@ -1,0 +1,17 @@
+name: keep-alive
+
+# Pings the Render free-tier service every ~10 min so it never spins down.
+# Prevents the slow cold start AND keeps the collection scheduler running (so odds
+# stay fresh instead of rotting past the staleness filter). Remove once on the paid
+# Render plan (no spin-down).
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /healthz
+        run: curl -fsS -m 30 https://beetingapp-1.onrender.com/healthz || true
