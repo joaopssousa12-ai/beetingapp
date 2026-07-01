@@ -38,6 +38,11 @@ from collectors.telegram_alerts import send_alerts_for_value_bets, send_daily_di
 
 app = FastAPI(title="Betting Intelligence Platform")
 
+# Cache-bust static assets on every deploy: this changes each process start, so the
+# browser fetches the fresh CSS/JS instead of serving a stale cached copy (which was
+# why deploys weren't reaching users — the ?v= was hardcoded and never bumped).
+ASSET_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
+
 BASE_DIR = os.path.dirname(__file__)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
@@ -247,7 +252,7 @@ async def run_full_collection():
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request, "v": ASSET_VERSION})
 
 @app.get("/match/{event_id}", response_class=HTMLResponse)
 async def match_detail(request: Request, event_id: str):
