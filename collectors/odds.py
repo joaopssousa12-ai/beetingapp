@@ -94,7 +94,7 @@ IMMINENT_CFG = {
     },
     "tennis": {
         "window_h":     int(os.environ.get("IMMINENT_WINDOW_HOURS_TENNIS", "3")),
-        "throttle_min": int(os.environ.get("IMMINENT_DEDUP_TENNIS", "60")),
+        "throttle_min": int(os.environ.get("IMMINENT_DEDUP_TENNIS", "90")),   # 90min so the free 500 covers the WC+Wimbledon peak
     },
 }
 _LAST_IMMINENT_FETCH = {}        # sport_key -> datetime of last imminent/closing fetch
@@ -491,6 +491,81 @@ def diagnose_spreads(sport_key="soccer_fifa_world_cup"):
                     "pinnacle_handicap": pin_spread,
                 })
     return out
+
+
+def probe_all_books(sport_key=None):
+    """ONE raw fetch (1 credit) of an in-scope sport with ALL EU bookmakers (no book
+    filter), to rank which book most often has the BEST h2h price and how often each
+    beats 1xBet (onexbet). Diagnostic only — used to decide a 2nd bookmaker."""
+    if not API_KEY:
+        return {"error": "no ODDS_API_KEY"}
+    if not sport_key:
+        try:
+            conn = get_connection()
+            row = conn.execute(
+                "SELECT sport_key, COUNT(*) AS c FROM odds_events "
+                "WHERE commence_time > datetime('now') "
+                "AND (sport_key LIKE 'soccer%' OR sport_key LIKE 'tennis%') "
+                "GROUP BY sport_key ORDER BY c DESC"
+            ).fetchone()
+            conn.close()
+            sport_key = row["sport_key"] if row else "soccer_fifa_world_cup"
+        except Exception:
+            sport_key = "soccer_fifa_world_cup"
+    # No 'bookmakers' param -> The Odds API returns ALL EU books (still 1 credit).
+    params = {"apiKey": API_KEY, "regions": "eu", "markets": "h2h", "oddsFormat": "decimal"}
+    try:
+        r = requests.get(f"{BASE}/sports/{sport_key}/odds", params=params, timeout=25)
+        remaining = r.headers.get("x-requests-remaining", "?")
+        try:
+            _LAST_REMAINING["v"] = int(remaining)
+        except (ValueError, TypeError):
+            pass
+        if r.status_code != 200:
+            return {"error": f"HTTP {r.status_code}: {r.text[:160]}", "sport": sport_key}
+        events = r.json()
+    except Exception as e:
+        return {"error": repr(e), "sport": sport_key}
+
+    best, beats, priced = {}, {}, {}
+    outcomes, x1_outcomes = 0, 0
+    for e in events:
+        book_out = {}
+        for b in e.get("bookmakers", []):
+            for m in b.get("markets", []):
+                if m.get("key") != "h2h":
+                    continue
+                for o in m.get("outcomes", []):
+                    book_out.setdefault(b["key"], {})[o.get("name")] = o.get("price")
+        names = set()
+        for bo in book_out.values():
+            names.update(bo.keys())
+        for nm in names:
+            prices = {bk: bo[nm] for bk, bo in book_out.items() if bo.get(nm)}
+            if not prices:
+                continue
+            outcomes += 1
+            mx = max(prices.values())
+            for bk, p in prices.items():
+                priced[bk] = priced.get(bk, 0) + 1
+                if p >= mx - 1e-9:
+                    best[bk] = best.get(bk, 0) + 1
+            if "onexbet" in prices:
+                x1_outcomes += 1
+                x1 = prices["onexbet"]
+                for bk, p in prices.items():
+                    if bk != "onexbet" and p > x1 + 1e-9:
+                        beats[bk] = beats.get(bk, 0) + 1
+
+    def pct(n, d):
+        return round(n / d * 100, 1) if d else 0
+    ranking = sorted(
+        ({"book": bk, "best": best.get(bk, 0), "best_pct": pct(best.get(bk, 0), outcomes),
+          "beats_1xbet": beats.get(bk, 0), "beats_1xbet_pct": pct(beats.get(bk, 0), x1_outcomes),
+          "priced": priced.get(bk, 0)} for bk in priced),
+        key=lambda x: (-x["best"], -x["beats_1xbet"]))
+    return {"sport": sport_key, "events": len(events), "outcomes": outcomes,
+            "x1_outcomes": x1_outcomes, "credits_remaining": remaining, "ranking": ranking}
 
 
 def collect_odds(status_callback=None):

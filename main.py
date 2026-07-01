@@ -58,6 +58,12 @@ async def startup():
         print(traceback.format_exc(), flush=True)
         # Don't crash — continue without DB
     try:
+        from collectors.database import purge_out_of_scope_and_stale
+        p = purge_out_of_scope_and_stale()
+        print(f"Startup purge: removed {p['out_of_scope']} out-of-scope + {p['stale']} stale event(s).", flush=True)
+    except Exception as e:
+        print(f"Startup purge skipped: {e}", flush=True)
+    try:
         scheduler.add_job(lambda: asyncio.create_task(run_full_collection()), "cron", hour=3, minute=0)
         # The heavy full sweep runs ONCE a day (inside run_full_collection, now h2h-only
         # = 1 credit/call) as the baseline that gives upcoming games a price — plus
@@ -723,6 +729,15 @@ async def api_diag_quota():
             "betfair": "see /api/diag/betfair (free; needs BETFAIR_CERT/KEY)",
         },
     })
+
+@app.get("/api/diag/books")
+async def api_diag_books():
+    """1-credit probe: fetch one in-scope sport with ALL EU bookmakers and rank which
+    book most often has the best h2h price + how often each beats 1xBet."""
+    from collectors.odds import probe_all_books
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, probe_all_books)
+    return JSONResponse(res)
 
 @app.get("/api/value-bets")
 async def api_value_bets():

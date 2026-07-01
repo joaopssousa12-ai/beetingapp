@@ -31,6 +31,40 @@ def invalidate_value_bets_cache():
     _vb_cache["data"] = None
     _vb_cache["ts"] = 0.0
 
+
+def purge_out_of_scope_and_stale(max_age_hours=24):
+    """Remove junk rows from odds_events: (1) sports we no longer collect (anything
+    that isn't football/tennis — MMA/Boxing/etc. lingered for weeks because DELETE
+    only removes PAST games, so far-future ones rotted); (2) events whose odds are
+    older than `max_age_hours` (dead prices — the books stopped pricing them). Ages
+    are computed in Python to stay dialect-safe (SQLite + Postgres)."""
+    from datetime import datetime, timedelta
+    conn = get_connection()
+    try:
+        oos = conn.execute(
+            "SELECT COUNT(*) AS c FROM odds_events "
+            "WHERE sport_key NOT LIKE 'soccer%' AND sport_key NOT LIKE 'tennis%'"
+        ).fetchone()["c"]
+        conn.execute(
+            "DELETE FROM odds_events "
+            "WHERE sport_key NOT LIKE 'soccer%' AND sport_key NOT LIKE 'tennis%'"
+        )
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        stale = 0
+        for r in conn.execute("SELECT event_id, updated_at FROM odds_events").fetchall():
+            u = r["updated_at"]
+            try:
+                dt = datetime.strptime(str(u)[:16], "%Y-%m-%d %H:%M") if u else None
+            except Exception:
+                dt = None
+            if dt and dt < cutoff:
+                conn.execute("DELETE FROM odds_events WHERE event_id = ?", (r["event_id"],))
+                stale += 1
+        conn.commit()
+        return {"out_of_scope": oos, "stale": stale}
+    finally:
+        conn.close()
+
 # Guard so only one background recompute runs at a time.
 _vb_refreshing = {"active": False}
 

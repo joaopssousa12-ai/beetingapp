@@ -739,6 +739,14 @@ function applyVbFilters(rows) {
     return new Date(r.commence_time).getTime() > Date.now();
   });
 
+  // #stale Hide events whose odds are dead (>12h old) — the edge/CLV would be
+  // computed on a price that no longer exists. updated_at is stored UTC.
+  out = out.filter(r => {
+    if (!r.updated_at) return true;
+    const ageH = (Date.now() - new Date(String(r.updated_at).replace(' ', 'T') + 'Z').getTime()) / 3600000;
+    return ageH <= 12;
+  });
+
   if (vbState.sportFilter) out = out.filter(r => r.sport_name === vbState.sportFilter);
   // Surface is a tennis concept → when set, show only matching-surface tennis events.
   if (vbState.surfaceFilter) out = out.filter(r => isTennisEvent(r) && tennisSurface(r) === vbState.surfaceFilter);
