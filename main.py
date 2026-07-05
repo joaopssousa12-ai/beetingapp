@@ -881,6 +881,7 @@ async def api_delete_bet(bet_id: int):
     return JSONResponse({"ok": True})
 
 @app.post("/api/clv/capture")
+@app.get("/api/clv/capture")  # GET alias — callable from a tablet/browser address bar
 async def api_capture_clv(recapture: bool = False):
     """Manually trigger CLV capture for past pending bets.
 
