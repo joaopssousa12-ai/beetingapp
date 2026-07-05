@@ -298,8 +298,17 @@ def parse_and_store(events, sport_key, sport_name):
                 ah_line, pin_ah_home, pin_ah_away, best_ah_home, best_ah_away, x1_ah_home, x1_ah_away,
                 datetime.now().strftime("%Y-%m-%d %H:%M")
             ))
-            # Also save snapshot to history for line movement tracking
-            conn.execute("""
+            # Also save snapshot to history for line movement tracking.
+            # PRE-match snapshots only: the API also returns in-play events, and a
+            # live price stored here would be mistaken for the closing line by
+            # capture_pinnacle_close_for_started_events().
+            try:
+                _ko = datetime.strptime(str(commence).replace("T", " ").rstrip("Z")[:16], "%Y-%m-%d %H:%M")
+                _started = _ko <= datetime.utcnow()
+            except (ValueError, TypeError):
+                _started = False
+            if not _started:
+                conn.execute("""
                 INSERT INTO odds_history (
                     event_id, captured_at,
                     pin_home, pin_draw, pin_away,
@@ -308,14 +317,14 @@ def parse_and_store(events, sport_key, sport_name):
                     pin_over25, pin_under25,
                     pin_btts_yes, pin_btts_no
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                event_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                pin_home, pin_draw, pin_away,
-                best_home, best_draw, best_away,
-                x1_home, x1_draw, x1_away,
-                pin_over25, pin_under25,
-                pin_btts_yes, pin_btts_no
-            ))
+                """, (
+                    event_id, datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    pin_home, pin_draw, pin_away,
+                    best_home, best_draw, best_away,
+                    x1_home, x1_draw, x1_away,
+                    pin_over25, pin_under25,
+                    pin_btts_yes, pin_btts_no
+                ))
             inserted += 1
         except Exception as e:
             print(f"Insert error: {e}", flush=True)

@@ -12,7 +12,7 @@ from collectors.database import (
     get_recent_football, get_recent_tennis, get_collection_log, get_value_bets,
     add_bet, update_bet_result, delete_bet, get_bets, get_bet_stats,
     get_bankroll_evolution, capture_pinnacle_close_for_started_events,
-    auto_grade_pending_bets,
+    clv_audit, auto_grade_pending_bets,
     get_performance_breakdown, get_bankroll_advanced,
     get_national_summary, get_national_recent,
     get_xg_summary, get_team_xg,
@@ -881,13 +881,29 @@ async def api_delete_bet(bet_id: int):
     return JSONResponse({"ok": True})
 
 @app.post("/api/clv/capture")
-async def api_capture_clv():
-    """Manually trigger CLV capture for past pending bets."""
+async def api_capture_clv(recapture: bool = False):
+    """Manually trigger CLV capture for past pending bets.
+
+    recapture=true re-derives the close for ALL bets with an event_id using the
+    strict pre-kickoff logic — repairs closes captured by the old string-comparison
+    bug (which could store a live in-play price as the "closing line"). Bets with
+    no genuine pre-kickoff snapshot get their close cleared back to pending."""
     try:
-        n = capture_pinnacle_close_for_started_events()
-        return JSONResponse({"ok": True, "captured": n})
+        n = capture_pinnacle_close_for_started_events(recapture=recapture)
+        return JSONResponse({"ok": True, "captured": n, "recapture": recapture})
     except Exception as e:
         return JSONResponse({"ok": False, "error": repr(e)}, status_code=500)
+
+
+@app.get("/api/bets/{bet_id}/clv-audit")
+async def api_bet_clv_audit(bet_id: int):
+    """Step-by-step CLV audit for one bet: entry odd vs the captured Pinnacle close,
+    when the close was captured relative to kickoff, the CLV math, and the full
+    Pinnacle snapshot timeline for the event (pre/post-kickoff flagged)."""
+    data = clv_audit(bet_id)
+    if not data:
+        return JSONResponse({"ok": False, "error": "bet not found"}, status_code=404)
+    return JSONResponse(data)
 
 @app.post("/api/bets/auto-grade")
 async def api_auto_grade():

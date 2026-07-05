@@ -681,6 +681,12 @@ def init_db():
     except Exception:
         pass  # already exists
 
+    # Migrate: when the Pinnacle close was captured (audit trail for CLV)
+    try:
+        c.execute("ALTER TABLE bets ADD COLUMN pin_close_captured_at TEXT")
+    except Exception:
+        pass  # already exists
+
     if USE_POSTGRES:
         conn._conn.autocommit = False
     else:
@@ -2015,81 +2021,215 @@ def get_bankroll_evolution():
     return series
 
 
-def capture_pinnacle_close_for_started_events():
+def _parse_ts(value):
+    """Tolerant timestamp parser for the mixed formats stored in the DB:
+    'YYYY-MM-DD HH:MM[:SS]', 'YYYY-MM-DDTHH:MM[:SS][Z]', with optional
+    fractional seconds / '+00:00' offset, or a datetime object.
+    Returns a naive UTC datetime, or None."""
+    from datetime import datetime as _dt
+    if value is None:
+        return None
+    if isinstance(value, _dt):
+        return value.replace(tzinfo=None)
+    s = str(value).strip().replace("T", " ")
+    if s.endswith("Z"):
+        s = s[:-1]
+    plus = s.find("+", 10)
+    if plus != -1:
+        s = s[:plus]
+    for length, fmt in ((19, "%Y-%m-%d %H:%M:%S"), (16, "%Y-%m-%d %H:%M")):
+        try:
+            return _dt.strptime(s[:length], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _pin_price_for_bet(snapshot, market, sel, home_lower, away_lower):
+    """Pinnacle price in an odds_history snapshot for this bet's market/selection."""
+    # Match Result / 1X2
+    if market in ("h2h", "match result", "1x2"):
+        if sel == home_lower or sel in ("home", "1"):
+            return snapshot["pin_home"]
+        if sel == away_lower or sel in ("away", "2"):
+            return snapshot["pin_away"]
+        if sel in ("draw", "empate", "x"):
+            return snapshot["pin_draw"]
+    # Over/Under 2.5
+    elif market in ("over_under", "over/under 2.5", "totals"):
+        if "over" in sel:
+            return snapshot["pin_over25"]
+        if "under" in sel:
+            return snapshot["pin_under25"]
+    # BTTS
+    elif market in ("btts", "both teams to score"):
+        if "yes" in sel or "sim" in sel:
+            return snapshot["pin_btts_yes"]
+        if "no" in sel or "não" in sel or "nao" in sel:
+            return snapshot["pin_btts_no"]
+    return None
+
+
+def capture_pinnacle_close_for_started_events(recapture=False):
     """
-    Capture the TRUE closing Pinnacle odds (last snapshot before kickoff)
+    Capture the TRUE closing Pinnacle odds (last snapshot at/before kickoff)
     from odds_history. Supports 1X2, Over/Under 2.5, and BTTS markets.
     Run automatically after odds refresh.
+
+    Timestamps are compared in Python (_parse_ts), NOT in SQL: bets.commence_time
+    is stored as 'YYYY-MM-DDTHH:MM' while odds_history.captured_at is
+    'YYYY-MM-DD HH:MM:SS', and a raw string comparison between the two formats
+    (' ' sorts before 'T') made EVERY same-day snapshot — including in-play
+    prices written after kickoff — pass the "before kickoff" filter, so the
+    stored "close" could be a live price instead of the real closing line.
+
+    recapture=True re-derives the close for ALL bets with an event_id (repairs
+    values captured by the old comparison). Bets whose history has no genuine
+    pre-kickoff snapshot get their close cleared back to NULL (CLV pending) —
+    an honest blank instead of a fabricated number.
     """
+    from datetime import datetime as _dt
     conn = get_connection()
-    rows = conn.execute("""
+    where_close = "" if recapture else "AND b.pin_close_odds IS NULL"
+    rows = conn.execute(f"""
         SELECT b.id, b.selection, b.market, b.home_team, b.away_team,
-               b.event_id, b.commence_time
+               b.event_id, b.commence_time, b.pin_close_odds
         FROM bets b
-        WHERE b.pin_close_odds IS NULL
-          AND b.event_id IS NOT NULL
+        WHERE b.event_id IS NOT NULL
           AND b.commence_time IS NOT NULL
-          AND b.commence_time < datetime('now')
+          {where_close}
     """).fetchall()
 
+    now = _dt.utcnow()
     updated = 0
     for r in rows:
-        event_id = r["event_id"]
-        # Find the closest Pinnacle snapshot BEFORE kickoff (true closing line)
-        snapshot = conn.execute("""
+        kickoff = _parse_ts(r["commence_time"])
+        if not kickoff or kickoff > now:
+            continue  # not kicked off yet (or unparseable) — nothing to capture
+
+        snapshots = conn.execute("""
             SELECT pin_home, pin_draw, pin_away,
                    pin_over25, pin_under25,
                    pin_btts_yes, pin_btts_no,
                    captured_at
             FROM odds_history
-            WHERE event_id = ? AND captured_at <= ?
-            ORDER BY captured_at DESC LIMIT 1
-        """, (event_id, r["commence_time"])).fetchone()
-
-        # NO fallback to "latest snapshot" or current odds_events: those are the
-        # live/near-now price, which would fabricate a closing line (= CLV vs now,
-        # not a real close). If there is no genuine PRE-kickoff snapshot, leave
-        # pin_close NULL so the CLV stays pending — never a faked number.
-        if not snapshot:
-            continue
+            WHERE event_id = ?
+        """, (r["event_id"],)).fetchall()
 
         sel = (r["selection"] or "").strip().lower()
         market = (r["market"] or "h2h").lower()
         home_lower = (r["home_team"] or "").lower()
         away_lower = (r["away_team"] or "").lower()
 
-        pin_close = None
-        # Match Result / 1X2
-        if market in ("h2h", "match result", "1x2"):
-            if sel == home_lower or sel in ("home", "1"):
-                pin_close = snapshot["pin_home"]
-            elif sel == away_lower or sel in ("away", "2"):
-                pin_close = snapshot["pin_away"]
-            elif sel in ("draw", "empate", "x"):
-                pin_close = snapshot["pin_draw"]
-        # Over/Under 2.5
-        elif market in ("over_under", "over/under 2.5", "totals"):
-            if "over" in sel:
-                pin_close = snapshot["pin_over25"]
-            elif "under" in sel:
-                pin_close = snapshot["pin_under25"]
-        # BTTS
-        elif market in ("btts", "both teams to score"):
-            if "yes" in sel or "sim" in sel:
-                pin_close = snapshot["pin_btts_yes"]
-            elif "no" in sel or "não" in sel or "nao" in sel:
-                pin_close = snapshot["pin_btts_no"]
+        # Latest snapshot at/before kickoff that actually quotes our selection.
+        # NO fallback to post-kickoff snapshots or current odds_events: those are
+        # live/near-now prices, which would fabricate a closing line (= CLV vs now,
+        # not a real close). If there is no genuine PRE-kickoff snapshot, leave
+        # pin_close NULL so the CLV stays pending — never a faked number.
+        best_ts, pin_close, close_at = None, None, None
+        for s in snapshots:
+            ts = _parse_ts(s["captured_at"])
+            if ts is None or ts > kickoff:
+                continue
+            price = _pin_price_for_bet(s, market, sel, home_lower, away_lower)
+            if price and (best_ts is None or ts > best_ts):
+                best_ts, pin_close, close_at = ts, price, s["captured_at"]
 
         if pin_close:
-            pin_close_implied = round(1.0 / pin_close * 100, 2)
             conn.execute("""
-                UPDATE bets SET pin_close_odds=?, pin_close_implied=? WHERE id=?
-            """, (pin_close, pin_close_implied, r["id"]))
+                UPDATE bets SET pin_close_odds=?, pin_close_implied=?, pin_close_captured_at=?
+                WHERE id=?
+            """, (pin_close, round(1.0 / pin_close * 100, 2), close_at, r["id"]))
+            if r["pin_close_odds"] != pin_close:
+                updated += 1
+        elif recapture and r["pin_close_odds"] is not None:
+            conn.execute("""
+                UPDATE bets SET pin_close_odds=NULL, pin_close_implied=NULL, pin_close_captured_at=NULL
+                WHERE id=?
+            """, (r["id"],))
             updated += 1
 
     conn.commit()
     conn.close()
     return updated
+
+
+def clv_audit(bet_id):
+    """Full audit trail for one bet's CLV: entry odd, the captured Pinnacle close
+    (value + when it was captured relative to kickoff), the step-by-step math,
+    and the event's entire snapshot timeline so a wrong close is visible at a glance."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM bets WHERE id = ?", (bet_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    b = dict(row)
+    kickoff = _parse_ts(b.get("commence_time"))
+    sel = (b.get("selection") or "").strip().lower()
+    market = (b.get("market") or "h2h").lower()
+    home_lower = (b.get("home_team") or "").lower()
+    away_lower = (b.get("away_team") or "").lower()
+
+    timeline = []
+    if b.get("event_id"):
+        snaps = conn.execute("""
+            SELECT pin_home, pin_draw, pin_away, pin_over25, pin_under25,
+                   pin_btts_yes, pin_btts_no, captured_at
+            FROM odds_history WHERE event_id = ? ORDER BY captured_at ASC
+        """, (b["event_id"],)).fetchall()
+        for s in snaps:
+            ts = _parse_ts(s["captured_at"])
+            price = _pin_price_for_bet(s, market, sel, home_lower, away_lower)
+            mins_before = (round((kickoff - ts).total_seconds() / 60.0, 1)
+                           if (kickoff and ts) else None)
+            timeline.append({
+                "captured_at": s["captured_at"],
+                "pin_price_for_selection": price,
+                "minutes_before_kickoff": mins_before,
+                "pre_kickoff": (mins_before is not None and mins_before >= 0),
+                "is_stored_close": (price is not None and price == b.get("pin_close_odds")
+                                    and s["captured_at"] == b.get("pin_close_captured_at")),
+            })
+    conn.close()
+
+    clv_steps = None
+    if b.get("odds") and b.get("pin_close_odds"):
+        clv_steps = {
+            "your_odds": b["odds"],
+            "your_implied_pct": round(100.0 / b["odds"], 2),
+            "pin_close_odds": b["pin_close_odds"],
+            "close_implied_pct": round(100.0 / b["pin_close_odds"], 2),
+            "formula": "CLV% = (your_odds / pin_close_odds - 1) × 100",
+            "clv_pct": round((b["odds"] / b["pin_close_odds"] - 1) * 100, 2),
+            "note": ("Comparação com a odd de fecho CRUA da Pinnacle (com vig), o padrão "
+                     "da indústria — não é devigged. CLV>0 = bateste o fecho; independente do resultado."),
+        }
+
+    warnings = []
+    close_ts = _parse_ts(b.get("pin_close_captured_at"))
+    if b.get("pin_close_odds") is not None and b.get("pin_close_captured_at") is None:
+        warnings.append("Fecho capturado pela versão antiga do código (sem timestamp) — "
+                        "pode ser um preço live/pós-kickoff. Corre POST /api/clv/capture?recapture=true.")
+    if close_ts and kickoff:
+        mins = (kickoff - close_ts).total_seconds() / 60.0
+        if mins < 0:
+            warnings.append(f"Fecho capturado {abs(mins):.0f} min DEPOIS do kickoff (preço live) — inválido; recaptura necessária.")
+        elif mins > 120:
+            warnings.append(f"Fecho capturado {mins:.0f} min antes do kickoff — linha antiga, não um verdadeiro fecho (~15 min).")
+    if b.get("pin_close_odds") is None:
+        warnings.append("Sem linha de fecho capturada — CLV pendente (não há snapshot Pinnacle pré-kickoff para este evento/mercado).")
+
+    return {
+        "bet": {k: b.get(k) for k in (
+            "id", "placed_at", "sport_name", "home_team", "away_team", "selection",
+            "market", "bookmaker", "odds", "stake", "status", "result", "profit",
+            "commence_time", "event_id",
+            "pin_close_odds", "pin_close_implied", "pin_close_captured_at")},
+        "kickoff_utc": b.get("commence_time"),
+        "clv": clv_steps,
+        "snapshots": timeline,
+        "warnings": warnings,
+    }
 
 
 def auto_grade_pending_bets():

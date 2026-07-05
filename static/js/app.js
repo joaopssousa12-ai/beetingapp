@@ -2153,6 +2153,13 @@ async function loadBetsTable() {
       const profitCol = b.profit > 0 ? 'var(--green)' : b.profit < 0 ? 'var(--red)' : 'var(--text3)';
       const clv = b.clv_pct != null ? (b.clv_pct >= 0 ? '+' : '') + b.clv_pct + '%' : '—';
       const clvCol = b.clv_pct > 0 ? 'var(--green)' : b.clv_pct < 0 ? 'var(--red)' : 'var(--text3)';
+      // Audit trail on hover: which Pinnacle close this CLV is measured against
+      // and WHEN it was captured (a close taken long before — or after — kickoff
+      // is suspect; /api/bets/{id}/clv-audit has the full snapshot timeline).
+      const clvTitle = b.pin_close_odds != null
+        ? `Pinnacle close ${b.pin_close_odds.toFixed(2)}`
+          + (b.pin_close_captured_at ? ` · capturado ${b.pin_close_captured_at} UTC (KO ${b.commence_time || '?'})` : ' · sem timestamp (captura antiga)')
+        : 'CLV pendente — sem fecho Pinnacle pré-jogo capturado';
       const edgeStr = b.edge_pct != null ? (b.edge_pct >= 0 ? '+' : '') + b.edge_pct.toFixed(1) + '%' : '—';
       const edgeCol = b.edge_pct > 0 ? 'var(--green)' : 'var(--text3)';
       const actions = b.status === 'pending'
@@ -2173,7 +2180,7 @@ async function loadBetsTable() {
         <td class="mono">€${(b.stake||0).toFixed(2)}</td>
         <td><span class="${statusCls}">${statusTxt}</span></td>
         <td class="mono" style="color:${profitCol}">${profit}</td>
-        <td class="mono" style="color:${clvCol}">${clv}</td>
+        <td class="mono" style="color:${clvCol}" title="${clvTitle}">${clv}</td>
         <td>${actions}</td>
       </tr>`;
     }).join('') + '</tbody></table>';
