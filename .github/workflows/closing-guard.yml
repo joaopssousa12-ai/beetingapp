@@ -1,0 +1,105 @@
+name: closing-line-guard
+
+# The Pinnacle closing line only gets captured if the app is AWAKE ~15 min before
+# each tracked bet's kickoff: free-tier Render spins down after 15 min idle, and
+# GitHub throttles the */10 keep-alive cron badly (observed gaps of 60-90 min,
+# plus a 10h overnight gap) — so the in-app 15-min closing job misses most games.
+#
+# This job wakes the app, and when a tracked PENDING bet kicks off within the
+# next 90 min it keeps pinging /healthz every 4 min through kickoff, so the
+# in-app closing job runs inside its 20-min window and snapshots the true close.
+# After kickoff it triggers the close capture directly as belt-and-braces.
+# It also prints quota + collection diagnostics on every run (readable in the
+# Actions logs — useful for remote debugging without touching the Render UI).
+#
+# Cost control: runs with no imminent bet exit in seconds; the ping loop is
+# capped at 90 minutes and only happens when a tracked bet is about to start.
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: closing-line-guard
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Wake app + print diagnostics
+        run: |
+          BASE=https://beetingapp-1.onrender.com
+          echo "--- /healthz (wakes the app; cold start can take ~1 min) ---"
+          curl -fsS -m 120 "$BASE/healthz" || true
+          echo ""
+          echo "--- /api/diag/quota ---"
+          curl -fsS -m 60 "$BASE/api/diag/quota" || true
+          echo ""
+          echo "--- /api/collection/status ---"
+          curl -fsS -m 60 "$BASE/api/collection/status" || true
+          echo ""
+
+      - name: Guard imminent kickoffs (ping through KO, then capture close)
+        run: |
+          python3 - <<'EOF'
+          import json, time, urllib.request
+          from datetime import datetime, timedelta
+
+          BASE = "https://beetingapp-1.onrender.com"
+
+          def get(path, timeout=90):
+              with urllib.request.urlopen(BASE + path, timeout=timeout) as r:
+                  return r.read().decode()
+
+          def post(path, timeout=90):
+              req = urllib.request.Request(BASE + path, method="POST", data=b"")
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return r.read().decode()
+
+          def parse_ts(s):
+              return datetime.strptime(str(s).strip().replace("T", " ").rstrip("Z")[:16],
+                                       "%Y-%m-%d %H:%M")
+
+          bets = json.loads(get("/api/bets"))
+          now = datetime.utcnow()
+          imminent = []
+          for b in bets:
+              if b.get("status") != "pending" or not b.get("commence_time"):
+                  continue
+              try:
+                  ko = parse_ts(b["commence_time"])
+              except ValueError:
+                  continue
+              # KO in the next 90 min (or started <5 min ago — still worth capturing)
+              if now - timedelta(minutes=5) <= ko <= now + timedelta(minutes=90):
+                  imminent.append((ko, f"{b.get('home_team')} v {b.get('away_team')}"))
+
+          if not imminent:
+              print("No tracked pending bet kicking off in the next 90 min — nothing to guard.")
+              raise SystemExit(0)
+
+          for ko, name in sorted(imminent):
+              print(f"Guarding: {name} — kickoff {ko} UTC")
+
+          # Ping every 4 min (Render spin-down threshold is 15 min idle) until 5 min
+          # past the last kickoff, so the in-app */15 closing job fires inside its
+          # 20-min pre-KO window and writes the true closing snapshot.
+          last_ko = max(ko for ko, _ in imminent)
+          deadline = min(last_ko + timedelta(minutes=5), now + timedelta(minutes=90))
+          while datetime.utcnow() < deadline:
+              try:
+                  get("/healthz")
+                  print(f"{datetime.utcnow():%H:%M:%S} ping ok", flush=True)
+              except Exception as e:
+                  print(f"{datetime.utcnow():%H:%M:%S} ping failed: {e}", flush=True)
+              time.sleep(240)
+
+          # Kickoff passed — capture the close from the snapshots just written.
+          try:
+              print("capture:", post("/api/clv/capture"))
+          except Exception as e:
+              print("capture failed:", e)
+          EOF
