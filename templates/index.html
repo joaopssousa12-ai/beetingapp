@@ -220,7 +220,8 @@
               <option value="3">3+ ★</option>
               <option value="4">4+ ★</option>
             </select>
-            <input id="vb-bankroll" type="number" placeholder="Bankroll €" value="1000" class="vb-input" style="width:120px" title="Set bankroll to see Kelly stake suggestions">
+            <label class="vb-filter-label" for="vb-bankroll">Bankroll €</label>
+            <input id="vb-bankroll" type="number" placeholder="Bankroll €" value="1000" class="vb-input" style="width:120px" title="O teu bankroll em € — os cards mostram o valor concreto a apostar (¼-Kelly)">
           </div>
           <div class="vb-toolbar-group vb-presets-group">
             <label class="vb-filter-label">Presets</label>
@@ -301,7 +302,7 @@
               </div>
               <div class="form-field">
                 <label>Market</label>
-                <select id="bet-market"><option value="h2h">Match Winner (1X2)</option><option value="over_under">Over/Under</option><option value="other">Other</option></select>
+                <select id="bet-market"><option value="h2h">Match Winner (1X2)</option><option value="over_under">Over/Under</option><option value="btts">Both Teams to Score</option><option value="other">Other</option></select>
               </div>
               <div class="form-field">
                 <label>Selection (what you bet on)</label>

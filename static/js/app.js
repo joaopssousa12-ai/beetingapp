@@ -58,6 +58,8 @@ document.querySelectorAll('.nav-link').forEach(link => {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
     link.classList.add('active');
+    // Mobile: the nav is a horizontally-scrollable row — keep the active tab visible.
+    link.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
     document.getElementById('section-' + sec).classList.add('active');
     if (sec === 'overview') loadOverviewSummaries();
     if (sec === 'football' && footballData.length === 0) loadFootball();
@@ -69,6 +71,12 @@ document.querySelectorAll('.nav-link').forEach(link => {
     if (sec === 'collector') checkCollectionRunning();
   });
 });
+
+// Mobile: on load, bring the active tab into view in the horizontal nav row.
+(function () {
+  const active = document.querySelector('.nav-link.active');
+  if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
+})();
 
 // Overview summaries are secondary (data-collection stats) — load them lazily the
 // first time the user opens Overview, so the landing (Value Bets) stays fast.
@@ -381,8 +389,12 @@ function wireFilters() {
   if (bankrollEl) {
     try {
       const saved = localStorage.getItem('bankroll');
-      if (saved) { bankrollEl.value = saved; vbState.bankroll = parseFloat(saved); }
+      if (saved) bankrollEl.value = saved;
     } catch(e) {}
+    // State must match what the field SHOWS: the input ships with a default value
+    // (1000), but the state used to stay 0 until the user typed — so Kelly showed
+    // % instead of € and Track Bet never auto-filled the stake.
+    vbState.bankroll = parseFloat(bankrollEl.value) || 0;
     bankrollEl.addEventListener('input', e => {
       vbState.bankroll = parseFloat(e.target.value) || 0;
       try { localStorage.setItem('bankroll', e.target.value); } catch(e) {}
@@ -1168,7 +1180,11 @@ function renderCard(b) {
   function _calcKelly(edge, odd) {
     const kQ = vbKellyFraction(edge, odd);   // ¼-Kelly + short-odd softening (see vbKellyFraction)
     if (kQ <= 0) return null;
-    return _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
+    const pct = (kQ * 100).toFixed(1);
+    // With a bankroll set, the headline is the CONCRETE euro amount to bet;
+    // the % of bankroll stays visible in small next to the label + tooltip.
+    if (_br > 0) return { text: `€${Math.round(_br * kQ)}`, pct };
+    return { text: `${pct}%`, pct: null };
   }
 
   // ── Compact probability line (replaces BetIQ big bar chart) ────
@@ -1282,9 +1298,9 @@ function renderCard(b) {
           <span class="vb-hero-big edge-${eCls}">${edge >= 0 ? '+' : ''}${edge.toFixed(1)}%</span>
           <span class="vb-hero-lbl">Edge</span>
         </div>
-        ${kelly ? `<div class="vb-hero-num-block">
-          <span class="vb-hero-big kelly-val">${kelly}</span>
-          <span class="vb-hero-lbl">¼ Kelly</span>
+        ${kelly ? `<div class="vb-hero-num-block"${kelly.pct ? ` title="¼-Kelly = ${kelly.pct}% do bankroll"` : ''}>
+          <span class="vb-hero-big kelly-val">${kelly.text}</span>
+          <span class="vb-hero-lbl">${kelly.pct ? `Apostar · ${kelly.pct}%` : '¼ Kelly'}</span>
         </div>` : (stakeState === 'na' ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big" style="color:#dc2626">€0</span>
           <span class="vb-hero-lbl">n/d na 1xBet</span>
@@ -1900,7 +1916,8 @@ function quickAddBet(b) {
       f.dataset.pinImplied = (pinImp != null ? String(pinImp) : '');
     }
     const mkSel = document.getElementById('bet-market');
-    if (mkSel) mkSel.value = /over|under/i.test(pick.market || '') ? 'over_under' : 'h2h';
+    if (mkSel) mkSel.value = /over|under/i.test(pick.market || '') ? 'over_under'
+      : /btts|both teams/i.test(pick.market || '') ? 'btts' : 'h2h';
   }, 100);
 }
 

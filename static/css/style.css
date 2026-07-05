@@ -1659,10 +1659,30 @@ tbody tr.value-row td.strong { color: var(--text); }
     top: 0;
     z-index: 100;
   }
-  .sidebar-brand { padding: 0; margin-right: auto; }
+  /* Top bar row 1: brand (left) + compact theme toggle (right).
+     NOTE: the HTML class is .brand — the old .sidebar-brand selector matched
+     nothing, leaving desktop padding + divider inside the top bar. */
+  .brand { padding: 0; margin: 0; border-bottom: none; order: 0; flex: 0 0 auto; }
   .brand-name { font-size: 15px; }
-  .sidebar-footer { display: none; }
+  .sidebar-footer {
+    display: flex; align-items: center;
+    padding: 0; border-top: none;
+    order: 1;                      /* same row as the brand, right side */
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+  .last-update { display: none; }
+  .theme-toggle {                  /* icon-only toggle (was display:none — light
+                                      mode was simply unreachable on phones) */
+    width: auto; margin-bottom: 0; padding: 7px 9px; gap: 0;
+  }
+  .theme-toggle .theme-label { display: none; }
+  [data-theme="dark"] .theme-toggle .theme-label::after { content: none; }
   .nav-links {
+    order: 2;
+    flex: 0 0 100%;                /* full-width basis → always its OWN row
+                                      (desktop sets flex:1 basis 0, which let the
+                                      nav share the brand's row) */
     display: flex;
     flex-direction: row;
     flex-wrap: nowrap;             /* single row... */
@@ -1714,6 +1734,15 @@ tbody tr.value-row td.strong { color: var(--text); }
   .perf-grid { grid-template-columns: 1fr; }
   .page-header h1 { font-size: 18px; }
   .stat-value { font-size: 20px; }
+
+  /* Wide tables (league/odd-band breakdowns, bets list): scroll inside the card
+     instead of clipping the rightmost column (AVG CLV was getting cut off). */
+  .card, #bets-table-wrap { overflow-x: auto; }
+  .card table, #bets-table-wrap table { min-width: 480px; }
+
+  /* iOS Safari zooms the page when focusing inputs with font-size <16px —
+     that "jump" made the site feel broken on phones. */
+  input, select, textarea { font-size: 16px; }
 }
 
 /* ============================================================
