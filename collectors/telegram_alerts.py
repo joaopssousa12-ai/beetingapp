@@ -21,7 +21,32 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 MIN_EDGE = 2.0
-MAX_EDGE = 15.0
+MAX_EDGE = 15.0   # above this the "edge" is almost always model noise, not value
+
+# The user bets exclusively at 1xBet — alerting a price at another book is an
+# edge they cannot buy.
+USER_BOOK = "1xBet"
+
+
+def _is_green(edge, odd):
+    """Same traffic-light rule as the site's 🟢 APOSTAR tier (vbSignal in app.js),
+    judged on the 1xBet price: odd 1.8-4.0 needs edge ≥2%, odd 1.3-1.8 needs ≥3%.
+    Everything else (short odds <1.3, longshots >4.0, thin edges) is 🟡/🔴 — the
+    site says to skip those, so Telegram must not sell them as picks."""
+    if edge is None or odd is None or edge > MAX_EDGE:
+        return False
+    if 1.8 <= odd <= 4.0:
+        return edge >= 2.0
+    if 1.3 <= odd < 1.8:
+        return edge >= 3.0
+    return False
+
+
+def _green_1xbet_picks(event):
+    """The event's 1xBet-priced picks that clear the green gate."""
+    return [p for p in (event.get("all_picks") or [])
+            if p.get("book") == USER_BOOK and p.get("book_odd")
+            and _is_green(p.get("edge_pct"), p.get("book_odd"))]
 
 
 def _send(text: str) -> bool:
@@ -62,7 +87,7 @@ def _format_alert(pick, event):
     stars_str = _stars(pick.get("confidence", 0))
 
     return (
-        f"🎯 <b>VALUE BET — BetIQ</b>\n\n"
+        f"🟢 <b>APOSTAR — BetIQ</b>\n\n"
         f"⚽ <b>{home} vs {away}</b>\n"
         f"🏆 {sport} · {date_str}\n\n"
         f"▶ <b>{pick['selection']}</b> — {pick['market']}\n"
@@ -111,11 +136,13 @@ def send_alerts_for_value_bets(value_bets, status_callback=None):
 
     sent = 0
     for event in value_bets:
-        picks = event.get("all_picks") or []
-        for pick in picks:
+        # Only 🟢 green picks at the user's book — one alert per event (the best),
+        # mirroring the site's traffic light instead of spamming every 2% edge.
+        greens = _green_1xbet_picks(event)
+        if not greens:
+            continue
+        for pick in [max(greens, key=lambda p: ((p.get("confidence") or 0) * 100 + p["edge_pct"]))]:
             edge = pick.get("edge_pct")
-            if edge is None or not (MIN_EDGE <= edge <= MAX_EDGE):
-                continue
             eid = event.get("event_id", "")
             sel = pick.get("selection", "")
             book = pick.get("book", "")
@@ -162,9 +189,8 @@ def send_daily_digest(value_bets, status_callback=None):
             continue
         if not (now <= dt <= horizon):   # only upcoming, within 24h
             continue
-        cands = [p for p in (event.get("all_picks") or [])
-                 if p.get("edge_pct") is not None and 3 <= p["edge_pct"] <= 15
-                 and p.get("book_odd") and 1.5 <= p["book_odd"] <= 5.0]
+        # Same 🟢 gate as the instant alerts: 1xBet price, traffic-light bands.
+        cands = _green_1xbet_picks(event)
         if not cands:
             continue
         best = max(cands, key=lambda p: (p.get("confidence", 0), p["edge_pct"]))
@@ -175,7 +201,7 @@ def send_daily_digest(value_bets, status_callback=None):
         return 0
 
     picks.sort(key=lambda x: x[2]["edge_pct"], reverse=True)
-    lines = [f"📅 <b>BetIQ — value bets (próximas 24h): {len(picks)}</b>\n"]
+    lines = [f"📅 <b>BetIQ — apostas 🟢 na 1xBet (próximas 24h): {len(picks)}</b>\n"]
     for dt, event, p in picks[:15]:
         home, away = event.get("home_team", ""), event.get("away_team", "")
         t = dt.strftime("%d %b %H:%M")

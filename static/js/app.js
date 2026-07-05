@@ -1876,6 +1876,18 @@ function quickAddBet(b) {
     alert('A 1xBet não cota esta seleção — não dá para registar (só registamos o teu preço/edge da 1xBet).');
     return;
   }
+  // Realized CLV needs a Pinnacle line for the pick's market (the close is
+  // captured from Pinnacle snapshots). Warn NOW, not after the game, when this
+  // event has none — e.g. openfootball fixtures or Betfair-only markets.
+  const _mkt = (pick.market || '').toLowerCase();
+  const _hasPin = /over|under/.test(_mkt) ? !!(b.pin_over25 && b.pin_under25)
+    : /btts|both teams/.test(_mkt) ? !!(b.pin_btts_yes && b.pin_btts_no)
+    : !!(b.pin_home && b.pin_away);
+  if (!_hasPin && !confirm('⚠️ Este jogo não tem linha da Pinnacle neste mercado.\n\n' +
+      'A aposta NUNCA terá CLV realizado (fica "—" para sempre) — só o edge estimado do modelo.\n\n' +
+      'Queres registar na mesma?')) {
+    return;
+  }
   const useOdd  = mine.book_odd;
   const useBook = '1xBet';
   const useEdge = mine.edge_pct;
@@ -2175,6 +2187,7 @@ async function loadBetsTable() {
       // is suspect; /api/bets/{id}/clv-audit has the full snapshot timeline).
       const clvTitle = b.pin_close_odds != null
         ? `Pinnacle close ${b.pin_close_odds.toFixed(2)}`
+          + (b.pin_close_fair_odds ? ` → fair ${b.pin_close_fair_odds.toFixed(2)} sem vig (CLV mede contra o fair)` : ' · sem devig possível — CLV pendente')
           + (b.pin_close_captured_at ? ` · capturado ${b.pin_close_captured_at} UTC (KO ${b.commence_time || '?'})` : ' · sem timestamp (captura antiga)')
         : 'CLV pendente — sem fecho Pinnacle pré-jogo capturado';
       const edgeStr = b.edge_pct != null ? (b.edge_pct >= 0 ? '+' : '') + b.edge_pct.toFixed(1) + '%' : '—';

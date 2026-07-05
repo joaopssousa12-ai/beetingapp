@@ -687,6 +687,13 @@ def init_db():
     except Exception:
         pass  # already exists
 
+    # Migrate: DEVIGGED (no-vig) closing odd — realized CLV is measured against
+    # this fair close, not the raw price, so beating the vig doesn't count as value
+    try:
+        c.execute("ALTER TABLE bets ADD COLUMN pin_close_fair_odds REAL")
+    except Exception:
+        pass  # already exists
+
     if USE_POSTGRES:
         conn._conn.autocommit = False
     else:
@@ -1914,17 +1921,17 @@ def get_bets(limit=200):
     bets = []
     for r in rows:
         d = dict(r)
-        # CLV: if we have pinnacle close odds, compute closing line value
-        # CLV % = (your_odds / pin_close_odds - 1) * 100 inverse, or use implied probs:
-        # Better: CLV = (implied_prob_close - implied_prob_yours) where positive means you beat the close
+        # Realized CLV = your odds vs the DEVIGGED Pinnacle close (no-vig CLV):
+        # CLV % = (your_odds / pin_close_fair_odds - 1) × 100. Measured against the
+        # raw close a bet could look +CLV while sitting inside the bookmaker's
+        # margin (~2-4pp inflation) — no-vig is the honest ruler: >0 means real
+        # value at the close.
         # Realized CLV only once the bet is SETTLED — i.e. the match has actually
         # happened. Before that, a captured "close" can be premature (esp. tennis,
         # whose scheduled time != actual start), so we report it as pending (None)
         # rather than a definitive-looking number.
-        if d.get("status") == "settled" and d.get("odds") and d.get("pin_close_odds"):
-            your_implied = 1.0 / d["odds"]
-            close_implied = 1.0 / d["pin_close_odds"]
-            d["clv_pct"] = round((close_implied - your_implied) / your_implied * 100, 2)
+        if d.get("status") == "settled" and d.get("odds") and d.get("pin_close_fair_odds"):
+            d["clv_pct"] = round((d["odds"] / d["pin_close_fair_odds"] - 1) * 100, 2)
         else:
             d["clv_pct"] = None
         bets.append(d)
@@ -1950,20 +1957,18 @@ def get_bet_stats():
         FROM bets WHERE status='pending'
     """).fetchone()
 
-    # CLV stats - only SETTLED bets with a real captured close (consistent with the
-    # per-bet rule: no premature/pending closes in the aggregate CLV).
+    # CLV stats — only SETTLED bets with a real captured close (consistent with the
+    # per-bet rule: no premature/pending closes in the aggregate CLV). No-vig:
+    # measured against the DEVIGGED close, same ruler as the per-bet clv_pct.
     clv = conn.execute("""
-        SELECT odds, pin_close_odds FROM bets
-        WHERE status='settled' AND pin_close_odds IS NOT NULL AND odds IS NOT NULL
+        SELECT odds, pin_close_fair_odds FROM bets
+        WHERE status='settled' AND pin_close_fair_odds IS NOT NULL AND odds IS NOT NULL
     """).fetchall()
 
     clv_values = []
     for row in clv:
         try:
-            your_implied = 1.0 / row["odds"]
-            close_implied = 1.0 / row["pin_close_odds"]
-            clv_pct = (close_implied - your_implied) / your_implied * 100
-            clv_values.append(clv_pct)
+            clv_values.append((row["odds"] / row["pin_close_fair_odds"] - 1) * 100)
         except Exception:
             pass
 
@@ -2070,6 +2075,51 @@ def _pin_price_for_bet(snapshot, market, sel, home_lower, away_lower):
     return None
 
 
+def _fair_close_prob(snapshot, market, sel, home_lower, away_lower):
+    """Devigged (no-vig, power method) close probability for the bet's selection,
+    from a full odds_history snapshot. Requires the counter-price(s) so the vig
+    can actually be stripped — returns None when they're missing rather than
+    normalizing a one-sided market to 100%."""
+    if market in ("h2h", "match result", "1x2"):
+        if not (snapshot["pin_home"] and snapshot["pin_away"]):
+            return None
+        if sel in ("draw", "empate", "x") and not snapshot["pin_draw"]:
+            return None
+        fair = remove_vig_power(snapshot["pin_home"], snapshot["pin_draw"], snapshot["pin_away"])
+        if not fair:
+            return None
+        if sel == home_lower or sel in ("home", "1"):
+            p = fair["home"]
+        elif sel == away_lower or sel in ("away", "2"):
+            p = fair["away"]
+        elif sel in ("draw", "empate", "x"):
+            p = fair["draw"]
+        else:
+            p = None
+    elif market in ("over_under", "over/under 2.5", "totals"):
+        if not (snapshot["pin_over25"] and snapshot["pin_under25"]):
+            return None
+        fair = remove_vig_power(snapshot["pin_over25"], None, snapshot["pin_under25"])
+        if not fair:
+            return None
+        p = fair["home"] if "over" in sel else fair["away"] if "under" in sel else None
+    elif market in ("btts", "both teams to score"):
+        if not (snapshot["pin_btts_yes"] and snapshot["pin_btts_no"]):
+            return None
+        fair = remove_vig_power(snapshot["pin_btts_yes"], None, snapshot["pin_btts_no"])
+        if not fair:
+            return None
+        if "yes" in sel or "sim" in sel:
+            p = fair["home"]
+        elif "no" in sel or "não" in sel or "nao" in sel:
+            p = fair["away"]
+        else:
+            p = None
+    else:
+        return None
+    return (p / 100.0) if p else None
+
+
 def capture_pinnacle_close_for_started_events(recapture=False):
     """
     Capture the TRUE closing Pinnacle odds (last snapshot at/before kickoff)
@@ -2087,10 +2137,18 @@ def capture_pinnacle_close_for_started_events(recapture=False):
     values captured by the old comparison). Bets whose history has no genuine
     pre-kickoff snapshot get their close cleared back to NULL (CLV pending) —
     an honest blank instead of a fabricated number.
+
+    Alongside the raw close we store pin_close_fair_odds — the DEVIGGED (no-vig,
+    power method) close for the bet's selection. Realized CLV is measured against
+    THIS fair close: vs the raw price a bet can "beat the close" by merely sitting
+    inside Pinnacle's margin, which inflates CLV by ~2-4pp and is not real value.
+    Normal mode also backfills fair odds for bets captured before this column
+    existed (runs automatically after odds refresh / on My Bets load).
     """
     from datetime import datetime as _dt
     conn = get_connection()
-    where_close = "" if recapture else "AND b.pin_close_odds IS NULL"
+    where_close = "" if recapture else \
+        "AND (b.pin_close_odds IS NULL OR b.pin_close_fair_odds IS NULL)"
     rows = conn.execute(f"""
         SELECT b.id, b.selection, b.market, b.home_team, b.away_team,
                b.event_id, b.commence_time, b.pin_close_odds
@@ -2126,25 +2184,29 @@ def capture_pinnacle_close_for_started_events(recapture=False):
         # live/near-now prices, which would fabricate a closing line (= CLV vs now,
         # not a real close). If there is no genuine PRE-kickoff snapshot, leave
         # pin_close NULL so the CLV stays pending — never a faked number.
-        best_ts, pin_close, close_at = None, None, None
+        best_ts, pin_close, close_at, close_snap = None, None, None, None
         for s in snapshots:
             ts = _parse_ts(s["captured_at"])
             if ts is None or ts > kickoff:
                 continue
             price = _pin_price_for_bet(s, market, sel, home_lower, away_lower)
             if price and (best_ts is None or ts > best_ts):
-                best_ts, pin_close, close_at = ts, price, s["captured_at"]
+                best_ts, pin_close, close_at, close_snap = ts, price, s["captured_at"], s
 
         if pin_close:
+            fair_prob = _fair_close_prob(close_snap, market, sel, home_lower, away_lower)
+            fair_odds = round(1.0 / fair_prob, 3) if fair_prob else None
             conn.execute("""
-                UPDATE bets SET pin_close_odds=?, pin_close_implied=?, pin_close_captured_at=?
+                UPDATE bets SET pin_close_odds=?, pin_close_implied=?,
+                                pin_close_fair_odds=?, pin_close_captured_at=?
                 WHERE id=?
-            """, (pin_close, round(1.0 / pin_close * 100, 2), close_at, r["id"]))
-            if r["pin_close_odds"] != pin_close:
+            """, (pin_close, round(1.0 / pin_close * 100, 2), fair_odds, close_at, r["id"]))
+            if r["pin_close_odds"] != pin_close or recapture:
                 updated += 1
         elif recapture and r["pin_close_odds"] is not None:
             conn.execute("""
-                UPDATE bets SET pin_close_odds=NULL, pin_close_implied=NULL, pin_close_captured_at=NULL
+                UPDATE bets SET pin_close_odds=NULL, pin_close_implied=NULL,
+                                pin_close_fair_odds=NULL, pin_close_captured_at=NULL
                 WHERE id=?
             """, (r["id"],))
             updated += 1
@@ -2194,19 +2256,28 @@ def clv_audit(bet_id):
 
     clv_steps = None
     if b.get("odds") and b.get("pin_close_odds"):
+        fair = b.get("pin_close_fair_odds")
         clv_steps = {
             "your_odds": b["odds"],
             "your_implied_pct": round(100.0 / b["odds"], 2),
-            "pin_close_odds": b["pin_close_odds"],
-            "close_implied_pct": round(100.0 / b["pin_close_odds"], 2),
-            "formula": "CLV% = (your_odds / pin_close_odds - 1) × 100",
-            "clv_pct": round((b["odds"] / b["pin_close_odds"] - 1) * 100, 2),
-            "note": ("Comparação com a odd de fecho CRUA da Pinnacle (com vig), o padrão "
-                     "da indústria — não é devigged. CLV>0 = bateste o fecho; independente do resultado."),
+            "pin_close_odds_raw": b["pin_close_odds"],
+            "raw_close_implied_pct": round(100.0 / b["pin_close_odds"], 2),
+            "pin_close_fair_odds": fair,
+            "fair_close_prob_pct": round(100.0 / fair, 2) if fair else None,
+            "formula": "CLV% = (your_odds / pin_close_FAIR_odds - 1) × 100  [no-vig]",
+            "clv_pct": round((b["odds"] / fair - 1) * 100, 2) if fair else None,
+            "clv_vs_raw_close_pct": round((b["odds"] / b["pin_close_odds"] - 1) * 100, 2),
+            "note": ("CLV medido contra o fecho DEVIGGED (no-vig, método power) da Pinnacle — "
+                     ">0 significa valor real no fecho, não apenas ter batido a margem da casa. "
+                     "clv_vs_raw_close_pct é a régua antiga (fecho cru), só para referência. "
+                     "Independente do resultado da aposta."),
         }
 
     warnings = []
     close_ts = _parse_ts(b.get("pin_close_captured_at"))
+    if b.get("pin_close_odds") is not None and b.get("pin_close_fair_odds") is None:
+        warnings.append("Fecho cru capturado mas sem devig possível (falta o preço do outro lado "
+                        "no snapshot) — CLV fica pendente em vez de usar a régua inflacionada.")
     if b.get("pin_close_odds") is not None and b.get("pin_close_captured_at") is None:
         warnings.append("Fecho capturado pela versão antiga do código (sem timestamp) — "
                         "pode ser um preço live/pós-kickoff. Corre POST /api/clv/capture?recapture=true.")
@@ -2224,7 +2295,8 @@ def clv_audit(bet_id):
             "id", "placed_at", "sport_name", "home_team", "away_team", "selection",
             "market", "bookmaker", "odds", "stake", "status", "result", "profit",
             "commence_time", "event_id",
-            "pin_close_odds", "pin_close_implied", "pin_close_captured_at")},
+            "pin_close_odds", "pin_close_implied", "pin_close_fair_odds",
+            "pin_close_captured_at")},
         "kickoff_utc": b.get("commence_time"),
         "clv": clv_steps,
         "snapshots": timeline,
