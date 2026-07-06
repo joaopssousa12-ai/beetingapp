@@ -179,16 +179,16 @@
               <option value="Clay">🎾 Clay</option>
               <option value="Grass">🎾 Grass</option>
             </select>
+            <!-- The engine only analyses the actionable window (next 48h) — season
+                 openers weeks out carry placeholder lines / phantom edges, so
+                 longer ranges were removed rather than shown empty. -->
             <select id="vb-when" class="vb-select">
-              <option value="all" selected>All upcoming</option>
+              <option value="all" selected>Todos (próx. 48h)</option>
               <option value="3h">⏰ Next 3h</option>
               <option value="6h">⏰ Next 6h (betting window)</option>
               <option value="12h">Next 12h</option>
               <option value="24h">Next 24h</option>
               <option value="48h">Next 48h</option>
-              <option value="7d">Next 7 days</option>
-              <option value="14d">Next 14 days</option>
-              <option value="30d">Next 30 days</option>
             </select>
             <select id="vb-mode" class="vb-select">
               <option value="value" selected>Value bets only (≥ min edge &amp; ≤ max odds)</option>

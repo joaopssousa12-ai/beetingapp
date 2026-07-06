@@ -920,6 +920,10 @@ def remove_vig_power(odds_home, odds_draw, odds_away):
     return {"home": true_probs[0], "draw": None, "away": true_probs[1], "vig_pct": vig_pct}
 
 
+# Actionable value-bets window: events further out than this are not analysed
+# (early season-opener lines are placeholders → phantom edges, no real close).
+VB_MAX_HOURS_AHEAD = 48
+
 # Pinnacle margin threshold above which market is considered illiquid.
 # Pinnacle's typical margins: 1.5-2.5% (major leagues), 3-4% (minor).
 # Above 4% = Pinnacle doesn't have strong info → trust less.
@@ -1050,8 +1054,15 @@ def get_value_bets():
         # Only analyse upcoming events (3h grace for in-play). Past games are dead
         # weight: they bloat the slow engine and, when a stale cache keeps them, the
         # page shows finished matches and hides the real upcoming ones.
+        # Upper bound: the ACTIONABLE betting window. Bookmakers price season
+        # openers weeks ahead with thin placeholder lines — a soft price vs an
+        # early Pinnacle line produces phantom "edges" (and there is no real
+        # closing line until near kickoff), so those games must not be analysed,
+        # shown, sorted or alerted as value. They enter the page naturally once
+        # they come inside the window.
         rows = conn.execute(
-            "SELECT * FROM odds_events WHERE commence_time > datetime('now', '-3 hours') "
+            f"SELECT * FROM odds_events WHERE commence_time > datetime('now', '-3 hours') "
+            f"AND commence_time < datetime('now', '+{int(VB_MAX_HOURS_AHEAD)} hours') "
             "ORDER BY commence_time ASC"
         ).fetchall()
     except Exception as e:

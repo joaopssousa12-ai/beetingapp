@@ -49,6 +49,27 @@ def _green_1xbet_picks(event):
             and _is_green(p.get("edge_pct"), p.get("book_odd"))]
 
 
+# Instant alerts only fire for games inside the REAL betting window — an alert is
+# an "act now" signal. Weeks-out season openers carry placeholder lines (phantom
+# edges, no true close to beat) and by kickoff the price is long gone anyway.
+ALERT_WINDOW_HOURS = {"tennis": 3, "football": 6}
+
+
+def _within_betting_window(event):
+    """True when the event starts between now and its sport's alert window."""
+    commence = event.get("commence_time") or ""
+    try:
+        dt = datetime.fromisoformat(str(commence).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return False
+    sport_key = (event.get("sport_key") or "").lower()
+    hours = ALERT_WINDOW_HOURS["tennis" if sport_key.startswith("tennis") else "football"]
+    now = datetime.now(timezone.utc)
+    return now <= dt <= now + timedelta(hours=hours)
+
+
 def _send(text: str) -> bool:
     if not BOT_TOKEN or not CHAT_ID:
         return False
@@ -136,6 +157,9 @@ def send_alerts_for_value_bets(value_bets, status_callback=None):
 
     sent = 0
     for event in value_bets:
+        # Actionable window only: football starting <6h, tennis <3h.
+        if not _within_betting_window(event):
+            continue
         # Only 🟢 green picks at the user's book — one alert per event (the best),
         # mirroring the site's traffic light instead of spamming every 2% edge.
         greens = _green_1xbet_picks(event)

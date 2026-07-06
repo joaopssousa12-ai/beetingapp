@@ -347,9 +347,23 @@ function wireFilters() {
   if (surfEl) surfEl.addEventListener('change', e => {
     vbState.surfaceFilter = e.target.value; renderValueBets();
   });
-  document.getElementById('vb-when').addEventListener('change', e => {
-    vbState.whenFilter = e.target.value; renderValueBets();
-  });
+  const whenEl = document.getElementById('vb-when');
+  if (whenEl) {
+    // Persist like minEdge/bankroll: without this the dropdown silently reset to
+    // "all" on every reload, which read as "the date filter is being ignored".
+    try {
+      const savedWhen = localStorage.getItem('vb-when');
+      if (savedWhen && whenEl.querySelector(`option[value="${savedWhen}"]`)) {
+        whenEl.value = savedWhen;
+        vbState.whenFilter = savedWhen;
+      }
+    } catch(e) {}
+    whenEl.addEventListener('change', e => {
+      vbState.whenFilter = e.target.value;
+      try { localStorage.setItem('vb-when', e.target.value); } catch(e2) {}
+      renderValueBets();
+    });
+  }
   document.getElementById('vb-mode').addEventListener('change', e => {
     vbState.mode = e.target.value; renderValueBets();
   });
