@@ -1,0 +1,20 @@
+name: backtest-lab
+
+# On-demand analysis lab (manual trigger only, never scheduled): pulls the free
+# football-data.co.uk history into a scratch SQLite on the runner and prints
+# decision analyses to the job log. No deploy, no product changes.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  edge-band-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: Edge-band threshold analysis (odds 1.4-1.8, edge 2-3%)
+        run: python scripts/edge_band_analysis.py
