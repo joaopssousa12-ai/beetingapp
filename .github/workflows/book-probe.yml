@@ -1,0 +1,24 @@
+name: book-probe
+
+# One-shot live probe (manual trigger only): calls the ALREADY-DEPLOYED
+# /api/diag/books endpoint on the production app (1 The-Odds-API credit) to rank
+# how often each EU bookmaker beats 1xBet on the h2h line. Used to evaluate a
+# second book/exchange (e.g. Matchbook). Reads only — no product change, no code
+# added to the app; this workflow just curls an existing diagnostic endpoint.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake app, print quota, then probe all EU books
+        run: |
+          BASE=https://beetingapp-1.onrender.com
+          echo "--- wake /healthz (cold start can take ~1 min) ---"
+          curl -fsS -m 120 "$BASE/healthz" || true; echo
+          echo "--- /api/diag/quota (confirm key + credits BEFORE spending one) ---"
+          curl -fsS -m 60 "$BASE/api/diag/quota" || true; echo
+          echo "--- /api/diag/books (1 credit: full EU ranking + beats-1xBet %) ---"
+          curl -fsS -m 90 "$BASE/api/diag/books" || true; echo
