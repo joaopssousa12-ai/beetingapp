@@ -30,14 +30,15 @@ USER_BOOK = "1xBet"
 
 def _is_green(edge, odd):
     """Same traffic-light rule as the site's 🟢 APOSTAR tier (vbSignal in app.js),
-    judged on the 1xBet price: odd 1.8-4.0 needs edge ≥2%, odd 1.3-1.8 needs ≥3%.
+    judged on the 1xBet price: odd 1.4-4.0 needs edge ≥2%, odd 1.3-1.4 needs ≥3%
+    (thresholds from the backtest-lab study — see vbSignal's comment).
     Everything else (short odds <1.3, longshots >4.0, thin edges) is 🟡/🔴 — the
     site says to skip those, so Telegram must not sell them as picks."""
     if edge is None or odd is None or edge > MAX_EDGE:
         return False
-    if 1.8 <= odd <= 4.0:
+    if 1.4 <= odd <= 4.0:
         return edge >= 2.0
-    if 1.3 <= odd < 1.8:
+    if 1.3 <= odd < 1.4:
         return edge >= 3.0
     return False
 

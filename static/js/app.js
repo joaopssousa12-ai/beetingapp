@@ -582,9 +582,14 @@ function vbClv(b) {
 
 // #3 Traffic-light decision signal per card, judged on the price YOU can bet
 // (1xBet) for the best pick. CLV here = the 1xBet edge vs the sharp close.
-//   🟢 green  (APOSTAR) : odd 1.8-4.0 & CLV>=2%   OR   odd 1.3-1.8 & CLV>=3%
-//   🟡 yellow (VER)     : odd 1.3-1.8 & CLV 2-3%
+//   🟢 green  (APOSTAR) : odd 1.4-4.0 & CLV>=2%   OR   odd 1.3-1.4 & CLV>=3%
+//   🟡 yellow (VER)     : odd 1.3-1.4 & CLV 2-3%
 //   🔴 red   (IGNORAR)  : odd >4.0, OR CLV <2%, OR no bettable/negative 1xBet edge
+// Thresholds from the backtest-lab study (24.6k matches, 2021-26): 1.4-1.8 at
+// edge 2-3% returned +13.3% [5.9,20.7] best-price / +6.2% single-book, and the
+// close's calibration bias runs IN FAVOUR of favourites there (-1.17pp) → the
+// 2% floor extends down to 1.4. 1.3-1.4 is ~4× worse calibrated (MAE 3.13pp)
+// with a tiny, contradictory sample → keeps the stricter 3% floor.
 function vbSignal(b) {
   const ev = vbEval(b);
   if (!ev.bestPick) return { light: 'red', clv: null, odd: null };
@@ -593,8 +598,8 @@ function vbSignal(b) {
   const odd = mine ? mine.book_odd : null;
   if (clv == null || odd == null) return { light: 'red', clv, odd };
   if (clv < 2 || odd > 4.0) return { light: 'red', clv, odd };
-  if (odd >= 1.8 && odd <= 4.0) return { light: 'green', clv, odd };            // CLV>=2 here
-  if (odd >= 1.3 && odd < 1.8) return { light: clv >= 3 ? 'green' : 'yellow', clv, odd };
+  if (odd >= 1.4 && odd <= 4.0) return { light: 'green', clv, odd };            // CLV>=2 here
+  if (odd >= 1.3 && odd < 1.4) return { light: clv >= 3 ? 'green' : 'yellow', clv, odd };
   return { light: 'red', clv, odd };                                            // odd <1.3 (too short)
 }
 const VB_LIGHT_RANK = { green: 0, yellow: 1, red: 2 };
