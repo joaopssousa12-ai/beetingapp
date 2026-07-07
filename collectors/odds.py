@@ -545,6 +545,8 @@ def probe_all_books(sport_key=None):
         return {"error": repr(e), "sport": sport_key}
 
     best, beats, priced = {}, {}, {}
+    beat_margin = {}        # book -> sum of (p/x1 - 1) over outcomes where it beats 1xBet
+    x1_priced_with = {}     # book -> outcomes where BOTH this book and 1xBet are priced
     outcomes, x1_outcomes = 0, 0
     for e in events:
         book_out = {}
@@ -571,16 +573,27 @@ def probe_all_books(sport_key=None):
                 x1_outcomes += 1
                 x1 = prices["onexbet"]
                 for bk, p in prices.items():
-                    if bk != "onexbet" and p > x1 + 1e-9:
+                    if bk == "onexbet":
+                        continue
+                    x1_priced_with[bk] = x1_priced_with.get(bk, 0) + 1
+                    if p > x1 + 1e-9:
                         beats[bk] = beats.get(bk, 0) + 1
+                        beat_margin[bk] = beat_margin.get(bk, 0.0) + (p / x1 - 1.0)
 
     def pct(n, d):
         return round(n / d * 100, 1) if d else 0
     ranking = sorted(
         ({"book": bk, "best": best.get(bk, 0), "best_pct": pct(best.get(bk, 0), outcomes),
-          "beats_1xbet": beats.get(bk, 0), "beats_1xbet_pct": pct(beats.get(bk, 0), x1_outcomes),
+          "beats_1xbet": beats.get(bk, 0),
+          # % of head-to-head outcomes (both priced) where this book beats 1xBet
+          "beats_1xbet_pct": pct(beats.get(bk, 0), x1_priced_with.get(bk, 0)),
+          # avg % better THAN 1xBet, over the outcomes it actually wins (the edge size)
+          "avg_beat_pct": round(beat_margin.get(bk, 0.0) / beats[bk] * 100, 2) if beats.get(bk) else None,
+          # expected raw uplift per outcome = freq × size (before exchange commission)
+          "exp_uplift_pct": round(beat_margin.get(bk, 0.0) / x1_priced_with[bk] * 100, 3)
+          if x1_priced_with.get(bk) else None,
           "priced": priced.get(bk, 0)} for bk in priced),
-        key=lambda x: (-x["best"], -x["beats_1xbet"]))
+        key=lambda x: (-(x["exp_uplift_pct"] or 0), -x["beats_1xbet"]))
     return {"sport": sport_key, "events": len(events), "outcomes": outcomes,
             "x1_outcomes": x1_outcomes, "credits_remaining": remaining, "ranking": ranking}
 

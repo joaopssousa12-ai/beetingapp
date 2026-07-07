@@ -755,12 +755,14 @@ async def api_diag_quota():
     })
 
 @app.get("/api/diag/books")
-async def api_diag_books():
-    """1-credit probe: fetch one in-scope sport with ALL EU bookmakers and rank which
-    book most often has the best h2h price + how often each beats 1xBet."""
+async def api_diag_books(sport: str = None):
+    """1-credit probe: fetch ONE sport (auto-picked, or ?sport=<key>) with ALL EU
+    bookmakers and rank which book most often has the best h2h price, how often +
+    by how much each beats 1xBet (avg_beat_pct = edge size when it wins;
+    exp_uplift_pct = freq×size = expected raw price improvement per bet)."""
     from collectors.odds import probe_all_books
     loop = asyncio.get_event_loop()
-    res = await loop.run_in_executor(None, probe_all_books)
+    res = await loop.run_in_executor(None, lambda: probe_all_books(sport))
     return JSONResponse(res)
 
 @app.get("/api/value-bets")

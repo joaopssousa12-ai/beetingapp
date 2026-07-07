@@ -1,24 +1,81 @@
 name: book-probe
 
-# One-shot live probe (manual trigger only): calls the ALREADY-DEPLOYED
-# /api/diag/books endpoint on the production app (1 The-Odds-API credit) to rank
-# how often each EU bookmaker beats 1xBet on the h2h line. Used to evaluate a
-# second book/exchange (e.g. Matchbook). Reads only — no product change, no code
-# added to the app; this workflow just curls an existing diagnostic endpoint.
+# One-shot live probe (manual trigger only): calls the already-deployed
+# /api/diag/books?sport= endpoint across the sports the user actually bets, and
+# AGGREGATES which EU book most often + by how much beats 1xBet (h2h). Reads
+# only — no product change. A handful of The-Odds-API credits (1 per sport).
 on:
   workflow_dispatch: {}
 
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Wake app, print quota, then probe all EU books
+      - name: Probe books across sports + aggregate
         run: |
-          BASE=https://beetingapp-1.onrender.com
-          echo "--- wake /healthz (cold start can take ~1 min) ---"
-          curl -fsS -m 120 "$BASE/healthz" || true; echo
-          echo "--- /api/diag/quota (confirm key + credits BEFORE spending one) ---"
-          curl -fsS -m 60 "$BASE/api/diag/quota" || true; echo
-          echo "--- /api/diag/books (1 credit: full EU ranking + beats-1xBet %) ---"
-          curl -fsS -m 90 "$BASE/api/diag/books" || true; echo
+          python3 - <<'EOF'
+          import json, urllib.request, collections
+          BASE = "https://beetingapp-1.onrender.com"
+          SPORTS = [
+              "soccer_brazil_campeonato", "soccer_japan_j_league",
+              "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_epl",
+              "soccer_usa_mls", "tennis_atp", "tennis_wta",
+          ]
+          def get(path, t=90):
+              with urllib.request.urlopen(BASE + path, timeout=t) as r:
+                  return json.loads(r.read().decode())
+          try:
+              print("quota:", json.dumps(get("/api/diag/quota")["the_odds_api"]))
+          except Exception as e:
+              print("quota err", e)
+
+          agg = collections.defaultdict(lambda: {"beats": 0, "h2h": 0, "margin_sum": 0.0,
+                                                 "best": 0, "priced": 0})
+          total_outcomes = total_x1 = 0
+          for sp in SPORTS:
+              try:
+                  r = get(f"/api/diag/books?sport={sp}")
+              except Exception as e:
+                  print(f"{sp}: ERROR {e}"); continue
+              if r.get("error"):
+                  print(f"{sp}: {r['error']}"); continue
+              ev, out, x1 = r.get("events", 0), r.get("outcomes", 0), r.get("x1_outcomes", 0)
+              total_outcomes += out; total_x1 += x1
+              print(f"\n=== {sp}: {ev} events, {out} outcomes, {x1} with 1xBet, credits~{r.get('credits_remaining')}")
+              for row in r.get("ranking", []):
+                  bk = row["book"]
+                  a = agg[bk]
+                  a["best"] += row.get("best", 0)
+                  a["priced"] += row.get("priced", 0)
+                  if bk == "onexbet":
+                      continue
+                  b = row.get("beats_1xbet", 0)
+                  a["beats"] += b
+                  # reconstruct head-to-head denominator + margin sum from the reported avgs
+                  if row.get("beats_1xbet_pct") and b:
+                      a["h2h"] += round(b / (row["beats_1xbet_pct"] / 100.0))
+                  if row.get("avg_beat_pct") and b:
+                      a["margin_sum"] += row["avg_beat_pct"] / 100.0 * b
+              # top-5 per sport by expected uplift
+              top = sorted([x for x in r["ranking"] if x["book"] != "onexbet"],
+                           key=lambda x: -(x.get("exp_uplift_pct") or 0))[:5]
+              for x in top:
+                  print(f"   {x['book']:16} beats {x['beats_1xbet_pct']}%  avg+{x.get('avg_beat_pct')}%  "
+                        f"uplift {x.get('exp_uplift_pct')}%  (n_beats={x['beats_1xbet']})")
+
+          print(f"\n\n===== AGGREGATE across {len(SPORTS)} sports "
+                f"({total_outcomes} outcomes, {total_x1} with 1xBet) =====")
+          rows = []
+          for bk, a in agg.items():
+              if bk == "onexbet" or a["h2h"] == 0:
+                  continue
+              freq = a["beats"] / a["h2h"] * 100
+              avg = (a["margin_sum"] / a["beats"] * 100) if a["beats"] else 0
+              uplift = a["margin_sum"] / a["h2h"] * 100
+              rows.append((uplift, bk, a["beats"], a["h2h"], freq, avg))
+          rows.sort(reverse=True)
+          print(f"{'book':18} {'beats%':>7} {'avg+%':>7} {'uplift%':>8}  n_beats/h2h")
+          for uplift, bk, beats, h2h, freq, avg in rows:
+              print(f"{bk:18} {freq:7.1f} {avg:7.2f} {uplift:8.3f}  {beats}/{h2h}")
+          EOF
