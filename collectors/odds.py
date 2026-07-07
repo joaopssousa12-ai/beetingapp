@@ -38,6 +38,14 @@ SPORT_GROUPS = {
     "soccer_turkey_super_league": "Super Lig",
     "soccer_greece_super_league": "Super League Greece",
     "soccer_spl": "Scottish Premiership",
+    # Summer-window leagues (play through Jun-Aug) — validated by backtest-lab:
+    # Pinnacle-close calibration MAE ~1.1pp, new-rule portfolio +9-12% best-price
+    # (≈half at a single soft book), high volume. Being soccer_*, they inherit the
+    # football class automatically: 6h imminent window, 45min throttle, the same
+    # traffic light / CLV / Telegram green gate. Only fetched while in season
+    # (to_fetch filters by the API's 'active' flag), so no off-season credit cost.
+    "soccer_brazil_campeonato": "Brazil Série A",
+    "soccer_japan_j_league": "J League",
     # Tennis — Grand Slams
     "tennis_atp_french_open": "ATP Roland Garros",
     "tennis_wta_french_open": "WTA Roland Garros",
