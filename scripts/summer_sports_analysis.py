@@ -67,8 +67,10 @@ def new_rule(e, odd):
 
 
 def analyse_rows(rows, pin_cols, price_pref):
-    """rows: dicts with Res/date + odds. pin_cols=(H,D,A) reference column names."""
+    """rows: dicts with Res/date + odds. pin_cols=(H,D,A) reference column names.
+    price_pref: list of best-price column templates ('{s}' = side letter)."""
     pairs, bets, summer = [], [], 0
+    price_used = price_pref[0].format(s="*") if price_pref else "none"
     for r in rows:
         res = (r.get("Res") or "").strip().upper()
         if res not in ("H", "D", "A"):
@@ -151,7 +153,7 @@ def analyse_rows(rows, pin_cols, price_pref):
                 "total_staked_eur": round(staked, 0), "profit_eur": round(profit, 2),
                 "roi_pct": round(profit / staked * 100, 2),
                 "roi_ci95": [round(boots[75], 2), round(boots[2925], 2)]}
-    return calib, port, summer
+    return calib, port, summer, price_used
 
 
 def main():
@@ -178,14 +180,16 @@ def main():
                                         "error": "no usable reference odds columns",
                                         "header_sample": header[:25]}
                 continue
-            # price: best of Max then Pinnacle then Avg (the '{s}' is the side letter)
-            price_pref = ["Max{s}", pin[0][:-1] + "{s}" if pin[0] != "AvgH" else "Avg{s}", "Avg{s}"]
-            # normalize price templates to real column stems
-            price_pref = ["Max{s}", "P{s}" if pin[0] == "PH" else pin[0].replace("H", "{s}"), "Avg{s}"]
-            calib, port, summer = analyse_rows(rows, pin, price_pref)
+            # Bet at the BEST price across books (soft proxy), NOT the Pinnacle
+            # reference itself — the extra files' closing best-price columns are
+            # MaxC*/AvgC*, pre-match are Max*/Avg*. Never fall back to PSC* (=the
+            # reference; betting there vs its own devig fabricates ~0 edge).
+            best_cols = [c for c in ("MaxC{s}", "Max{s}", "AvgC{s}", "Avg{s}", "B365C{s}", "B365{s}")
+                         if c.format(s="H") in header]
+            calib, port, summer, price_used = analyse_rows(rows, pin, best_cols)
             out["leagues"][code] = {"name": name, "rows": len(rows),
                                     "summer_matches_JunAug": summer,
-                                    "reference_used": ref_label,
+                                    "reference_used": ref_label, "bet_price_used": price_used,
                                     "calibration": calib, "portfolio_new_rule": port}
         except Exception as e:
             out["leagues"][code] = {"name": name, "error": repr(e)}
