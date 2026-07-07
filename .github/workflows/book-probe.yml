@@ -19,9 +19,11 @@ jobs:
           BASE = "https://beetingapp-1.onrender.com"
           SPORTS = [
               "soccer_brazil_campeonato", "soccer_japan_j_league",
-              "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_epl",
-              "soccer_usa_mls", "tennis_atp", "tennis_wta",
+              "soccer_italy_serie_a", "tennis_atp",
           ]
+          # Deploy-guard: bail BEFORE spending credits if the ?sport= param + new
+          # avg_beat_pct field aren't live yet (old code returns the same auto-pick
+          # for every sport, wasting 1 credit each). Costs 1 credit to verify.
           def get(path, t=90):
               with urllib.request.urlopen(BASE + path, timeout=t) as r:
                   return json.loads(r.read().decode())
@@ -29,6 +31,21 @@ jobs:
               print("quota:", json.dumps(get("/api/diag/quota")["the_odds_api"]))
           except Exception as e:
               print("quota err", e)
+
+          # Deploy guard: probe tennis_atp once; if the endpoint ignores ?sport=
+          # (returns a non-tennis sport) or lacks avg_beat_pct, the new code isn't
+          # live — abort so we don't waste the remaining credits on stale data.
+          try:
+              g = get("/api/diag/books?sport=tennis_atp")
+              has_new_field = any("avg_beat_pct" in r for r in g.get("ranking", []))
+              if not g.get("sport", "").startswith("tennis") or not has_new_field:
+                  print(f"DEPLOY NOT LIVE YET (sport={g.get('sport')}, new_field={has_new_field}) "
+                        f"— aborting before spending more credits. Re-run in a few min.")
+                  raise SystemExit(0)
+          except SystemExit:
+              raise
+          except Exception as e:
+              print("deploy-guard err", e); raise SystemExit(0)
 
           agg = collections.defaultdict(lambda: {"beats": 0, "h2h": 0, "margin_sum": 0.0,
                                                  "best": 0, "priced": 0})
