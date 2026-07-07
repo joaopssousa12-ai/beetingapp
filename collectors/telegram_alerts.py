@@ -121,7 +121,7 @@ def _format_alert(pick, event):
 
 
 def _already_sent(conn, event_id, selection, book):
-    cutoff = (datetime.now() - timedelta(hours=20)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = (datetime.utcnow() - timedelta(hours=20)).strftime("%Y-%m-%d %H:%M:%S")
     row = conn.execute(
         "SELECT 1 FROM telegram_alerts_sent WHERE event_id=? AND selection=? AND book=? AND sent_at > ?",
         (event_id, selection, book, cutoff),
@@ -132,7 +132,7 @@ def _already_sent(conn, event_id, selection, book):
 def _mark_sent(conn, event_id, selection, book):
     conn.execute(
         "INSERT INTO telegram_alerts_sent (event_id, selection, book, sent_at) VALUES (?,?,?,?)",
-        (event_id, selection, book, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        (event_id, selection, book, datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
     )
     conn.commit()
 

@@ -2290,7 +2290,7 @@ async function submitBet() {
     sport_name: document.getElementById('bet-sport').value.trim() || null,
     home_team: document.getElementById('bet-home').value.trim() || null,
     away_team: document.getElementById('bet-away').value.trim() || null,
-    commence_time: (() => { const _cv = document.getElementById('bet-commence').value; return _cv ? new Date(_cv).toISOString().slice(0, 16) : null; })(),  // local input -> UTC (same YYYY-MM-DDTHH:MM format, fixes the UTC skew)
+    commence_time: (() => { const _cv = document.getElementById('bet-commence').value; return _cv ? new Date(_cv).toISOString().slice(0, 19) + 'Z' : null; })(),  // local input -> canonical ISO UTC (server normalizes to YYYY-MM-DDTHH:MM:SSZ)
     market: document.getElementById('bet-market').value,
     selection: document.getElementById('bet-selection').value.trim(),
     bookmaker: document.getElementById('bet-bookmaker').value.trim() || null,

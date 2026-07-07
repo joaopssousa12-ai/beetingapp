@@ -32,6 +32,43 @@ def invalidate_value_bets_cache():
     _vb_cache["ts"] = 0.0
 
 
+def _is_placeholder_team(t):
+    """TBD bracket placeholders ('1A', '2B', 'W73', 'L101', '3A/B/C/D/F') — no real
+    teams, no bettable odds. Mirrors app.js isPlaceholderTeam so they are blocked
+    at STORAGE time instead of merely hidden client-side (they were bloating the
+    DB and burning engine compute as NO_REFERENCE events)."""
+    if not t:
+        return True
+    s = str(t).strip()
+    if "/" in s:
+        return True
+    if re.fullmatch(r"[WLwl]\d+", s):
+        return True
+    if re.fullmatch(r"\d+[A-Za-z]?", s):
+        return True
+    return False
+
+
+def purge_old_odds_history(days=30):
+    """Delete odds_history snapshots older than `days` (the table was unbounded).
+    History only matters until a bet's close is captured at kickoff, plus a grace
+    window for recapture/backfill — 30 days is ample. Already-recorded CLV is
+    UNAFFECTED: captured closes live on the bets rows themselves (pin_close_*);
+    only re-deriving the close for bets older than the window stops being
+    possible. captured_at and the cutoff share the 'YYYY-MM-DD HH:MM:SS' UTC
+    format, so the string comparison is safe on both SQLite and Postgres."""
+    from datetime import datetime, timedelta
+    conn = get_connection()
+    try:
+        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        cur = conn.execute("DELETE FROM odds_history WHERE captured_at < ?", (cutoff,))
+        n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
 def purge_out_of_scope_and_stale(max_age_hours=24):
     """Remove junk rows from odds_events: (1) sports we no longer collect (anything
     that isn't football/tennis — MMA/Boxing/etc. lingered for weeks because DELETE
@@ -60,8 +97,14 @@ def purge_out_of_scope_and_stale(max_age_hours=24):
             if dt and dt < cutoff:
                 conn.execute("DELETE FROM odds_events WHERE event_id = ?", (r["event_id"],))
                 stale += 1
+        # (3) TBD bracket placeholders that slipped in before storage-time blocking
+        placeholders = 0
+        for r in conn.execute("SELECT event_id, home_team, away_team FROM odds_events").fetchall():
+            if _is_placeholder_team(r["home_team"]) or _is_placeholder_team(r["away_team"]):
+                conn.execute("DELETE FROM odds_events WHERE event_id = ?", (r["event_id"],))
+                placeholders += 1
         conn.commit()
-        return {"out_of_scope": oos, "stale": stale}
+        return {"out_of_scope": oos, "stale": stale, "placeholders": placeholders}
     finally:
         conn.close()
 
@@ -693,6 +736,22 @@ def init_db():
         c.execute("ALTER TABLE bets ADD COLUMN pin_close_fair_odds REAL")
     except Exception:
         pass  # already exists
+
+    # Migrate: normalize bets.commence_time to canonical ISO UTC
+    # ('YYYY-MM-DDTHH:MM:SSZ'). Historical rows mixed 'YYYY-MM-DDTHH:MM' (no Z —
+    # browsers parse that as LOCAL time, skewing kickoff displays) with other
+    # shapes; one canonical format ends the string-comparison bug family.
+    # Idempotent: rows already canonical are left untouched.
+    try:
+        for r in c.execute("SELECT id, commence_time FROM bets WHERE commence_time IS NOT NULL").fetchall():
+            ts = _parse_ts(r["commence_time"])
+            if not ts:
+                continue
+            canon = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if canon != str(r["commence_time"]):
+                c.execute("UPDATE bets SET commence_time=? WHERE id=?", (canon, r["id"]))
+    except Exception as e:
+        print(f"commence_time normalization skipped: {e}", flush=True)
 
     if USE_POSTGRES:
         conn._conn.autocommit = False
@@ -1795,7 +1854,7 @@ def save_manual_odd(event_id, selection, odd):
         conn.execute("""
             INSERT OR REPLACE INTO manual_odds (event_id, selection, odd, updated_at)
             VALUES (?, ?, ?, ?)
-        """, (event_id, selection, float(odd), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        """, (event_id, selection, float(odd), datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         invalidate_value_bets_cache()
         return True
@@ -1852,6 +1911,14 @@ def add_bet(bet_data):
         except (ValueError, TypeError):
             pass
 
+    # Canonical timestamp: commence_time is stored as ISO UTC 'YYYY-MM-DDTHH:MM:SSZ'
+    # regardless of what shape the client sent — one format ends the class of bugs
+    # where mixed formats get string-compared (CLV close capture, auto-grade).
+    commence = bet_data.get("commence_time")
+    _ct = _parse_ts(commence)
+    if _ct:
+        commence = _ct.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     cur.execute("""
         INSERT INTO bets (
             placed_at, event_id, sport_name, home_team, away_team, commence_time,
@@ -1859,12 +1926,12 @@ def add_bet(bet_data):
             pin_implied_prob, edge_pct, notes
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        bet_data.get("placed_at") or datetime.now().strftime("%Y-%m-%d %H:%M"),
+        bet_data.get("placed_at") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         bet_data.get("event_id"),
         bet_data.get("sport_name"),
         bet_data.get("home_team"),
         bet_data.get("away_team"),
-        bet_data.get("commence_time"),
+        commence,
         bet_data.get("market", "h2h"),
         bet_data.get("selection"),
         bet_data.get("bookmaker"),
@@ -1907,7 +1974,7 @@ def update_bet_result(bet_id, result):
     cur.execute("""
         UPDATE bets SET result=?, profit=?, status=?, settled_at=?
         WHERE id=?
-    """, (result, profit, status, datetime.now().strftime("%Y-%m-%d %H:%M"), bet_id))
+    """, (result, profit, status, datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), bet_id))
     conn.commit()
     conn.close()
     return True
@@ -2325,16 +2392,20 @@ def auto_grade_pending_bets():
     from datetime import datetime as _dt, timedelta as _td
 
     conn = get_connection()
-    # Only attempt bets where commence_time is > 2.5h in the past
-    cutoff = (_dt.utcnow() - _td(hours=2, minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-    rows = conn.execute("""
+    # Only attempt bets where commence_time is > 2.5h in the past.
+    # Time filter done in Python via _parse_ts: a raw SQL string comparison between
+    # commence_time ('...T...') and the cutoff ('YYYY-MM-DD HH:MM:SS') silently
+    # skipped same-day games until the date rolled over (same format bug family
+    # as the old CLV close capture).
+    cutoff_dt = _dt.utcnow() - _td(hours=2, minutes=30)
+    rows = [r for r in conn.execute("""
         SELECT id, event_id, sport_name, home_team, away_team, commence_time,
                market, selection, odds, stake
         FROM bets
         WHERE status = 'pending'
           AND commence_time IS NOT NULL
-          AND commence_time < ?
-    """, (cutoff,)).fetchall()
+    """).fetchall()
+        if (_parse_ts(r["commence_time"]) or _dt.max) < cutoff_dt]
 
     graded = 0
     for bet in rows:

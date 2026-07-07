@@ -63,9 +63,13 @@ async def startup():
         print(traceback.format_exc(), flush=True)
         # Don't crash — continue without DB
     try:
-        from collectors.database import purge_out_of_scope_and_stale
+        from collectors.database import purge_out_of_scope_and_stale, purge_old_odds_history
         p = purge_out_of_scope_and_stale()
-        print(f"Startup purge: removed {p['out_of_scope']} out-of-scope + {p['stale']} stale event(s).", flush=True)
+        print(f"Startup purge: removed {p['out_of_scope']} out-of-scope + {p['stale']} stale "
+              f"+ {p.get('placeholders', 0)} placeholder event(s).", flush=True)
+        n_hist = purge_old_odds_history()
+        if n_hist:
+            print(f"Startup purge: removed {n_hist} odds_history snapshot(s) >30 days old.", flush=True)
     except Exception as e:
         print(f"Startup purge skipped: {e}", flush=True)
     try:
@@ -87,6 +91,9 @@ async def startup():
         scheduler.add_job(lambda: asyncio.create_task(run_closing_capture()), "cron", minute="*/15")
         # Daily digest: one Telegram message with the day's value bets (09:00 UTC).
         scheduler.add_job(lambda: asyncio.create_task(run_daily_digest()), "cron", hour=9, minute=0)
+        # Daily hygiene: drop odds_history snapshots older than 30 days (the table
+        # was unbounded; captured closes live on the bets rows, so CLV is safe).
+        scheduler.add_job(lambda: asyncio.create_task(run_history_purge()), "cron", hour=4, minute=10)
         scheduler.start()
         print("Scheduler started.", flush=True)
     except Exception as e:
@@ -120,7 +127,7 @@ async def shutdown():
 async def run_full_collection():
     collection_status["running"] = True
     collection_status["messages"] = ["Starting data collection..."]
-    collection_status["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    collection_status["last_run"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 
     def cb(msg):
         print(msg, flush=True)
@@ -353,7 +360,7 @@ async def api_start_collection(full: bool = False):
 async def _run_footballdata_only():
     collection_status["running"] = True
     collection_status["messages"] = ["Importing historical odds (football-data.co.uk)..."]
-    collection_status["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    collection_status["last_run"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     def cb(msg):
         collection_status["messages"].append(msg)
     loop = asyncio.get_event_loop()
@@ -381,7 +388,7 @@ async def api_collect_odds_history():
 async def _run_tennisdata_only():
     collection_status["running"] = True
     collection_status["messages"] = ["Importing historical tennis odds (tennis-data.co.uk)..."]
-    collection_status["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    collection_status["last_run"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     def cb(msg):
         collection_status["messages"].append(msg)
     loop = asyncio.get_event_loop()
@@ -532,7 +539,7 @@ async def api_migrate_data():
 async def run_odds_only():
     collection_status["running"] = True
     collection_status["messages"] = ["Refreshing live odds..."]
-    collection_status["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    collection_status["last_run"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     def cb(msg):
         print(msg, flush=True)
         collection_status["messages"].append(str(msg))
@@ -643,6 +650,18 @@ async def run_closing_capture():
     except Exception as e:
         import traceback
         print(f"CLOSING_CAPTURE ERROR: {e}\n{traceback.format_exc()[-400:]}", flush=True)
+
+
+async def run_history_purge():
+    """Daily (04:10 UTC): delete odds_history snapshots older than 30 days."""
+    loop = asyncio.get_event_loop()
+    try:
+        from collectors.database import purge_old_odds_history
+        n = await loop.run_in_executor(None, purge_old_odds_history)
+        if n:
+            print(f"HISTORY_PURGE: removed {n} odds_history snapshot(s) >30 days old.", flush=True)
+    except Exception as e:
+        print(f"HISTORY_PURGE ERROR: {e}", flush=True)
 
 
 async def run_daily_digest():

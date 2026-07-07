@@ -14,7 +14,7 @@ import unicodedata
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from collectors.database import get_connection, log_collection
+from collectors.database import get_connection, log_collection, _is_placeholder_team
 
 # openfootball JSON sources (GitHub raw — always accessible, no key)
 OPENFOOTBALL_SOURCES = {
@@ -33,8 +33,11 @@ EURO_LEAGUES = {
 
 def store_fixture(event_id, sport_name, home, away, commence,
                   pin_home=None, pin_draw=None, pin_away=None):
-    """Store a fixture (with or without odds)."""
+    """Store a fixture (with or without odds). Bracket placeholders ('W89',
+    '3A/B/C/D') are rejected — no real teams means no bettable market."""
     if not home or not away:
+        return False
+    if _is_placeholder_team(home) or _is_placeholder_team(away):
         return False
     conn = get_connection()
     try:
@@ -50,7 +53,7 @@ def store_fixture(event_id, sport_name, home, away, commence,
               pin_home, pin_draw, pin_away,
               pin_home, pin_draw, pin_away,
               pin_home, pin_draw, pin_away,
-              datetime.now().strftime("%Y-%m-%d %H:%M")))
+              datetime.utcnow().strftime("%Y-%m-%d %H:%M")))
         conn.commit()
         conn.close()
         return True
@@ -78,7 +81,7 @@ def parse_iso_datetime(date_str, time_str=""):
 def collect_openfootball_fixtures(cb):
     """Collect fixtures from openfootball JSON (reliable, no auth)."""
     total = 0
-    today = datetime.now().date()
+    today = datetime.utcnow().date()
 
     # World Cup 2026
     for sport_name, url in OPENFOOTBALL_SOURCES.items():

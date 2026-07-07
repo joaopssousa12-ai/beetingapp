@@ -296,7 +296,7 @@ def parse_and_store(events, sport_key, sport_name):
                 pin_over25, pin_under25, x1_over25, x1_under25, best_over25, best_under25,
                 pin_btts_yes, pin_btts_no, x1_btts_yes, x1_btts_no, best_btts_yes, best_btts_no,
                 ah_line, pin_ah_home, pin_ah_away, best_ah_home, best_ah_away, x1_ah_home, x1_ah_away,
-                datetime.now().strftime("%Y-%m-%d %H:%M")
+                datetime.utcnow().strftime("%Y-%m-%d %H:%M")
             ))
             # Also save snapshot to history for line movement tracking.
             # PRE-match snapshots only: the API also returns in-play events, and a
@@ -404,7 +404,7 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
         return 0
 
     total, remaining, fetched, skipped = 0, "?", 0, 0
-    now = datetime.now()
+    now = datetime.utcnow()
     for sk in targets:
         cls = _sport_class(sk)
         # Closing job + football → no throttle (cheap, true 15-min close). Otherwise
