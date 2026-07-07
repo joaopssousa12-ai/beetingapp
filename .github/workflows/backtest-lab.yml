@@ -16,5 +16,5 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install requests
-      - name: Edge-band threshold analysis (odds 1.4-1.8, edge 2-3%)
-        run: python scripts/edge_band_analysis.py
+      - name: Summer-window sports analysis (Jun-Aug leagues)
+        run: python scripts/summer_sports_analysis.py
