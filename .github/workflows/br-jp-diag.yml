@@ -1,0 +1,48 @@
+name: br-jp-diag
+
+# One-shot diagnostic (manual): why aren't Brazil Série A / J-League showing on
+# the site? Checks (a) does The Odds API even have live events for these sport
+# keys right now (via the existing 1-credit /api/diag/books probe), (b) the
+# last collection log, (c) whether they're present in /api/value-bets output.
+# Reads only.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake app + probe Brazil/Japan sport keys directly
+        run: |
+          BASE=https://beetingapp-1.onrender.com
+          echo "--- wake ---"
+          curl -fsS -m 90 "$BASE/healthz" || true; echo
+          echo "--- quota ---"
+          curl -fsS -m 60 "$BASE/api/diag/quota" || true; echo
+          echo "--- probe soccer_brazil_campeonato (1 credit: does the API have live events right now?) ---"
+          curl -fsS -m 60 "$BASE/api/diag/books?sport=soccer_brazil_campeonato" || true; echo
+          echo "--- probe soccer_japan_j_league (1 credit) ---"
+          curl -fsS -m 60 "$BASE/api/diag/books?sport=soccer_japan_j_league" || true; echo
+          echo "--- last collection log ---"
+          curl -fsS -m 60 "$BASE/api/collection/status" || true; echo
+      - name: Check /api/value-bets for Brazil/Japan events
+        run: |
+          BASE=https://beetingapp-1.onrender.com
+          curl -fsS -m 60 "$BASE/api/value-bets" -o /tmp/vb.json || true
+          python3 - <<'EOF'
+          import json
+          try:
+              d = json.load(open("/tmp/vb.json"))
+          except Exception as e:
+              print("parse error:", e); raise SystemExit(0)
+          print(f"total value-bets events: {len(d)}")
+          sports = sorted(set(e.get("sport_key") for e in d))
+          print("all sport_keys present in value-bets:", sports)
+          br = [e for e in d if e.get("sport_key") == "soccer_brazil_campeonato"]
+          jp = [e for e in d if e.get("sport_key") == "soccer_japan_j_league"]
+          print(f"Brazil events in value-bets: {len(br)}")
+          print(f"Japan events in value-bets: {len(jp)}")
+          for e in (br + jp)[:10]:
+              print(" ", e.get("sport_key"), e.get("home_team"), "v", e.get("away_team"), e.get("commence_time"))
+          EOF
