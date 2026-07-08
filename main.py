@@ -17,6 +17,7 @@ from collectors.database import (
     get_national_summary, get_national_recent,
     get_xg_summary, get_team_xg,
     get_elo_summary, get_elo_rating, elo_based_probability,
+    get_match_prognosis, get_daily_multiple,
     save_manual_odd, delete_manual_odd, get_manual_odds_map,
     invalidate_value_bets_cache,
     value_bets_cache_state, refresh_value_bets, load_vb_cache_from_disk,
@@ -287,6 +288,24 @@ async def api_match_detail(event_id: str):
     if not match:
         return JSONResponse({"error": "Match not found"}, status_code=404)
     return JSONResponse(match)
+
+@app.get("/api/match/{event_id}/prognosis")
+async def api_match_prognosis(event_id: str):
+    """Pure-model prognosis (NO edge/CLV) for the match-analysis view: Elo probs,
+    recent form, H2H, goals-Poisson O/U + likely scorelines, confidence tier and
+    best pick. Deliberately separate from the value-bets/traffic-light system."""
+    match = next((b for b in get_value_bets() if b.get("event_id") == event_id), None)
+    if not match:
+        return JSONResponse({"error": "Match not found"}, status_code=404)
+    prog = get_match_prognosis(match.get("home_team"), match.get("away_team"),
+                               match.get("sport_name"), match.get("commence_time"))
+    return JSONResponse(prog)
+
+@app.get("/api/daily-multiple")
+async def api_daily_multiple():
+    """Highest-confidence, model-agreeing picks combined into a 'Múltipla do Dia'.
+    FOR FUN ONLY — an accumulator is -EV; this is not part of the edge system."""
+    return JSONResponse(get_daily_multiple())
 
 @app.get("/api/stats")
 async def api_stats():
@@ -1007,6 +1026,11 @@ async def api_football_edge(limit: int = 100):
 @app.get("/backtest", response_class=HTMLResponse)
 async def backtest_page(request: Request):
     return templates.TemplateResponse("backtest.html", {"request": request})
+
+@app.get("/multipla", response_class=HTMLResponse)
+async def multipla_page(request: Request):
+    """Standalone 'Múltipla do Dia' page (pure-model, for fun — not the edge system)."""
+    return templates.TemplateResponse("multipla.html", {"request": request})
 
 @app.get("/api/backtest")
 async def api_backtest(

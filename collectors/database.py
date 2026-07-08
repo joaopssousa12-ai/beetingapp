@@ -3033,6 +3033,356 @@ def elo_based_probability(home_team, away_team, category, surface=None, home_adv
         }
 
 
+# ============================================================
+# MATCH PROGNOSIS  (pure model — NO edge, NO CLV)
+# ------------------------------------------------------------
+# Powers the match-analysis detail view + "Múltipla do Dia". This is DELIBERATELY
+# separate from the value-bets / traffic-light system: it answers "who is more
+# likely to win" for context/fun, never "is this a +EV bet".
+#
+# Design forced by the model-lab backtest (27,844 matches, 2021-26, walk-forward):
+#   - Elo is well-calibrated (says 75% -> happens ~79%) and near market accuracy
+#     (49.3% vs 52%). It is the SPINE: the confidence number shown = Elo's.
+#   - The rolling-goals Poisson is OVERCONFIDENT on 1X2 (says 75% -> happens 52%),
+#     so its 1X2 % is NEVER shown as confidence. It is used only for: O/U 2.5,
+#     likely scorelines, BTTS, and as an AGREEMENT vote with Elo.
+#   - When Elo & Poisson agree, realised hit-rate climbs monotonically with Elo
+#     confidence (70-80% band -> 75% real). That agreement gate is what makes a
+#     "safest pick" / accumulator meaningful (still -EV — an accumulator only
+#     ever multiplies the bookmaker margin).
+# ============================================================
+def _prognosis_category(sport_name):
+    s = (sport_name or "").lower()
+    if any(k in s for k in ["world cup", "nations", "euro", "copa"]):
+        return "national", None
+    if any(k in s for k in ["tennis", "atp", "wta"]):
+        return "tennis", "All"
+    return "football_club", None
+
+
+def _fuzzy_team_filter(team):
+    """Return (exact, like) params for matching a team across data sources whose
+    names differ slightly (The Odds API vs football-data.co.uk)."""
+    t = (team or "").strip()
+    # longest word as a cheap discriminator for a LIKE fallback
+    words = [w for w in t.replace(".", " ").split() if len(w) >= 4]
+    like = f"%{max(words, key=len)}%" if words else f"%{t}%"
+    return t, like
+
+
+def _team_recent_football(conn, team, limit=8, national=False):
+    """Most-recent finished matches for a team (goals for/against + W/D/L), from
+    the results history. Best-effort fuzzy name match; returns [] if none."""
+    tbl = "national_matches" if national else "football_matches"
+    exact, like = _fuzzy_team_filter(team)
+    q = (f"SELECT date, home_team, away_team, home_goals, away_goals FROM {tbl} "
+         "WHERE (home_team = ? OR away_team = ?) AND home_goals IS NOT NULL "
+         "ORDER BY date DESC LIMIT ?")
+    try:
+        rows = conn.execute(q, (exact, exact, limit)).fetchall()
+        if not rows:
+            q2 = (f"SELECT date, home_team, away_team, home_goals, away_goals FROM {tbl} "
+                  "WHERE (home_team LIKE ? OR away_team LIKE ?) AND home_goals IS NOT NULL "
+                  "ORDER BY date DESC LIMIT ?")
+            rows = conn.execute(q2, (like, like, limit)).fetchall()
+    except Exception:
+        return []
+    return [dict(r) for r in rows]
+
+
+def _team_goal_rates(matches, team):
+    """Avg goals for / against over the given matches (fuzzy team side detect)."""
+    _, like = _fuzzy_team_filter(team)
+    key = like.strip("%").lower()
+    gf = ga = n = 0
+    for m in matches:
+        h, a = (m.get("home_team") or ""), (m.get("away_team") or "")
+        if key in h.lower():
+            gf += m["home_goals"]; ga += m["away_goals"]; n += 1
+        elif key in a.lower():
+            gf += m["away_goals"]; ga += m["home_goals"]; n += 1
+    if n == 0:
+        return None
+    return {"gf": gf / n, "ga": ga / n, "n": n}
+
+
+def _h2h_football(conn, home, away, limit=6, national=False):
+    tbl = "national_matches" if national else "football_matches"
+    _, lh = _fuzzy_team_filter(home)
+    _, la = _fuzzy_team_filter(away)
+    q = (f"SELECT date, home_team, away_team, home_goals, away_goals FROM {tbl} "
+         "WHERE ((home_team LIKE ? AND away_team LIKE ?) OR (home_team LIKE ? AND away_team LIKE ?)) "
+         "AND home_goals IS NOT NULL ORDER BY date DESC LIMIT ?")
+    try:
+        rows = conn.execute(q, (lh, la, la, lh, limit)).fetchall()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        out.append({"date": r["date"], "home_team": r["home_team"], "away_team": r["away_team"],
+                    "home_goals": r["home_goals"], "away_goals": r["away_goals"]})
+    return out
+
+
+def _poisson_shape(lam_h, lam_a, max_goals=8):
+    """1X2 / O/U 2.5 / BTTS / top scorelines from an independent Poisson grid."""
+    lam_h = max(0.2, min(4.5, lam_h)); lam_a = max(0.2, min(4.5, lam_a))
+    ph = [poisson_pmf_local(k, lam_h) for k in range(max_goals + 1)]
+    pa = [poisson_pmf_local(k, lam_a) for k in range(max_goals + 1)]
+    p_home = p_draw = p_away = p_over = p_btts = 0.0
+    grid = []
+    for h in range(max_goals + 1):
+        for a in range(max_goals + 1):
+            p = ph[h] * pa[a]
+            if h > a: p_home += p
+            elif h == a: p_draw += p
+            else: p_away += p
+            if h + a >= 3: p_over += p
+            if h >= 1 and a >= 1: p_btts += p
+            if h <= 5 and a <= 5:
+                grid.append((f"{h}-{a}", p))
+    grid.sort(key=lambda x: -x[1])
+    return {
+        "home": round(p_home * 100, 1), "draw": round(p_draw * 100, 1), "away": round(p_away * 100, 1),
+        "over25": round(p_over * 100, 1), "under25": round((1 - p_over) * 100, 1),
+        "btts_yes": round(p_btts * 100, 1), "btts_no": round((1 - p_btts) * 100, 1),
+        "top_scorelines": [{"score": s, "prob": round(p * 100, 1)} for s, p in grid[:5]],
+        "lambda_home": round(lam_h, 2), "lambda_away": round(lam_a, 2),
+    }
+
+
+def poisson_pmf_local(k, lam):
+    try:
+        return (lam ** k) * math.exp(-lam) / math.factorial(k)
+    except (OverflowError, ValueError):
+        return 0.0
+
+
+def get_match_prognosis(home_team, away_team, sport_name, commence_time=None):
+    """Pure-model prognosis for one fixture (NO edge/CLV). Returns a dict the
+    match-analysis view renders. Degrades gracefully: any missing data source is
+    simply omitted, never fatal."""
+    category, surface = _prognosis_category(sport_name)
+    is_national = category == "national"
+    is_tennis = category == "tennis"
+    out = {
+        "home_team": home_team, "away_team": away_team, "sport_name": sport_name,
+        "category": category, "commence_time": commence_time,
+        "elo": None, "poisson": None, "form": None, "h2h": None,
+        "best_pick": None, "confidence": None, "confidence_tier": None,
+        "agreement": None, "notes": [],
+    }
+
+    # ---- Elo (the calibrated spine) ----
+    elo = None
+    try:
+        elo = elo_based_probability(home_team, away_team, category, surface=surface)
+    except Exception:
+        elo = None
+    out["elo"] = elo
+
+    # ---- Poisson shape (O/U, scorelines, BTTS, agreement vote) — football only ----
+    poisson = None
+    if not is_tennis:
+        try:
+            conn = get_connection()
+            hm = _team_recent_football(conn, home_team, national=is_national)
+            am = _team_recent_football(conn, away_team, national=is_national)
+            conn.close()
+            hr = _team_goal_rates(hm, home_team)
+            ar = _team_goal_rates(am, away_team)
+            if hr and ar:
+                # mirror the live xG-Poisson blend (home boost / away damp)
+                lam_h = (hr["gf"] + ar["ga"]) / 2 * 1.10
+                lam_a = (ar["gf"] + hr["ga"]) / 2 * 0.95
+                poisson = _poisson_shape(lam_h, lam_a)
+                poisson["sample"] = {"home_matches": hr["n"], "away_matches": ar["n"]}
+        except Exception:
+            poisson = None
+    out["poisson"] = poisson
+
+    # ---- Recent form ----
+    try:
+        conn = get_connection()
+        if is_national:
+            allm = [dict(r) for r in conn.execute(
+                "SELECT home_team, away_team, home_goals, away_goals FROM national_matches ORDER BY date DESC LIMIT 200").fetchall()]
+        else:
+            allm = []
+        conn.close()
+        if not is_tennis:
+            conn = get_connection()
+            hm = _team_recent_football(conn, home_team, national=is_national)
+            am = _team_recent_football(conn, away_team, national=is_national)
+            conn.close()
+            def _form(matches, team):
+                _, like = _fuzzy_team_filter(team); key = like.strip("%").lower()
+                ml = [{"home_team": m["home_team"], "away_team": m["away_team"],
+                       "home_score": m["home_goals"], "away_score": m["away_goals"]} for m in matches]
+                # pick the name as it appears in the data for calculate_recent_form
+                name = None
+                for m in matches:
+                    if key in (m.get("home_team") or "").lower(): name = m["home_team"]; break
+                    if key in (m.get("away_team") or "").lower(): name = m["away_team"]; break
+                if not name or not calculate_recent_form:
+                    return None
+                return calculate_recent_form(name, ml, last_n=6)
+            hf, af = _form(hm, home_team), _form(am, away_team)
+            if hf or af:
+                out["form"] = {"home": hf, "away": af}
+    except Exception:
+        pass
+
+    # ---- H2H ----
+    try:
+        if not is_tennis:
+            conn = get_connection()
+            h2h = _h2h_football(conn, home_team, away_team, national=is_national)
+            conn.close()
+            if h2h:
+                hw = aw = dr = 0
+                _, lh = _fuzzy_team_filter(home_team); hk = lh.strip("%").lower()
+                for m in h2h:
+                    home_is_h = hk in (m["home_team"] or "").lower()
+                    hg, ag = m["home_goals"], m["away_goals"]
+                    if hg == ag: dr += 1
+                    elif (hg > ag) == home_is_h: hw += 1
+                    else: aw += 1
+                out["h2h"] = {"matches": h2h, "home_wins": hw, "away_wins": aw, "draws": dr, "n": len(h2h)}
+    except Exception:
+        pass
+
+    # ---- Confidence (Elo-anchored) + agreement + best pick ----
+    if elo:
+        labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
+        probs = {k: elo.get(k) for k in labels if elo.get(k) is not None}
+        if probs:
+            top = max(probs, key=probs.get)
+            conf = probs[top]
+            sel_name = home_team if top == "home" else away_team if top == "away" else "Empate"
+            out["best_pick"] = {"outcome": top, "selection": sel_name, "prob": conf}
+            out["confidence"] = conf
+            # agreement vote with Poisson (1X2 argmax) when available
+            agree = None
+            if poisson:
+                pk = {"home": poisson["home"], "draw": poisson.get("draw", 0), "away": poisson["away"]}
+                p_top = max((k for k in labels), key=lambda k: pk.get(k, 0))
+                agree = (p_top == top)
+            out["agreement"] = agree
+            # tier from the CALIBRATED Elo prob, upgraded/gated by agreement
+            if conf >= 70 and agree is not False:
+                tier = "Alta"
+            elif conf >= 60 and agree is not False:
+                tier = "Média-alta"
+            elif conf >= 50:
+                tier = "Média"
+            else:
+                tier = "Baixa"
+            if agree is False:
+                out["notes"].append("Elo e modelo de golos discordam — confiança reduzida.")
+                if tier in ("Alta", "Média-alta"):
+                    tier = "Média"
+            out["confidence_tier"] = tier
+    if not elo:
+        out["notes"].append("Sem rating Elo suficiente para estas equipas — prognóstico limitado.")
+    return out
+
+
+def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
+    """Rank upcoming fixtures by (calibrated) Elo confidence, keeping only picks
+    where the goals-Poisson AGREES with Elo — the combination the backtest showed
+    actually raises the realised hit-rate. Returns the top legs for a "Múltipla do
+    Dia". FOR FUN ONLY: an accumulator multiplies the bookmaker margin, so this is
+    -EV by construction and is never part of the edge/CLV system."""
+    # preload Elo once so per-event lookups are cheap
+    global _session_elo
+    try:
+        conn = get_connection()
+        elo_rows = [dict(r) for r in conn.execute("SELECT * FROM elo_ratings").fetchall()]
+        _session_elo = {(r["entity"].lower(), r["category"], r.get("surface") or ''): r for r in elo_rows}
+        rows = conn.execute(
+            "SELECT event_id, sport_name, home_team, away_team, commence_time, "
+            "x1_home, x1_draw, x1_away, best_home, best_draw, best_away "
+            "FROM odds_events WHERE commence_time > datetime('now','-3 hours') "
+            f"AND commence_time < datetime('now','+{int(window_hours)} hours') "
+            "ORDER BY commence_time ASC"
+        ).fetchall()
+    except Exception as e:
+        print(f"DAILY_MULTIPLE_ERROR: {e}", flush=True)
+        try: conn.close()
+        except Exception: pass
+        return {"legs": [], "note": "sem dados"}
+
+    candidates = []
+    for r in rows[:80]:
+        d = dict(r)
+        home, away, sport = d["home_team"], d["away_team"], d["sport_name"]
+        category, surface = _prognosis_category(sport)
+        is_tennis = category == "tennis"
+        is_national = category == "national"
+        try:
+            elo = elo_based_probability(home, away, category, surface=surface)
+        except Exception:
+            elo = None
+        if not elo:
+            continue
+        labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
+        probs = {k: elo.get(k) for k in labels if elo.get(k) is not None}
+        if not probs:
+            continue
+        top = max(probs, key=probs.get)
+        conf = probs[top]
+        if conf < min_conf:
+            continue
+        # agreement vote with goals-Poisson (football only) using the shared conn
+        agree = None
+        if not is_tennis:
+            try:
+                hm = _team_recent_football(conn, home, national=is_national)
+                am = _team_recent_football(conn, away, national=is_national)
+                hr, ar = _team_goal_rates(hm, home), _team_goal_rates(am, away)
+                if hr and ar:
+                    ps = _poisson_shape((hr["gf"] + ar["ga"]) / 2 * 1.10,
+                                        (ar["gf"] + hr["ga"]) / 2 * 0.95)
+                    pk = {"home": ps["home"], "draw": ps.get("draw", 0), "away": ps["away"]}
+                    agree = (max((k for k in labels), key=lambda k: pk.get(k, 0)) == top)
+            except Exception:
+                agree = None
+        # require agreement when we could compute it (that's the gate that works)
+        if agree is False:
+            continue
+        odd = {"home": d.get("best_home") or d.get("x1_home"),
+               "draw": d.get("best_draw") or d.get("x1_draw"),
+               "away": d.get("best_away") or d.get("x1_away")}.get(top)
+        sel = home if top == "home" else away if top == "away" else "Empate"
+        candidates.append({
+            "event_id": d["event_id"], "sport_name": sport, "commence_time": d["commence_time"],
+            "home_team": home, "away_team": away, "selection": sel, "outcome": top,
+            "confidence": conf, "agreement": agree, "odd": odd,
+        })
+    conn.close()
+
+    candidates.sort(key=lambda x: -x["confidence"])
+    legs = candidates[:max_legs]
+    combined = 1.0
+    have_all_odds = True
+    for l in legs:
+        if l.get("odd") and l["odd"] > 1:
+            combined *= l["odd"]
+        else:
+            have_all_odds = False
+    joint = 1.0
+    for l in legs:
+        joint *= (l["confidence"] / 100.0)
+    return {
+        "legs": legs,
+        "combined_odd": round(combined, 2) if have_all_odds and legs else None,
+        "model_all_hit_pct": round(joint * 100, 1) if legs else None,
+        "note": "Informativo e para diversão. Uma múltipla multiplica a margem da casa — é -EV. "
+                "Nada disto tem a ver com o sistema de edge/CLV da página Value Bets.",
+    }
+
+
 def get_elo_summary():
     """Top-rated entities per category."""
     conn = get_connection()

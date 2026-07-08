@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Múltipla do Dia — BetIQ</title>
+<link rel="stylesheet" href="/static/css/style.css?v=20260608l">
+<style>
+  .mp-wrap { max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
+  .mp-back { display:inline-flex; gap:.5rem; margin-bottom:1.25rem; color:var(--accent); text-decoration:none; font-weight:500; font-size:14px; }
+  .mp-back:hover { text-decoration: underline; }
+  .mp-title { font-size: 26px; font-weight: 700; margin-bottom: .35rem; }
+  .mp-sub { color: var(--text3); font-size: 14px; margin-bottom: 1rem; }
+  .mp-warn { background:#fff6e6; border:1px solid #ffd591; border-left:4px solid #F39C12; color:#7a4d00; border-radius:8px; padding:.9rem 1.1rem; font-size:13px; line-height:1.55; margin-bottom:1.25rem; }
+  [data-theme="dark"] .mp-warn { background:#33280f; border-color:#6b521c; color:#ffdfa6; }
+  .mp-leg { display:flex; align-items:center; justify-content:space-between; gap:1rem; background:var(--card-bg); border:1px solid var(--border); border-radius:10px; padding:1rem 1.15rem; margin-bottom:.75rem; text-decoration:none; color:inherit; }
+  .mp-leg:hover { border-color: var(--accent); }
+  .mp-leg-main { min-width:0; }
+  .mp-leg-sel { font-size:17px; font-weight:700; }
+  .mp-leg-match { font-size:12.5px; color:var(--text3); margin-top:2px; }
+  .mp-leg-right { text-align:right; white-space:nowrap; }
+  .mp-tier { display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:700; }
+  .mp-tier.hi { background:#d4edda; color:#155724; } .mp-tier.mid { background:#fff3cd; color:#856404; }
+  .mp-odd { font-size:15px; font-weight:700; margin-top:3px; }
+  .mp-summary { background:linear-gradient(135deg,var(--card-bg),var(--bg)); border:2px solid #4A90E2; border-radius:12px; padding:1.25rem 1.4rem; margin-top:1rem; }
+  .mp-summary-row { display:flex; justify-content:space-between; font-size:15px; margin:.3rem 0; }
+  .mp-summary-row strong { font-size:20px; }
+  .mp-empty { text-align:center; color:var(--text3); padding:3rem 1rem; }
+</style>
+</head>
+<body>
+<div class="mp-wrap">
+  <a href="/" class="mp-back">← Voltar</a>
+  <div class="mp-title">🎲 Múltipla do Dia</div>
+  <div class="mp-sub">Os jogos onde o modelo está mais confiante e o modelo de golos concorda com o Elo.</div>
+  <div class="mp-warn">
+    <strong>Para diversão — não é o sistema de valor.</strong> Uma múltipla <em>multiplica a margem da casa</em>,
+    por isso é matematicamente <strong>-EV</strong> (perde valor a cada perna). Isto não tem nada a ver com o
+    semáforo 🟢 / edge / CLV da página <strong>Value Bets</strong>. É só "em quem o modelo apostava hoje".
+  </div>
+  <div id="mp-content"><div class="mp-empty">A calcular…</div></div>
+</div>
+<script>
+function tierClass(c) { return c >= 70 ? 'hi' : 'mid'; }
+function tierLabel(c) { return c >= 70 ? 'Alta' : 'Média-alta'; }
+
+async function load() {
+  try {
+    const d = await (await fetch('/api/daily-multiple')).json();
+    const el = document.getElementById('mp-content');
+    if (!d.legs || d.legs.length === 0) {
+      el.innerHTML = `<div class="mp-empty">Sem jogos com confiança suficiente na janela atual.<br>
+        Volta quando houver mais jogos dentro de ~72h.</div>`;
+      return;
+    }
+    let html = d.legs.map(l => `
+      <a class="mp-leg" href="/match/${l.event_id}">
+        <div class="mp-leg-main">
+          <div class="mp-leg-sel">${l.selection}</div>
+          <div class="mp-leg-match">${l.home_team} vs ${l.away_team} · ${l.sport_name}</div>
+        </div>
+        <div class="mp-leg-right">
+          <span class="mp-tier ${tierClass(l.confidence)}">${tierLabel(l.confidence)} · ${l.confidence}%</span>
+          <div class="mp-odd">${l.odd ? '@ ' + l.odd.toFixed(2) : 'odd —'}</div>
+        </div>
+      </a>`).join('');
+
+    html += `<div class="mp-summary">
+      <div class="mp-summary-row"><span>Pernas</span><strong>${d.legs.length}</strong></div>
+      ${d.combined_odd ? `<div class="mp-summary-row"><span>Odd combinada</span><strong>${d.combined_odd.toFixed(2)}</strong></div>` : ''}
+      ${d.model_all_hit_pct != null ? `<div class="mp-summary-row"><span>Modelo acerta as ${d.legs.length}</span><strong>~${d.model_all_hit_pct}%</strong></div>` : ''}
+      <div style="font-size:12px;color:var(--text3);margin-top:.6rem;line-height:1.5">${d.note || ''}</div>
+    </div>`;
+    el.innerHTML = html;
+  } catch (e) {
+    document.getElementById('mp-content').innerHTML =
+      '<div class="mp-empty">Erro ao carregar: ' + e.message + '</div>';
+  }
+}
+load();
+</script>
+</body>
+</html>
