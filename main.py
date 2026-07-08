@@ -787,10 +787,13 @@ async def api_value_bets():
         return JSONResponse([])
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
 async def healthz():
     """Ultra-cheap liveness check (no DB). Point an external uptime pinger here
-    (e.g. UptimeRobot every 5 min) to stop Render's free tier from sleeping."""
+    (e.g. UptimeRobot every 5 min) to stop Render's free tier from sleeping.
+    Accepts HEAD as well as GET: uptime monitors often default to HEAD, and a
+    GET-only route returned 405 to those checks → the monitor read the service
+    as permanently DOWN even though the app was serving 200 to GET."""
     return JSONResponse({"ok": True})
 
 @app.get("/api/value-bets/{event_id}")
