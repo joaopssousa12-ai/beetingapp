@@ -1,0 +1,34 @@
+name: render-diag
+
+# One-shot diagnostic (manual): mimics UptimeRobot's checks against /healthz and
+# dumps status codes + Render routing headers, to explain why UptimeRobot sees
+# 503 while direct calls see 200. Reads only.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe /healthz like an uptime monitor
+        run: |
+          U=https://beetingapp-1.onrender.com/healthz
+          echo "===== 5 rapid GETs (status | time | render routing/server headers) ====="
+          for i in 1 2 3 4 5; do
+            out=$(curl -sS -o /dev/null -D - -m 30 "$U" \
+                  -w 'STATUS=%{http_code} TIME=%{time_total}s\n' 2>&1 \
+                  | grep -iE 'STATUS=|^server:|^x-render|^rndr|^retry-after|^cf-' )
+            echo "GET #$i: $out"
+            sleep 3
+          done
+          echo
+          echo "===== HEAD request (some monitors default to HEAD) ====="
+          curl -sS -I -m 30 "$U" | grep -iE '^HTTP|^server:|^x-render|^allow:' || true
+          echo
+          echo "===== GET with UptimeRobot user-agent ====="
+          curl -sS -o /dev/null -D - -m 30 -A "Mozilla/5.0+(compatible; UptimeRobot/2.0; http://www.uptimerobot.com/)" "$U" \
+            -w 'STATUS=%{http_code} TIME=%{time_total}s\n' | grep -iE 'STATUS=|^server:|^x-render' || true
+          echo
+          echo "===== root / for comparison ====="
+          curl -sS -o /dev/null -m 30 "https://beetingapp-1.onrender.com/" -w 'ROOT STATUS=%{http_code} TIME=%{time_total}s\n' || true
