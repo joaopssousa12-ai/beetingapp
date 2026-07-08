@@ -26,23 +26,49 @@ jobs:
           curl -fsS -m 60 "$BASE/api/diag/books?sport=soccer_japan_j_league" || true; echo
           echo "--- last collection log ---"
           curl -fsS -m 60 "$BASE/api/collection/status" || true; echo
-      - name: Check /api/value-bets for Brazil/Japan events
+      - name: Check /api/value-bets for Brazil/Japan events (before refresh)
         run: |
           BASE=https://beetingapp-1.onrender.com
-          curl -fsS -m 60 "$BASE/api/value-bets" -o /tmp/vb.json || true
+          curl -fsS -m 60 "$BASE/api/value-bets" -o /tmp/vb_before.json || true
           python3 - <<'EOF'
           import json
           try:
-              d = json.load(open("/tmp/vb.json"))
+              d = json.load(open("/tmp/vb_before.json"))
           except Exception as e:
               print("parse error:", e); raise SystemExit(0)
-          print(f"total value-bets events: {len(d)}")
+          print(f"[BEFORE] total value-bets events: {len(d)}")
           sports = sorted(set(e.get("sport_key") for e in d))
-          print("all sport_keys present in value-bets:", sports)
+          print("[BEFORE] all sport_keys present in value-bets:", sports)
+          EOF
+      - name: Trigger a fast odds refresh (same as the site's Refresh button)
+        run: |
+          BASE=https://beetingapp-1.onrender.com
+          echo "--- POST /api/odds/refresh (root-cause fix: no collection has run on this instance since restart) ---"
+          curl -fsS -m 60 -X POST "$BASE/api/odds/refresh" || true; echo
+          echo "waiting 90s for the fast refresh (fetches live odds + recomputes value bets)..."
+          sleep 90
+          echo "--- collection status after refresh ---"
+          curl -fsS -m 60 "$BASE/api/collection/status" || true; echo
+      - name: Check /api/value-bets for Brazil/Japan events (after refresh)
+        run: |
+          BASE=https://beetingapp-1.onrender.com
+          curl -fsS -m 60 "$BASE/api/value-bets" -o /tmp/vb_after.json || true
+          python3 - <<'EOF'
+          import json
+          try:
+              d = json.load(open("/tmp/vb_after.json"))
+          except Exception as e:
+              print("parse error:", e); raise SystemExit(0)
+          print(f"[AFTER] total value-bets events: {len(d)}")
+          sports = sorted(set(e.get("sport_key") for e in d))
+          print("[AFTER] all sport_keys present in value-bets:", sports)
           br = [e for e in d if e.get("sport_key") == "soccer_brazil_campeonato"]
           jp = [e for e in d if e.get("sport_key") == "soccer_japan_j_league"]
-          print(f"Brazil events in value-bets: {len(br)}")
-          print(f"Japan events in value-bets: {len(jp)}")
+          print(f"[AFTER] Brazil events in value-bets: {len(br)}")
+          print(f"[AFTER] Japan events in value-bets: {len(jp)}")
           for e in (br + jp)[:10]:
-              print(" ", e.get("sport_key"), e.get("home_team"), "v", e.get("away_team"), e.get("commence_time"))
+              bv = e.get("best_value") or {}
+              print(" ", e.get("sport_key"), e.get("home_team"), "v", e.get("away_team"),
+                    e.get("commence_time"), "| best_value:", bv.get("selection"), bv.get("book"),
+                    bv.get("book_odd"), "edge", bv.get("edge_pct"))
           EOF
