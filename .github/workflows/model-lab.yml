@@ -1,0 +1,23 @@
+name: model-lab
+
+# On-demand analysis lab (manual trigger only, never scheduled): validates the
+# PURE-MODEL prediction quality (Elo + Poisson vs market) walk-forward on the
+# free football-data.co.uk history. This is the honesty gate for the upcoming
+# match-analysis page ("prognostic" / safest pick / múltipla do dia) — it proves
+# whether the model's confidence is real BEFORE any of it is shown to the user.
+# No deploy, no product change, no Odds-API credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  model-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: Pure-model backtest (Elo + Poisson vs market, calibration + agreement)
+        run: python scripts/model_backtest.py
