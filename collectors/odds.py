@@ -544,6 +544,11 @@ def probe_all_books(sport_key=None):
     except Exception as e:
         return {"error": repr(e), "sport": sport_key}
 
+    # Diagnostic aid: kickoff times as the API sees them, so a "why isn't this
+    # showing on the site" question can be answered without a DB connection —
+    # e.g. confirms whether events fall inside/outside the value-bets 48h window.
+    commence_times = sorted(e.get("commence_time") for e in events if e.get("commence_time"))
+
     best, beats, priced = {}, {}, {}
     beat_margin = {}        # book -> sum of (p/x1 - 1) over outcomes where it beats 1xBet
     x1_priced_with = {}     # book -> outcomes where BOTH this book and 1xBet are priced
@@ -595,7 +600,8 @@ def probe_all_books(sport_key=None):
           "priced": priced.get(bk, 0)} for bk in priced),
         key=lambda x: (-(x["exp_uplift_pct"] or 0), -x["beats_1xbet"]))
     return {"sport": sport_key, "events": len(events), "outcomes": outcomes,
-            "x1_outcomes": x1_outcomes, "credits_remaining": remaining, "ranking": ranking}
+            "x1_outcomes": x1_outcomes, "credits_remaining": remaining, "ranking": ranking,
+            "commence_times": commence_times}
 
 
 def collect_odds(status_callback=None):
