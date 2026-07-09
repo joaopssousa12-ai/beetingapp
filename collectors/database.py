@@ -3336,6 +3336,40 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
         out["confidence_tier"] = tier
     else:
         out["notes"].append("Sem rating Elo nem odds Pinnacle para estas equipas — prognóstico indisponível.")
+
+    # ---- MARKET RANKING: most-likely market per match ("qual o mercado mais
+    # provável?"). Derived from the calibrated blend; O/U + BTTS come from the
+    # goals-Poisson and are flagged as auxiliary (weaker signal, 53% acc). ----
+    markets = []
+    if spine:
+        top = max(spine, key=spine.get)
+        sel_name = home_team if top == "home" else away_team if top == "away" else "Empate"
+        markets.append({"market": "Resultado final (1X2)", "selection": sel_name,
+                        "prob": spine[top], "source": basis})
+        if spine.get("draw") is not None and top != "draw":
+            # double chance fav-or-draw
+            p_dc = round(min(99.0, spine[top] + spine["draw"]), 1)
+            tag = "1X" if top == "home" else "X2"
+            markets.append({"market": f"Dupla hipótese ({tag})",
+                            "selection": f"{sel_name} ou Empate", "prob": p_dc, "source": basis})
+            # draw no bet on the fav (draw = stake refunded)
+            other = "away" if top == "home" else "home"
+            denom = spine[top] + spine.get(other, 0)
+            if denom > 0:
+                markets.append({"market": "Empate anula (DNB)", "selection": sel_name,
+                                "prob": round(spine[top] / denom * 100, 1),
+                                "source": basis, "note": "empate devolve a stake"})
+    if poisson:
+        ou_side = ("Over 2.5", poisson["over25"]) if poisson["over25"] >= poisson["under25"] \
+                  else ("Under 2.5", poisson["under25"])
+        markets.append({"market": "Golos O/U 2.5", "selection": ou_side[0], "prob": ou_side[1],
+                        "source": "modelo de golos", "auxiliary": True})
+        btts_side = ("Ambas marcam: Sim", poisson["btts_yes"]) if poisson["btts_yes"] >= poisson["btts_no"] \
+                    else ("Ambas marcam: Não", poisson["btts_no"])
+        markets.append({"market": "BTTS", "selection": btts_side[0], "prob": btts_side[1],
+                        "source": "modelo de golos", "auxiliary": True})
+    markets.sort(key=lambda m: -m["prob"])
+    out["markets"] = markets
     return out
 
 
@@ -3421,33 +3455,54 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         # require agreement when we could compute it (that's the gate that works)
         if agree is False:
             continue
-        odd = {"home": d.get("best_home") or d.get("x1_home"),
-               "draw": d.get("best_draw") or d.get("x1_draw"),
-               "away": d.get("best_away") or d.get("x1_away")}.get(top)
+        odds_all = {"home": d.get("best_home") or d.get("x1_home"),
+                    "draw": d.get("best_draw") or d.get("x1_draw"),
+                    "away": d.get("best_away") or d.get("x1_away")}
+        odd = odds_all.get(top)
         sel = home if top == "home" else away if top == "away" else "Empate"
-        candidates.append({
+        leg = {
             "event_id": d["event_id"], "sport_name": sport, "commence_time": d["commence_time"],
             "home_team": home, "away_team": away, "selection": sel, "outcome": top,
             "confidence": conf, "agreement": agree, "odd": odd,
-        })
+        }
+        # safe variant: double chance fav-or-draw (football only). Book odd derived
+        # by dutching the two 1X2 prices: odd_DC = 1/(1/o_fav + 1/o_draw).
+        if top != "draw" and probs.get("draw") is not None:
+            o_top, o_dr = odds_all.get(top), odds_all.get("draw")
+            leg["dc_prob"] = round(min(99.0, conf + probs["draw"]), 1)
+            leg["dc_selection"] = f"{sel} ou Empate"
+            if o_top and o_dr and o_top > 1 and o_dr > 1:
+                leg["dc_odd"] = round(1.0 / (1.0 / o_top + 1.0 / o_dr), 2)
+        candidates.append(leg)
     conn.close()
 
     candidates.sort(key=lambda x: -x["confidence"])
     legs = candidates[:max_legs]
-    combined = 1.0
-    have_all_odds = True
-    for l in legs:
-        if l.get("odd") and l["odd"] > 1:
-            combined *= l["odd"]
-        else:
-            have_all_odds = False
-    joint = 1.0
-    for l in legs:
-        joint *= (l["confidence"] / 100.0)
+
+    def _combine(legs_, odd_key, prob_key):
+        combined, joint, have_all = 1.0, 1.0, True
+        for l in legs_:
+            o = l.get(odd_key)
+            if o and o > 1:
+                combined *= o
+            else:
+                have_all = False
+            joint *= (l.get(prob_key) or 0) / 100.0
+        return (round(combined, 2) if have_all and legs_ else None,
+                round(joint * 100, 1) if legs_ else None)
+
+    combined_odd, all_hit = _combine(legs, "odd", "confidence")
+    # safe accumulator: double-chance legs (fav-or-draw), much higher hit rate,
+    # much shorter combined odd — only legs where DC applies
+    safe_legs = [l for l in candidates if l.get("dc_prob")][:max_legs]
+    safe_odd, safe_hit = _combine(safe_legs, "dc_odd", "dc_prob")
     return {
         "legs": legs,
-        "combined_odd": round(combined, 2) if have_all_odds and legs else None,
-        "model_all_hit_pct": round(joint * 100, 1) if legs else None,
+        "combined_odd": combined_odd,
+        "model_all_hit_pct": all_hit,
+        "safe_legs": safe_legs,
+        "safe_combined_odd": safe_odd,
+        "safe_all_hit_pct": safe_hit,
         "note": "Informativo e para diversão. Uma múltipla multiplica a margem da casa — é -EV. "
                 "Nada disto tem a ver com o sistema de edge/CLV da página Value Bets.",
     }

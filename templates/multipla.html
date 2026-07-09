@@ -77,6 +77,31 @@ async function load() {
       ${d.model_all_hit_pct != null ? `<div class="mp-summary-row"><span>Modelo acerta as ${d.legs.length}</span><strong>~${d.model_all_hit_pct}%</strong></div>` : ''}
       <div style="font-size:12px;color:var(--text3);margin-top:.6rem;line-height:1.5">${d.note || ''}</div>
     </div>`;
+
+    // safe variant: double-chance legs — hits far more often, pays far less
+    if (d.safe_legs && d.safe_legs.length) {
+      html += `<div class="mp-title" style="font-size:20px;margin-top:2rem">🛡️ Múltipla Segura (dupla hipótese)</div>
+      <div class="mp-sub">As mesmas equipas, mas "ganha ou empata" — acerta muito mais vezes, paga muito menos.</div>`;
+      html += d.safe_legs.map(l => `
+        <a class="mp-leg" href="/match/${l.event_id}">
+          <div class="mp-leg-main">
+            <div class="mp-leg-sel">${l.dc_selection}</div>
+            <div class="mp-leg-match">${l.home_team} vs ${l.away_team} · ${l.sport_name} · ${fmtDate(l.commence_time)}</div>
+          </div>
+          <div class="mp-leg-right">
+            <span class="mp-tier hi">${l.dc_prob}%</span>
+            <div class="mp-odd">${l.dc_odd ? '@ ~' + l.dc_odd.toFixed(2) : 'odd —'}</div>
+          </div>
+        </a>`).join('');
+      html += `<div class="mp-summary">
+        <div class="mp-summary-row"><span>Pernas</span><strong>${d.safe_legs.length}</strong></div>
+        ${d.safe_combined_odd ? `<div class="mp-summary-row"><span>Odd combinada (aprox.)</span><strong>${d.safe_combined_odd.toFixed(2)}</strong></div>` : ''}
+        ${d.safe_all_hit_pct != null ? `<div class="mp-summary-row"><span>Modelo acerta as ${d.safe_legs.length}</span><strong>~${d.safe_all_hit_pct}%</strong></div>` : ''}
+        <div style="font-size:12px;color:var(--text3);margin-top:.6rem;line-height:1.5">
+          Odd de dupla hipótese estimada a partir dos preços 1X2 (a odd real da casa pode diferir ligeiramente). Continua a ser -EV.
+        </div>
+      </div>`;
+    }
     el.innerHTML = html;
   } catch (e) {
     document.getElementById('mp-content').innerHTML =
