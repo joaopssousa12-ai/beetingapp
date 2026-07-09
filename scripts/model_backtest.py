@@ -211,6 +211,7 @@ def main():
     # betting sim: every consensus pick becomes a candidate single bet
     # (tier, won, odd_pin, odd_max, conf)
     bets = []
+    market_rows = []   # (p_bld, actual) for the alternative-markets validation
 
     # agreement / confidence buckets (Elo vs Poisson, and confidence tiers)
     agree_hit = [0, 0]      # [hits, n] where Elo-argmax == Poisson-argmax
@@ -253,6 +254,7 @@ def main():
                 s_mkt.add(p_mkt, actual)
                 p_bld = [(p_mkt[i] + p_elo[i]) / 2 for i in range(3)]
                 s_bld.add(p_bld, actual)
+                market_rows.append({"p_bld": p_bld, "actual": actual})
 
             # O/U 2.5
             went_over = (r["home_goals"] + r["away_goals"]) >= 3
@@ -387,6 +389,39 @@ def main():
     print("\n  NOTE: staking cannot rescue negative EV — it only changes HOW FAST you")
     print("  win/lose it. Confidence-staking only makes sense if high-conf tiers have")
     print("  BETTER ROI than low-conf tiers (check the tier table above).")
+
+    # ================================================================
+    # PART 3 — ALTERNATIVE MARKETS from the blend (for the "best market
+    # per match" feature + the safe accumulator): double chance and
+    # draw-no-bet hit rates + calibration, walk-forward like everything else.
+    # ================================================================
+    print("\n\n===== ALTERNATIVE MARKETS (blend probs, walk-forward) =====")
+    dc_cal = defaultdict(lambda: [0, 0.0, 0])   # double chance: fav + draw
+    dnb_cal = defaultdict(lambda: [0, 0.0, 0])  # draw no bet on the fav (push=refund→skip)
+    for m in market_rows:
+        p_bld, actual = m["p_bld"], m["actual"]
+        fav = max(range(3), key=lambda i: p_bld[i])
+        if fav == 1:
+            continue                      # fav = draw: DC/DNB not meaningful
+        # double chance fav-or-draw
+        p_dc = p_bld[fav] + p_bld[1]
+        won_dc = actual in (fav, 1)
+        b = min(9, int(p_dc * 10)); c = dc_cal[b]
+        c[0] += 1 if won_dc else 0; c[1] += p_dc; c[2] += 1
+        # draw no bet (conditional on no draw)
+        if actual != 1:
+            p_dnb = p_bld[fav] / (p_bld[fav] + p_bld[2 - fav])
+            won = actual == fav
+            b2 = min(9, int(p_dnb * 10)); c2 = dnb_cal[b2]
+            c2[0] += 1 if won else 0; c2[1] += p_dnb; c2[2] += 1
+    for name, cal in [("DOUBLE CHANCE (fav+draw)", dc_cal), ("DRAW NO BET (fav)", dnb_cal)]:
+        print(f"  --- {name}: predicted -> realised ---")
+        for b in sorted(cal):
+            hits, psum, n = cal[b]
+            if n < 100:
+                continue
+            print(f"    p~{b*10:2d}-{b*10+10:2d}%  predicted {psum/n*100:5.1f}%  "
+                  f"realised {hits/n*100:5.1f}%  (n={n})")
 
 
 if __name__ == "__main__":
