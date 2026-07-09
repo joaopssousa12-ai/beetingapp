@@ -102,13 +102,14 @@ function fairOdd(p) { return p > 0 ? (100 / p).toFixed(2) : '—'; }
 
 function render(d) {
   const elo = d.elo, poi = d.poisson, home = d.home_team, away = d.away_team;
+  const probs = d.probs, basis = d.basis || 'Elo';
 
   // Honesty banner — this page is context, NOT the edge/CLV system.
   let html = `<div class="md-info-banner">
     <strong>Análise do modelo — informativa.</strong> Isto diz-te <em>em quem o modelo acha que devias apostar</em>
-    (Elo + forma + confrontos + golos), para contexto e diversão. <strong>Não</strong> é uma recomendação de valor:
-    o sistema de edge/CLV (semáforo 🟢) vive na página <strong>Value Bets</strong> e é independente disto.
-    A confiança mostrada vem do Elo, que é o sinal calibrado (validado em 27.844 jogos).
+    (Elo + mercado + forma + confrontos + golos), para contexto e diversão. <strong>Não</strong> é uma recomendação
+    de valor: o sistema de edge/CLV (semáforo 🟢) vive na página <strong>Value Bets</strong> e é independente disto.
+    A confiança vem da fusão Elo + linha sharp, o sinal mais preciso e calibrado no backtest (27.844 jogos).
   </div>`;
 
   // === MELHOR PALPITE + CONFIANÇA ===
@@ -121,18 +122,18 @@ function render(d) {
       <div class="md-pick-selection">${d.best_pick.selection}</div>
       <div class="md-pick-meta">
         <span class="md-tier ${tier}">Confiança: ${tier}</span>
-        <span>Probabilidade Elo: <strong>${d.confidence}%</strong> (odd justa ${fairOdd(d.confidence)})</span>
+        <span>Probabilidade (${basis}): <strong>${d.confidence}%</strong> (odd justa ${fairOdd(d.confidence)})</span>
         ${agr ? `<span>${agr}</span>` : ''}
       </div>
       ${(d.notes && d.notes.length) ? `<div class="md-warn-banner">${d.notes.join(' ')}</div>` : ''}
     </div>`;
   }
 
-  // === PROBABILIDADES ELO ===
-  if (elo) {
-    const h = elo.home || 0, dr = elo.draw || 0, a = elo.away || 0;
+  // === PROBABILIDADES DO MODELO (blend Elo + mercado) ===
+  if (probs) {
+    const h = probs.home || 0, dr = probs.draw || 0, a = probs.away || 0;
     html += `<div class="md-section">
-      <div class="md-section-title">📈 Probabilidades (Elo)</div>
+      <div class="md-section-title">📈 Probabilidades do modelo <span style="font-size:11px;color:var(--text3);font-weight:400">(${basis})</span></div>
       <div class="md-prob-bar">
         <div class="md-prob-segment md-prob-home" style="width:${h}%">${h > 8 ? h + '%' : ''}</div>
         ${dr ? `<div class="md-prob-segment md-prob-draw" style="width:${dr}%">${dr > 8 ? dr + '%' : ''}</div>` : ''}
@@ -143,9 +144,12 @@ function render(d) {
         ${dr ? `<span>Empate: ${dr}% (${fairOdd(dr)})</span>` : ''}
         <span>${away}: ${a}% (${fairOdd(a)})</span>
       </div>
-      <div class="md-prob-labels" style="color:var(--text3)">
-        <span>Rating: ${elo.rating_home ?? '—'} vs ${elo.rating_away ?? '—'} (dif ${elo.rating_diff ?? '—'})</span>
-      </div>
+      ${elo ? `<div class="md-prob-labels" style="color:var(--text3)">
+        <span>Elo: ${elo.rating_home ?? '—'} vs ${elo.rating_away ?? '—'} (dif ${elo.rating_diff ?? '—'}) — Elo puro: ${elo.home ?? '—'}%${elo.draw != null ? ' / ' + elo.draw + '%' : ''} / ${elo.away ?? '—'}%</span>
+      </div>` : ''}
+      ${d.market ? `<div class="md-prob-labels" style="color:var(--text3)">
+        <span>Mercado (Pinnacle sem margem): ${d.market.home ?? '—'}%${d.market.draw != null ? ' / ' + d.market.draw + '%' : ''} / ${d.market.away ?? '—'}%</span>
+      </div>` : ''}
     </div>`;
   }
 

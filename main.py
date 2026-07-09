@@ -298,7 +298,9 @@ async def api_match_prognosis(event_id: str):
     if not match:
         return JSONResponse({"error": "Match not found"}, status_code=404)
     prog = get_match_prognosis(match.get("home_team"), match.get("away_team"),
-                               match.get("sport_name"), match.get("commence_time"))
+                               match.get("sport_name"), match.get("commence_time"),
+                               pin_odds=(match.get("pin_home"), match.get("pin_draw"),
+                                         match.get("pin_away")))
     return JSONResponse(prog)
 
 @app.get("/api/daily-multiple")

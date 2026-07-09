@@ -3158,28 +3158,61 @@ def poisson_pmf_local(k, lam):
         return 0.0
 
 
-def get_match_prognosis(home_team, away_team, sport_name, commence_time=None):
+def _devig_pin_odds(pin_odds):
+    """(home, draw, away) decimal odds -> devigged pct dict, or None."""
+    if not pin_odds:
+        return None
+    h_o, d_o, a_o = pin_odds
+    if not (h_o and a_o and h_o > 1 and a_o > 1):
+        return None
+    if d_o and d_o > 1:
+        m = 1 / h_o + 1 / d_o + 1 / a_o
+        return {"home": round((1 / h_o) / m * 100, 1),
+                "draw": round((1 / d_o) / m * 100, 1),
+                "away": round((1 / a_o) / m * 100, 1)}
+    m = 1 / h_o + 1 / a_o
+    return {"home": round((1 / h_o) / m * 100, 1), "draw": None,
+            "away": round((1 / a_o) / m * 100, 1)}
+
+
+def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
+                        pin_odds=None):
     """Pure-model prognosis for one fixture (NO edge/CLV). Returns a dict the
     match-analysis view renders. Degrades gracefully: any missing data source is
-    simply omitted, never fatal."""
+    simply omitted, never fatal.
+
+    pin_odds: optional (home, draw, away) Pinnacle decimal odds. When available,
+    the headline probability is the 50/50 BLEND of market-devig + Elo — model-lab
+    v2 (27,844 matches, walk-forward) showed the blend beats Elo alone (51.4% vs
+    49.3% acc, better Brier) with conservative calibration (says 74.5% -> happens
+    81.5%). Aggregating the market is what the top analysis sites do."""
     category, surface = _prognosis_category(sport_name)
     is_national = category == "national"
     is_tennis = category == "tennis"
     out = {
         "home_team": home_team, "away_team": away_team, "sport_name": sport_name,
         "category": category, "commence_time": commence_time,
-        "elo": None, "poisson": None, "form": None, "h2h": None,
+        "elo": None, "market": None, "probs": None, "basis": None,
+        "poisson": None, "form": None, "h2h": None,
         "best_pick": None, "confidence": None, "confidence_tier": None,
         "agreement": None, "notes": [],
     }
 
-    # ---- Elo (the calibrated spine) ----
+    # ---- Elo ----
     elo = None
     try:
         elo = elo_based_probability(home_team, away_team, category, surface=surface)
     except Exception:
         elo = None
     out["elo"] = elo
+
+    # ---- Market devig (for the blended headline) ----
+    market = None
+    try:
+        market = _devig_pin_odds(pin_odds)
+    except Exception:
+        market = None
+    out["market"] = market
 
     # ---- Poisson shape (O/U, scorelines, BTTS, agreement vote) — football only ----
     poisson = None
@@ -3252,39 +3285,57 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None):
     except Exception:
         pass
 
-    # ---- Confidence (Elo-anchored) + agreement + best pick ----
-    if elo:
+    # ---- Headline probabilities: BLEND (market+Elo) > Elo > market alone ----
+    spine, basis = None, None
+    if elo and market:
         labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
-        probs = {k: elo.get(k) for k in labels if elo.get(k) is not None}
-        if probs:
-            top = max(probs, key=probs.get)
-            conf = probs[top]
-            sel_name = home_team if top == "home" else away_team if top == "away" else "Empate"
-            out["best_pick"] = {"outcome": top, "selection": sel_name, "prob": conf}
-            out["confidence"] = conf
-            # agreement vote with Poisson (1X2 argmax) when available
-            agree = None
-            if poisson:
-                pk = {"home": poisson["home"], "draw": poisson.get("draw", 0), "away": poisson["away"]}
-                p_top = max((k for k in labels), key=lambda k: pk.get(k, 0))
-                agree = (p_top == top)
-            out["agreement"] = agree
-            # tier from the CALIBRATED Elo prob, upgraded/gated by agreement
-            if conf >= 70 and agree is not False:
-                tier = "Alta"
-            elif conf >= 60 and agree is not False:
-                tier = "Média-alta"
-            elif conf >= 50:
+        spine = {}
+        for k in labels:
+            e_v, m_v = elo.get(k), market.get(k)
+            if e_v is not None and m_v is not None:
+                spine[k] = round((e_v + m_v) / 2, 1)
+            elif e_v is not None:
+                spine[k] = e_v
+        basis = "Elo + mercado"
+    elif elo:
+        labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
+        spine = {k: elo.get(k) for k in labels if elo.get(k) is not None}
+        basis = "Elo"
+    elif market:
+        spine = {k: v for k, v in market.items() if v is not None}
+        basis = "mercado"
+    out["probs"] = spine
+    out["basis"] = basis
+
+    # ---- Confidence + agreement + best pick (on the blended spine) ----
+    if spine:
+        top = max(spine, key=spine.get)
+        conf = spine[top]
+        sel_name = home_team if top == "home" else away_team if top == "away" else "Empate"
+        out["best_pick"] = {"outcome": top, "selection": sel_name, "prob": conf}
+        out["confidence"] = conf
+        # agreement vote with the goals-Poisson (1X2 argmax) when available
+        agree = None
+        if poisson:
+            pk = {"home": poisson["home"], "draw": poisson.get("draw", 0), "away": poisson["away"]}
+            p_top = max(spine.keys(), key=lambda k: pk.get(k, 0))
+            agree = (p_top == top)
+        out["agreement"] = agree
+        if conf >= 70 and agree is not False:
+            tier = "Alta"
+        elif conf >= 60 and agree is not False:
+            tier = "Média-alta"
+        elif conf >= 50:
+            tier = "Média"
+        else:
+            tier = "Baixa"
+        if agree is False:
+            out["notes"].append("O modelo de golos discorda do palpite principal — confiança reduzida.")
+            if tier in ("Alta", "Média-alta"):
                 tier = "Média"
-            else:
-                tier = "Baixa"
-            if agree is False:
-                out["notes"].append("Elo e modelo de golos discordam — confiança reduzida.")
-                if tier in ("Alta", "Média-alta"):
-                    tier = "Média"
-            out["confidence_tier"] = tier
-    if not elo:
-        out["notes"].append("Sem rating Elo suficiente para estas equipas — prognóstico limitado.")
+        out["confidence_tier"] = tier
+    else:
+        out["notes"].append("Sem rating Elo nem odds Pinnacle para estas equipas — prognóstico indisponível.")
     return out
 
 
@@ -3302,6 +3353,7 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         _session_elo = {(r["entity"].lower(), r["category"], r.get("surface") or ''): r for r in elo_rows}
         rows = conn.execute(
             "SELECT event_id, sport_name, home_team, away_team, commence_time, "
+            "pin_home, pin_draw, pin_away, "
             "x1_home, x1_draw, x1_away, best_home, best_draw, best_away "
             "FROM odds_events WHERE commence_time > datetime('now','-3 hours') "
             f"AND commence_time < datetime('now','+{int(window_hours)} hours') "
@@ -3336,7 +3388,16 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         if not elo:
             continue
         labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
-        probs = {k: elo.get(k) for k in labels if elo.get(k) is not None}
+        # blended confidence (market+Elo) when Pinnacle is priced — same spine as
+        # get_match_prognosis, better accuracy and conservative calibration
+        market = _devig_pin_odds((d.get("pin_home"), d.get("pin_draw"), d.get("pin_away")))
+        probs = {}
+        for k in labels:
+            e_v = elo.get(k)
+            m_v = market.get(k) if market else None
+            if e_v is None:
+                continue
+            probs[k] = round((e_v + m_v) / 2, 1) if m_v is not None else e_v
         if not probs:
             continue
         top = max(probs, key=probs.get)
