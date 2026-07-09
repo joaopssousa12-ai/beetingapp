@@ -43,6 +43,12 @@
 <script>
 function tierClass(c) { return c >= 70 ? 'hi' : 'mid'; }
 function tierLabel(c) { return c >= 70 ? 'Alta' : 'Média-alta'; }
+function fmtDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return ts.slice(0, 16);
+  return d.toLocaleString('pt-PT', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
 
 async function load() {
   try {
@@ -57,7 +63,7 @@ async function load() {
       <a class="mp-leg" href="/match/${l.event_id}">
         <div class="mp-leg-main">
           <div class="mp-leg-sel">${l.selection}</div>
-          <div class="mp-leg-match">${l.home_team} vs ${l.away_team} · ${l.sport_name}</div>
+          <div class="mp-leg-match">${l.home_team} vs ${l.away_team} · ${l.sport_name} · ${fmtDate(l.commence_time)}</div>
         </div>
         <div class="mp-leg-right">
           <span class="mp-tier ${tierClass(l.confidence)}">${tierLabel(l.confidence)} · ${l.confidence}%</span>

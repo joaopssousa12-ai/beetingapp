@@ -179,6 +179,8 @@ def main():
         SELECT date, league_name, season, home_team, away_team,
                home_goals, away_goals, result,
                pinnacle_home_close, pinnacle_draw_close, pinnacle_away_close,
+               b365_home, b365_draw, b365_away,
+               max_home, max_draw, max_away,
                over25_pinnacle, under25_pinnacle
         FROM football_matches
         WHERE result IS NOT NULL AND home_goals IS NOT NULL AND away_goals IS NOT NULL
@@ -201,8 +203,14 @@ def main():
     s_elo = Scorer("Elo")
     s_poi = Scorer("Poisson")
     s_mkt = Scorer("Market")
+    s_bld = Scorer("Blend")     # 50/50 market-devig + Elo — the "aggregate ALL
+                                # information" approach the top analysis sites use
     ou_poi = BinScorer("Poisson O/U2.5")
     ou_mkt = BinScorer("Market O/U2.5")
+
+    # betting sim: every consensus pick becomes a candidate single bet
+    # (tier, won, odd_pin, odd_max, conf)
+    bets = []
 
     # agreement / confidence buckets (Elo vs Poisson, and confidence tiers)
     agree_hit = [0, 0]      # [hits, n] where Elo-argmax == Poisson-argmax
@@ -243,6 +251,8 @@ def main():
             s_poi.add(p_poi, actual)
             if p_mkt:
                 s_mkt.add(p_mkt, actual)
+                p_bld = [(p_mkt[i] + p_elo[i]) / 2 for i in range(3)]
+                s_bld.add(p_bld, actual)
 
             # O/U 2.5
             went_over = (r["home_goals"] + r["away_goals"]) >= 3
@@ -269,6 +279,13 @@ def main():
                        "60-70" if conf >= 0.60 else "50-60" if conf >= 0.50 else None
                 if tier:
                     conf_tiers[tier][0] += hit; conf_tiers[tier][1] += 1
+                    # candidate single bet on the consensus pick, priced at the
+                    # REAL market: Pinnacle close (sharp) and Max (best-of-books)
+                    pin_o = [r["pinnacle_home_close"], r["pinnacle_draw_close"], r["pinnacle_away_close"]][elo_arg]
+                    max_o = [r["max_home"], r["max_draw"], r["max_away"]][elo_arg]
+                    b365_o = [r["b365_home"], r["b365_draw"], r["b365_away"]][elo_arg]
+                    bets.append({"tier": tier, "won": bool(hit), "conf": conf,
+                                 "pin": pin_o, "max": max_o, "b365": b365_o})
 
         # ---- update state AFTER predicting (no lookahead) ----
         hg, ag = r["home_goals"], r["away_goals"]
@@ -283,7 +300,8 @@ def main():
 
     print("\n===== 1X2 PREDICTION QUALITY (walk-forward, no lookahead) =====")
     print("  (favourite-argmax accuracy; lower Brier/logloss = better calibrated)")
-    s_mkt.report(); s_elo.report(); s_poi.report()
+    s_mkt.report(); s_bld.report(); s_elo.report(); s_poi.report()
+    s_bld.calibration()
     print("\n===== O/U 2.5 =====")
     ou_mkt.report(); ou_poi.report()
 
@@ -309,6 +327,66 @@ def main():
               f"~{p**3*100:.0f}% of the time (single-leg realised {p*100:.1f}%).")
         print("  Reminder: an accumulator MULTIPLIES the bookmaker margin — it is -EV "
               "by construction. This feature is 'for fun', never part of the edge system.")
+
+    # ================================================================
+    # PART 2 — "IF YOU ACTUALLY BET THE PROGNOSES" (the honest money answer)
+    # Flat €10 on every consensus pick, priced three ways: Pinnacle close
+    # (sharp, low margin), Bet365 (typical soft book ~ what 1xBet pays), and
+    # Max (best price across ~10 books). Also tests confidence-scaled staking
+    # (stake ∝ confidence) vs flat on the same picks.
+    # ================================================================
+    print("\n\n===== BETTING SIM: flat €10 on every consensus pick =====")
+    STAKE = 10.0
+
+    def sim(rows_, price_key):
+        n = wins = 0
+        staked = pnl = odds_sum = 0.0
+        for b in rows_:
+            o = b.get(price_key)
+            if not o or o <= 1:
+                continue
+            n += 1; staked += STAKE; odds_sum += o
+            if b["won"]:
+                wins += 1; pnl += STAKE * (o - 1)
+            else:
+                pnl -= STAKE
+        if n == 0:
+            return None
+        return {"n": n, "win": wins / n * 100, "avg_odd": odds_sum / n,
+                "pnl": pnl, "roi": pnl / staked * 100}
+
+    for price_key, label in [("pin", "Pinnacle close"), ("b365", "Bet365 (soft book)"),
+                             ("max", "Best price (Max)")]:
+        print(f"\n  --- priced at {label} ---")
+        print(f"  {'tier':7} {'bets':>6} {'win%':>6} {'avg odd':>8} {'P&L €':>9} {'ROI%':>7}")
+        for t in ["50-60", "60-70", "70-80", "80+"]:
+            r_ = sim([b for b in bets if b["tier"] == t], price_key)
+            if r_:
+                print(f"  {t:7} {r_['n']:6} {r_['win']:6.1f} {r_['avg_odd']:8.2f} "
+                      f"{r_['pnl']:9.0f} {r_['roi']:7.2f}")
+        r_all = sim(bets, price_key)
+        if r_all:
+            print(f"  {'ALL':7} {r_all['n']:6} {r_all['win']:6.1f} {r_all['avg_odd']:8.2f} "
+                  f"{r_all['pnl']:9.0f} {r_all['roi']:7.2f}")
+
+    # confidence-scaled staking vs flat, on the same picks at the same price
+    print("\n  --- does staking BY CONFIDENCE change anything? (Max price) ---")
+    for label, stake_fn in [("flat €10", lambda c: 10.0),
+                            ("stake = conf/10 (€5-€10)", lambda c: c * 10.0),
+                            ("stake = 2x above 70% conf", lambda c: 20.0 if c >= 0.70 else 10.0)]:
+        staked = pnl = 0.0
+        for b in bets:
+            o = b.get("max")
+            if not o or o <= 1:
+                continue
+            st = stake_fn(b["conf"])
+            staked += st
+            pnl += st * (o - 1) if b["won"] else -st
+        if staked:
+            print(f"    {label:28} staked €{staked:8.0f}  P&L €{pnl:8.0f}  ROI {pnl/staked*100:6.2f}%")
+    print("\n  NOTE: staking cannot rescue negative EV — it only changes HOW FAST you")
+    print("  win/lose it. Confidence-staking only makes sense if high-conf tiers have")
+    print("  BETTER ROI than low-conf tiers (check the tier table above).")
 
 
 if __name__ == "__main__":

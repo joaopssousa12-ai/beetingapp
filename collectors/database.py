@@ -3314,9 +3314,18 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         return {"legs": [], "note": "sem dados"}
 
     candidates = []
+    seen_fixtures = set()   # the same real-world match can be stored under TWO
+                            # sport_keys (e.g. World Cup + team's league key) with
+                            # different event_ids — dedupe by team-pair + day so the
+                            # accumulator never carries the same game twice
     for r in rows[:80]:
         d = dict(r)
         home, away, sport = d["home_team"], d["away_team"], d["sport_name"]
+        fixture_key = (tuple(sorted([(home or "").lower().strip(), (away or "").lower().strip()])),
+                       (d.get("commence_time") or "")[:10])
+        if fixture_key in seen_fixtures:
+            continue
+        seen_fixtures.add(fixture_key)
         category, surface = _prognosis_category(sport)
         is_tennis = category == "tennis"
         is_national = category == "national"
