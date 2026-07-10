@@ -3435,19 +3435,26 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         except Exception: pass
         return {"legs": [], "note": "sem dados"}
 
-    candidates = []
-    seen_fixtures = set()   # the same real-world match can be stored under TWO
-                            # sport_keys (e.g. World Cup + team's league key) with
-                            # different event_ids — dedupe by team-pair + day so the
-                            # accumulator never carries the same game twice
-    for r in rows[:80]:
+    # DEDUPE: the same real-world match can be stored under two sport_keys (e.g.
+    # World Cup + a team's other competition key) with different event_ids and
+    # even slightly different kickoff times (which can fall on two calendar days).
+    # A given team-pair cannot play twice inside a 72h window, so collapse purely
+    # by the (sorted) team-pair — and among duplicates keep the row with the most
+    # odds populated (so a leg never shows "odd —" when a priced copy exists).
+    by_fixture = {}
+    for r in rows[:120]:
         d = dict(r)
+        key = tuple(sorted([(d.get("home_team") or "").lower().strip(),
+                            (d.get("away_team") or "").lower().strip()]))
+        odds_score = sum(1 for k in ("pin_home", "best_home", "x1_home") if d.get(k))
+        if key not in by_fixture or odds_score > by_fixture[key][0]:
+            by_fixture[key] = (odds_score, d)
+    dedup_rows = [v[1] for v in by_fixture.values()]
+    dedup_rows.sort(key=lambda d: d.get("commence_time") or "")
+
+    candidates = []
+    for d in dedup_rows:
         home, away, sport = d["home_team"], d["away_team"], d["sport_name"]
-        fixture_key = (tuple(sorted([(home or "").lower().strip(), (away or "").lower().strip()])),
-                       (d.get("commence_time") or "")[:10])
-        if fixture_key in seen_fixtures:
-            continue
-        seen_fixtures.add(fixture_key)
         category, surface = _prognosis_category(sport)
         is_tennis = category == "tennis"
         is_national = category == "national"
