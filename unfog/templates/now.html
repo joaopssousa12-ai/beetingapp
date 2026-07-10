@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Now — Unfog{% endblock %}
+{% block content %}
+{% if task and step %}
+  <section class="now">
+    <p class="eyebrow">Right now, just this:</p>
+    <div class="card focuscard">
+      <p class="task-context">{{ task.title }} <span class="muted">· step {{ steps_done + 1 }} of {{ steps_total }} · ~{{ task.estimate_min }} min total</span></p>
+      <h1 class="step-title">{{ step.title }}</h1>
+      <form method="post" action="/app/step/{{ step.id }}/done">
+        <button class="solid btn huge" type="submit">✓ Done</button>
+      </form>
+      <div class="row gap">
+        <a class="ghost btn" href="/app/focus/{{ task.id }}">⏳ Start a timer</a>
+        <form method="post" action="/app/step/{{ step.id }}/split">
+          <button class="ghost btn" type="submit">Still too big</button>
+        </form>
+        <form method="post" action="/app/task/{{ task.id }}/defer">
+          <button class="ghost btn" type="submit">Not now</button>
+        </form>
+      </div>
+    </div>
+    <p class="tiny muted center">{{ active }} task{{ 's' if active != 1 }} waiting quietly · {{ done_today }} step{{ 's' if done_today != 1 }} done today</p>
+  </section>
+{% else %}
+  <section class="now empty">
+    <h1>Nothing on your plate.</h1>
+    <p class="sub">Head full? Pour it out and we'll shrink it into tiny steps.</p>
+    <a class="solid btn huge" href="/app/dump">🧠 Brain dump</a>
+  </section>
+{% endif %}
+{% endblock %}

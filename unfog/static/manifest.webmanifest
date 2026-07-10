@@ -1,0 +1,14 @@
+{
+  "name": "Unfog — the gentle planner for ADHD brains",
+  "short_name": "Unfog",
+  "description": "Dump the chaos in your head. Get back one tiny next step.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#faf6ef",
+  "theme_color": "#5b5bd6",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

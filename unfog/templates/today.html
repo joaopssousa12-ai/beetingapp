@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}List — Unfog{% endblock %}
+{% block content %}
+<section>
+  <h1>The quiet list</h1>
+  <p class="sub">Everything waiting its turn. The top one is what "Now" shows.</p>
+  {% for t in tasks %}
+  <div class="card taskrow">
+    <div class="grow">
+      <strong>{{ t.title }}</strong>
+      <div class="progress"><span style="width: {{ (t.done_steps * 100 / t.total) | round | int if t.total else 0 }}%"></span></div>
+      <span class="tiny muted">{{ t.done_steps }}/{{ t.total }} steps · ~{{ t.estimate_min }} min</span>
+    </div>
+    <div class="row">
+      <form method="post" action="/app/task/{{ t.id }}/move"><input type="hidden" name="dir" value="up"><button class="ghost small" title="Move up">↑</button></form>
+      <form method="post" action="/app/task/{{ t.id }}/move"><input type="hidden" name="dir" value="down"><button class="ghost small" title="Move down">↓</button></form>
+      <form method="post" action="/app/task/{{ t.id }}/done"><button class="ghost small" title="Mark all done">✓</button></form>
+      <form method="post" action="/app/task/{{ t.id }}/drop"><button class="ghost small" title="Let it go">✕</button></form>
+    </div>
+  </div>
+  {% else %}
+  <p class="muted">Nothing here. <a href="/app/dump">Dump your brain</a> to fill it up.</p>
+  {% endfor %}
+  <form method="post" action="/app/task" class="addrow">
+    <input type="text" name="title" placeholder="Add a quick task…" required maxlength="200">
+    <button class="solid btn" type="submit">Add</button>
+  </form>
+</section>
+{% endblock %}

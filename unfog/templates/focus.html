@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Focus — Unfog{% endblock %}
+{% block content %}
+<section class="focuspage center">
+  <p class="eyebrow">Focusing on</p>
+  <h2 class="task-context">{{ step.title if step else task.title }}</h2>
+  <div class="timer" id="timer" data-task="{{ task.id }}">
+    <div class="ring" id="ring"><span id="clock">10:00</span></div>
+  </div>
+  <div class="row gap center" id="presets">
+    <button class="ghost btn" data-min="5">5 min</button>
+    <button class="ghost btn on" data-min="10">10 min</button>
+    <button class="ghost btn" data-min="25">25 min</button>
+  </div>
+  <div class="row gap center">
+    <button class="solid btn huge" id="startbtn">Start</button>
+  </div>
+  <form method="post" action="/app/focus/{{ task.id }}/done" id="focusdone" class="hidden">
+    <input type="hidden" name="minutes" id="minutesdone" value="10">
+    <button class="solid btn huge" type="submit">✓ I focused — log it</button>
+  </form>
+  <p><a class="tiny muted" href="/app">← back without logging</a></p>
+</section>
+{% endblock %}
