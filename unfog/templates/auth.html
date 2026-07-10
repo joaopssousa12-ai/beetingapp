@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="auth card">
+  <a class="brand center" href="/">un<span>fog</span></a>
+  {% if mode == 'signup' %}
+    <h2>Create your account</h2>
+    <p class="muted">Free during beta. No card, no tricks.</p>
+  {% else %}
+    <h2>Welcome back</h2>
+    <p class="muted">Pick up where you left off.</p>
+  {% endif %}
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/{{ mode }}">
+    <label>Email <input type="email" name="email" required autofocus></label>
+    <label>Password <input type="password" name="password" required minlength="8"></label>
+    <button class="solid btn wide" type="submit">{{ 'Start unfogging' if mode == 'signup' else 'Log in' }}</button>
+  </form>
+  {% if mode == 'signup' %}
+    <p class="tiny center">Already have an account? <a href="/login">Log in</a></p>
+  {% else %}
+    <p class="tiny center">New here? <a href="/signup">Create an account</a></p>
+  {% endif %}
+</div>
+{% endblock %}

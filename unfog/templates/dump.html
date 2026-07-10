@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Brain dump — Unfog{% endblock %}
+{% block content %}
+<section class="dumppage">
+  <h1>Pour it all out</h1>
+  <p class="sub">Everything that's circling in your head — appointments, chores, that email.
+  Any language, any order, any mess.</p>
+  <form method="post" action="/app/dump" id="dumpform">
+    <textarea name="text" rows="8" placeholder="call the dentist about tuesday…&#10;finish the report for friday&#10;gym 3x this week&#10;buy a birthday gift for mum" required></textarea>
+    <button class="solid btn huge" type="submit" data-busy="Shrinking it down…">✨ Unfog it</button>
+  </form>
+  {% if not ai_on %}<p class="tiny muted">Running without an AI key — tasks will get standard starter steps.</p>{% endif %}
+</section>
+{% endblock %}

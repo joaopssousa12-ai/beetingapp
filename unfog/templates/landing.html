@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block bodyclass %}landing{% endblock %}
+{% block content %}
+<header class="topbar">
+  <a class="brand" href="/">un<span>fog</span></a>
+  <div>
+    <a class="ghost small btn" href="/login">Log in</a>
+    <a class="solid small btn" href="#join">Join the waitlist</a>
+  </div>
+</header>
+
+<section class="hero">
+  <h1>Your brain isn't broken.<br><em>Your planner is.</em></h1>
+  <p class="sub">Unfog takes the chaos in your head and hands you back <strong>one tiny next step</strong>.
+  A gentle daily planner built for ADHD brains — no walls of tasks, no red overdue badges, no guilt.</p>
+  <div class="cta-row">
+    <a class="solid btn" href="#join">Join the waitlist</a>
+    <a class="ghost btn" href="/signup">Try the early beta</a>
+  </div>
+  {% if waitlist_count >= 10 %}<p class="tiny muted">{{ waitlist_count }} brains on the list already</p>{% endif %}
+</section>
+
+<section class="how">
+  <div class="card step-card"><span class="k">1</span>
+    <h3>Dump everything</h3>
+    <p>Write it all down exactly as it sits in your head. Messy is fine. Messy is the point.</p>
+  </div>
+  <div class="card step-card"><span class="k">2</span>
+    <h3>We shrink it</h3>
+    <p>AI breaks each task into tiny steps — the first one always takes under two minutes.</p>
+  </div>
+  <div class="card step-card"><span class="k">3</span>
+    <h3>Do one thing</h3>
+    <p>You see a single step. Not a list. When it's done — the next one appears. That's it.</p>
+  </div>
+</section>
+
+<section class="features">
+  <div class="feat"><h4>🫥 One thing at a time</h4><p>Task lists overwhelm. Unfog shows exactly one next step and hides the rest.</p></div>
+  <div class="feat"><h4>🔨 "Still too big" button</h4><p>Frozen? One tap splits the step into even smaller pieces. Starting is the whole battle.</p></div>
+  <div class="feat"><h4>⏳ Time you can see</h4><p>Visual timers for time-blind brains. Ten focused minutes beat two anxious hours.</p></div>
+  <div class="feat"><h4>🌱 Streaks without shame</h4><p>Missed a day? Nothing turns red. Your wins stay yours. We count progress, not failure.</p></div>
+</section>
+
+<section class="join" id="join">
+  {% if joined %}
+    <h2>You're on the list 💜</h2>
+    <p class="sub">We'll email you the moment your spot opens. It'll be worth it.</p>
+  {% else %}
+    <h2>Get early access</h2>
+    <p class="sub">Free while in beta. Built with the ADHD community, not just for it.</p>
+    <form method="post" action="/waitlist" class="waitform">
+      <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <input type="email" name="email" placeholder="you@example.com" required>
+      <button class="solid btn" type="submit">Join the waitlist</button>
+    </form>
+  {% endif %}
+</section>
+
+<footer class="foot">
+  <p>Unfog is a planning tool, not medical advice or treatment.</p>
+  <p class="tiny muted">© 2026 Unfog</p>
+</footer>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Wins — Unfog{% endblock %}
+{% block content %}
+<section class="winspage">
+  <h1>Look what you did</h1>
+  <div class="statgrid">
+    <div class="card stat"><span class="big">{{ current }}</span><span class="lbl">day streak</span></div>
+    <div class="card stat"><span class="big">{{ best }}</span><span class="lbl">best streak</span></div>
+    <div class="card stat"><span class="big">{{ steps }}</span><span class="lbl">steps done</span></div>
+    <div class="card stat"><span class="big">{{ tasks_done }}</span><span class="lbl">tasks finished</span></div>
+    <div class="card stat"><span class="big">{{ focus_min }}</span><span class="lbl">focus minutes</span></div>
+  </div>
+  <div class="card weekcard">
+    <p class="lbl">Last 7 days</p>
+    <div class="week">
+      {% for d in week %}
+      <div class="dot {{ 'lit' if d.active }}"><span>{{ d.day }}</span></div>
+      {% endfor %}
+    </div>
+    <p class="tiny muted">A quiet day doesn't erase anything. Streaks here bend — they don't break you.</p>
+  </div>
+</section>
+{% endblock %}

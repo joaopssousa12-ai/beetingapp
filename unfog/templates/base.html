@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{% block title %}Unfog — the gentle planner for ADHD brains{% endblock %}</title>
+<meta name="description" content="Dump the chaos in your head. Unfog turns it into one tiny next step at a time. A gentle planner built for ADHD brains.">
+<meta name="theme-color" content="#5b5bd6">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="{% block bodyclass %}{% endblock %}">
+{% if user is defined and user %}
+<nav class="nav">
+  <a class="brand" href="/app">un<span>fog</span></a>
+  <div class="tabs">
+    <a href="/app" class="{{ 'on' if page=='now' }}">Now</a>
+    <a href="/app/dump" class="{{ 'on' if page=='dump' }}">Dump</a>
+    <a href="/app/today" class="{{ 'on' if page=='today' }}">List</a>
+    <a href="/app/wins" class="{{ 'on' if page=='wins' }}">Wins</a>
+  </div>
+  <form method="post" action="/logout"><button class="ghost small" type="submit">Log out</button></form>
+</nav>
+{% endif %}
+{% if m %}<div class="flash">{{ m }}</div>{% endif %}
+<main class="wrap">
+{% block content %}{% endblock %}
+</main>
+<script src="/static/app.js" defer></script>
+</body>
+</html>
