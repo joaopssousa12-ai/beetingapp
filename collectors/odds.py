@@ -628,16 +628,15 @@ def collect_odds(status_callback=None):
     except Exception:
         pass
 
-    # Always fetch World Cup and Club World Cup regardless of active status
+    # Always fetch World Cup / Club World Cup regardless of active status.
+    # NOTE: tennis is handled entirely by the auto-include loop below (every
+    # currently-ACTIVE tennis_* key is fetched). We deliberately do NOT force
+    # tennis keys here: The Odds API now uses per-tournament keys only and toggles
+    # them off out of season, so forcing generic/off-season keys (tennis_atp,
+    # tennis_wta, *_french_open, …) just burned ~4 credits/day fetching nothing.
     ALWAYS_FETCH = {
         "soccer_fifa_world_cup",
         "soccer_fifa_club_world_cup",
-        "tennis_atp_french_open",
-        "tennis_wta_french_open",
-        "tennis_atp_wimbledon",
-        "tennis_wta_wimbledon",
-        "tennis_atp",
-        "tennis_wta",
         "baseball_mlb",
         "mma_mixed_martial_arts",
     }

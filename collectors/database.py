@@ -3051,12 +3051,35 @@ def elo_based_probability(home_team, away_team, category, surface=None, home_adv
 #     "safest pick" / accumulator meaningful (still -EV — an accumulator only
 #     ever multiplies the bookmaker margin).
 # ============================================================
+_TENNIS_SURFACE_KW = {
+    "Grass": ["wimbledon", "halle", "queen", "hertogenbosch", "eastbourne", "mallorca",
+              "newport", "nottingham", "birmingham"],
+    "Clay": ["roland garros", "french open", "monte carlo", "monte-carlo", "madrid",
+             "rome", "italian open", "hamburg", "barcelona", "munich", "estoril",
+             "bastad", "gstaad", "kitzbuhel", "umag", "geneva", "lyon", "bucharest",
+             "rabat", "charleston", "strasbourg", "parma"],
+    "Hard": ["us open", "australian", "aus open", "miami", "indian wells", "cincinnati",
+             "canada", "montreal", "toronto", "dubai", "doha", "acapulco", "shanghai",
+             "beijing", "tokyo", "vienna", "basel", "paris masters", "rotterdam",
+             "marseille", "metz", "antwerp", "astana", "adelaide", "brisbane",
+             "auckland", "washington", "chengdu", "zhuhai"],
+}
+
+
+def _tennis_surface(sport_name):
+    s = (sport_name or "").lower()
+    for surf, kws in _TENNIS_SURFACE_KW.items():
+        if any(k in s for k in kws):
+            return surf
+    return "All"
+
+
 def _prognosis_category(sport_name):
     s = (sport_name or "").lower()
     if any(k in s for k in ["world cup", "nations", "euro", "copa"]):
         return "national", None
     if any(k in s for k in ["tennis", "atp", "wta"]):
-        return "tennis", "All"
+        return "tennis", _tennis_surface(sport_name)
     return "football_club", None
 
 
@@ -3122,6 +3145,57 @@ def _h2h_football(conn, home, away, limit=6, national=False):
         out.append({"date": r["date"], "home_team": r["home_team"], "away_team": r["away_team"],
                     "home_goals": r["home_goals"], "away_goals": r["away_goals"]})
     return out
+
+
+def _tennis_recent(conn, player, limit=8):
+    """Last matches for a tennis player from tennis_matches (winner/loser rows).
+    Returns {'results': ['W','L',...] most-recent-first, wins, losses, n, last_surface}."""
+    _, like = _fuzzy_team_filter(player)
+    key = like.strip("%").lower()
+    try:
+        rows = conn.execute(
+            "SELECT tourney_date, winner_name, loser_name, surface, tourney_name "
+            "FROM tennis_matches WHERE (winner_name LIKE ? OR loser_name LIKE ?) "
+            "ORDER BY tourney_date DESC LIMIT ?", (like, like, limit)).fetchall()
+    except Exception:
+        return None
+    results = []
+    for r in rows:
+        w = (r["winner_name"] or "").lower()
+        if key in w:
+            results.append(("W", r["surface"], r["tourney_name"]))
+        elif key in (r["loser_name"] or "").lower():
+            results.append(("L", r["surface"], r["tourney_name"]))
+    if not results:
+        return None
+    wins = sum(1 for x in results if x[0] == "W")
+    return {"results": [x[0] for x in results], "wins": wins,
+            "losses": len(results) - wins, "n": len(results)}
+
+
+def _tennis_h2h(conn, p1, p2, limit=8):
+    """Head-to-head matches between two tennis players."""
+    _, l1 = _fuzzy_team_filter(p1)
+    _, l2 = _fuzzy_team_filter(p2)
+    k1, k2 = l1.strip("%").lower(), l2.strip("%").lower()
+    try:
+        rows = conn.execute(
+            "SELECT tourney_date, winner_name, loser_name, surface, tourney_name, score "
+            "FROM tennis_matches WHERE ((winner_name LIKE ? AND loser_name LIKE ?) "
+            "OR (winner_name LIKE ? AND loser_name LIKE ?)) ORDER BY tourney_date DESC LIMIT ?",
+            (l1, l2, l2, l1, limit)).fetchall()
+    except Exception:
+        return None
+    matches, w1, w2 = [], 0, 0
+    for r in rows:
+        win = r["winner_name"]
+        if k1 in (win or "").lower(): w1 += 1
+        else: w2 += 1
+        matches.append({"date": r["tourney_date"], "winner": win,
+                        "surface": r["surface"], "tourney": r["tourney_name"], "score": r["score"]})
+    if not matches:
+        return None
+    return {"matches": matches, "p1_wins": w1, "p2_wins": w2, "n": len(matches)}
 
 
 def _poisson_shape(lam_h, lam_a, max_goals=8):
@@ -3191,17 +3265,20 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
     is_tennis = category == "tennis"
     out = {
         "home_team": home_team, "away_team": away_team, "sport_name": sport_name,
-        "category": category, "commence_time": commence_time,
+        "category": category, "commence_time": commence_time, "surface": surface if is_tennis else None,
         "elo": None, "market": None, "probs": None, "basis": None,
-        "poisson": None, "form": None, "h2h": None,
+        "poisson": None, "form": None, "h2h": None, "tennis_form": None, "tennis_h2h": None,
         "best_pick": None, "confidence": None, "confidence_tier": None,
         "agreement": None, "notes": [],
     }
 
-    # ---- Elo ----
+    # ---- Elo (tennis: try the match surface first, fall back to All) ----
     elo = None
     try:
         elo = elo_based_probability(home_team, away_team, category, surface=surface)
+        if not elo and is_tennis and surface != "All":
+            elo = elo_based_probability(home_team, away_team, category, surface="All")
+            out["surface"] = "All"  # signal we used the overall rating
     except Exception:
         elo = None
     out["elo"] = elo
@@ -3284,6 +3361,21 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
                 out["h2h"] = {"matches": h2h, "home_wins": hw, "away_wins": aw, "draws": dr, "n": len(h2h)}
     except Exception:
         pass
+
+    # ---- Tennis form + H2H (players) ----
+    if is_tennis:
+        try:
+            conn = get_connection()
+            tf_h = _tennis_recent(conn, home_team)
+            tf_a = _tennis_recent(conn, away_team)
+            th2h = _tennis_h2h(conn, home_team, away_team)
+            conn.close()
+            if tf_h or tf_a:
+                out["tennis_form"] = {"home": tf_h, "away": tf_a}
+            if th2h:
+                out["tennis_h2h"] = th2h
+        except Exception:
+            pass
 
     # ---- Headline probabilities: BLEND (market+Elo) > Elo > market alone ----
     spine, basis = None, None

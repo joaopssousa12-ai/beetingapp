@@ -176,7 +176,35 @@ function render(d) {
     </div>`;
   }
 
-  // === FORMA RECENTE ===
+  // === TÉNIS: forma recente dos jogadores ===
+  if (d.tennis_form && (d.tennis_form.home || d.tennis_form.away)) {
+    html += `<div class="md-section">
+      <div class="md-section-title">🔥 Forma recente${d.surface ? ` <span style="font-size:11px;color:var(--text3);font-weight:400">· ${d.surface}</span>` : ''}</div>
+      <div class="md-form">
+        ${tennisFormCol(home, d.tennis_form.home)}
+        ${tennisFormCol(away, d.tennis_form.away)}
+      </div>
+    </div>`;
+  }
+
+  // === TÉNIS: confrontos diretos ===
+  if (d.tennis_h2h && d.tennis_h2h.n) {
+    const th = d.tennis_h2h;
+    const small = th.n < 3 ? ` <span style="font-size:11px;color:#b45309;font-weight:400">(amostra pequena)</span>` : '';
+    const rows = th.matches.map(m =>
+      `<div class="md-h2h-row"><span>${(m.date||'').slice(0,10)} · ${m.tourney||''} (${m.surface||'?'})</span>
+       <span>${m.winner} venceu ${m.score||''}</span></div>`).join('');
+    html += `<div class="md-section">
+      <div class="md-section-title">⚔️ Confrontos diretos (${th.n})${small}</div>
+      <div class="md-stats-grid" style="margin-bottom:0.75rem">
+        <div class="md-stat"><div class="md-stat-label">${home}</div><div class="md-stat-value">${th.p1_wins}</div></div>
+        <div class="md-stat"><div class="md-stat-label">${away}</div><div class="md-stat-value">${th.p2_wins}</div></div>
+      </div>
+      ${rows}
+    </div>`;
+  }
+
+  // === FORMA RECENTE (futebol) ===
   if (d.form && (d.form.home || d.form.away)) {
     html += `<div class="md-section">
       <div class="md-section-title">🔥 Forma recente</div>
@@ -224,6 +252,20 @@ function render(d) {
   }
 
   return html;
+}
+
+function tennisFormCol(player, f) {
+  if (!f || !f.n) {
+    return `<div class="md-form-col"><div class="md-form-team">${player}</div>
+      <div class="md-strength">Sem jogos recentes na base de dados.</div></div>`;
+  }
+  const pills = f.results.map(r =>
+    `<span class="md-pill ${r === 'W' ? 'W' : 'L'}">${r === 'W' ? 'V' : 'D'}</span>`).join('');
+  return `<div class="md-form-col">
+    <div class="md-form-team">${player}</div>
+    <div class="md-strength">${f.wins}V–${f.losses}D nos últimos ${f.n}</div>
+    <div class="md-form-pills">${pills}</div>
+  </div>`;
 }
 
 function formCol(team, f) {
