@@ -27,22 +27,32 @@ Open http://127.0.0.1:8000
 | `SECRET_KEY` | no | Session signing key; auto-generated and persisted next to the DB if unset |
 | `DB_PATH` | on Railway/Render | e.g. `/data/unfog.db` — point it at a mounted volume |
 
-## Deploy (Render — recommended)
+## Deploy (Render free tier + Neon free Postgres — $0/month)
 
-This repo ships a `render.yaml` blueprint, so most of the setup is automatic:
+Render's free instances have no persistent disk, so the data lives in a free
+Postgres database instead (the app switches automatically when `DATABASE_URL` is set).
 
-1. Dashboard → **New +** → **Blueprint** → connect/select this repo → Apply.
-2. When prompted, paste your `ANTHROPIC_API_KEY` ([console.anthropic.com](https://console.anthropic.com) → API keys).
-3. Done. The blueprint creates the web service (starter plan), a 1 GB disk at `/var/data`
-   for the SQLite DB, `DB_PATH`, a random `ADMIN_TOKEN`, and the `/healthz` health check.
+**1. Database (2 min):** [neon.tech](https://neon.tech) → sign up → create project →
+copy the **connection string** (`postgresql://...`).
 
-Manual alternative (New + → Web Service): build `pip install -r requirements.txt`,
-start `uvicorn app:app --host 0.0.0.0 --port $PORT`, add a Disk mounted at `/var/data`,
-set `DB_PATH=/var/data/unfog.db` + `ANTHROPIC_API_KEY` + `ADMIN_TOKEN`.
-Note: free instances can't have disks — the DB (accounts + waitlist!) would be wiped
-on every deploy, so use starter.
+**2. Web service:** Render Dashboard → **New +** → **Web Service** → connect this repo:
 
-Railway works too: Deploy from GitHub → Volume at `/data` → `DB_PATH=/data/unfog.db` → same variables.
+| Field | Value |
+|---|---|
+| Branch | `main` |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `uvicorn app:app --host 0.0.0.0 --port $PORT` |
+| Instance Type | **Free** |
+
+**3. Environment variables:** `DATABASE_URL` (from Neon), `ADMIN_TOKEN` (any random
+string), `PYTHON_VERSION` = `3.11.9`, and optionally `ANTHROPIC_API_KEY`.
+
+**4.** Create Web Service → after the build, the app is live. Set Settings →
+Health Check Path to `/healthz`. Free instances sleep after 15 idle minutes
+(first hit takes ~30-60 s); an uptime monitor pinging `/healthz` every 5 min keeps it awake.
+
+Paid alternative (no external DB): starter plan + a Disk at `/var/data` with
+`DB_PATH=/var/data/unfog.db`. Railway: Volume at `/data` → `DB_PATH=/data/unfog.db`.
 
 ## Structure
 
