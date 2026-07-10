@@ -1,0 +1,65 @@
+name: prognosis-diag
+
+# One-shot diagnostic (manual): pulls live value-bets, then calls the
+# match-analysis prognosis endpoint for a handful of real fixtures and prints
+# WHAT IS ACTUALLY POPULATED (elo / market / blend / form / h2h / poisson /
+# markets) so we can see where the on-site "read" is thin and fix the right
+# thing. Reads only, no product change, no Odds-API credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Probe prognosis quality on real upcoming fixtures
+        run: |
+          python3 - <<'EOF'
+          import json, urllib.request
+          BASE = "https://beetingapp-1.onrender.com"
+          def get(path, t=90):
+              with urllib.request.urlopen(BASE + path, timeout=t) as r:
+                  return json.loads(r.read().decode())
+          try:
+              vb = get("/api/value-bets")
+          except Exception as e:
+              print("value-bets err", e); raise SystemExit(0)
+          print(f"upcoming events in value-bets: {len(vb)}")
+          # sample up to 8 fixtures across sports
+          seen_sports = {}
+          sample = []
+          for b in vb:
+              sp = b.get("sport_name")
+              if seen_sports.get(sp, 0) >= 2:
+                  continue
+              seen_sports[sp] = seen_sports.get(sp, 0) + 1
+              sample.append(b)
+              if len(sample) >= 8:
+                  break
+          for b in sample:
+              eid = b.get("event_id")
+              try:
+                  p = get(f"/api/match/{eid}/prognosis")
+              except Exception as e:
+                  print(f"\n{b.get('home_team')} v {b.get('away_team')}: ERR {e}"); continue
+              elo = "Y" if p.get("elo") else "-"
+              mkt = "Y" if p.get("market") else "-"
+              basis = p.get("basis")
+              form = p.get("form") or {}
+              fh = "Y" if form.get("home") and form["home"].get("matches_analyzed") else "-"
+              fa = "Y" if form.get("away") and form["away"].get("matches_analyzed") else "-"
+              h2h = (p.get("h2h") or {}).get("n", 0)
+              poi = "Y" if p.get("poisson") else "-"
+              nmk = len(p.get("markets") or [])
+              conf = p.get("confidence"); tier = p.get("confidence_tier")
+              print(f"\n=== {p.get('sport_name')}: {p.get('home_team')} v {p.get('away_team')}")
+              print(f"    elo={elo} market={mkt} basis={basis!r} | form h/a={fh}/{fa} "
+                    f"h2h={h2h} poisson={poi} markets={nmk} | conf={conf} tier={tier}")
+              if p.get("notes"):
+                  print(f"    notes: {p['notes']}")
+              # show the ranked markets so we see the actual read
+              for m in (p.get("markets") or [])[:4]:
+                  print(f"      - {m['market']}: {m['selection']} {m['prob']}%"
+                        + ("  [aux]" if m.get("auxiliary") else ""))
+          EOF
