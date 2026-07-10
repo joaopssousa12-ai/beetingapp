@@ -1,0 +1,42 @@
+name: brjp-window-check
+
+# One-shot, CREDIT-FREE check: does the 48h actionable window (what the site
+# actually shows) contain any Brazil Série A / J-League fixtures right now?
+# Only reads /api/value-bets + /api/collection/status — no Odds-API credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: List sports in the 48h window + flag Brazil/Japan
+        run: |
+          python3 - <<'EOF'
+          import json, urllib.request, collections
+          BASE = "https://beetingapp-1.onrender.com"
+          def get(path, t=90):
+              with urllib.request.urlopen(BASE + path, timeout=t) as r:
+                  return json.loads(r.read().decode())
+          vb = get("/api/value-bets")
+          print(f"events in the 48h window: {len(vb)}\n")
+          by = collections.Counter(b.get("sport_name") for b in vb)
+          for sp, n in by.most_common():
+              print(f"  {n:3}  {sp}")
+          br = [b for b in vb if "brazil" in (b.get("sport_key","")+b.get("sport_name","")).lower()
+                or "série a" in (b.get("sport_name","")).lower() or "serie a" in (b.get("sport_name","")).lower() and "brazil" in b.get("sport_key","")]
+          jp = [b for b in vb if "japan" in (b.get("sport_key","")+b.get("sport_name","")).lower()
+                or "j league" in (b.get("sport_name","")).lower() or "j-league" in (b.get("sport_name","")).lower()]
+          print(f"\nBrazil Série A in window: {len(br)}")
+          for b in br: print("   ", b.get("home_team"), "v", b.get("away_team"), b.get("commence_time"))
+          print(f"Japan J-League in window: {len(jp)}")
+          for b in jp: print("   ", b.get("home_team"), "v", b.get("away_team"), b.get("commence_time"))
+          print("\n--- last collection (when did we last fetch odds?) ---")
+          cs = get("/api/collection/status")
+          print("last_run:", cs.get("last_run"))
+          msgs = cs.get("messages") or []
+          for m in msgs:
+              if "Brazil" in m or "Japan" in m or "J League" in m:
+                  print("   fetch log:", m)
+          EOF
