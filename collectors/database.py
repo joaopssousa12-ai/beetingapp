@@ -3308,34 +3308,70 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
     out["basis"] = basis
 
     # ---- Confidence + agreement + best pick (on the blended spine) ----
+    def _argmax(d):
+        ks = [k for k in ("home", "draw", "away") if d and d.get(k) is not None]
+        return max(ks, key=lambda k: d[k]) if ks else None
+
     if spine:
         top = max(spine, key=spine.get)
         conf = spine[top]
         sel_name = home_team if top == "home" else away_team if top == "away" else "Empate"
         out["best_pick"] = {"outcome": top, "selection": sel_name, "prob": conf}
         out["confidence"] = conf
-        # agreement vote with the goals-Poisson (1X2 argmax) when available
-        agree = None
+
+        # AGREEMENT THAT MATTERS = the two STRONG, calibrated signals (Elo vs the
+        # sharp market). The goals-Poisson is overconfident (model-lab: says 75%,
+        # happens 52%), so it must NOT be allowed to downgrade a market-backed
+        # read — it is only an informational side-note for context.
+        elo_top, mkt_top = _argmax(elo), _argmax(market)
+        strong_agree = (elo_top == mkt_top) if (elo_top and mkt_top) else None
+        out["agreement"] = strong_agree
+        goals_agree = None
         if poisson:
             pk = {"home": poisson["home"], "draw": poisson.get("draw", 0), "away": poisson["away"]}
-            p_top = max(spine.keys(), key=lambda k: pk.get(k, 0))
-            agree = (p_top == top)
-        out["agreement"] = agree
-        if conf >= 70 and agree is not False:
+            g_top = max(spine.keys(), key=lambda k: pk.get(k, 0))
+            goals_agree = (g_top == top)
+        out["goals_agreement"] = goals_agree
+
+        # tier from the calibrated blend confidence, gated ONLY by strong agreement
+        if conf >= 70 and strong_agree is not False:
             tier = "Alta"
-        elif conf >= 60 and agree is not False:
+        elif conf >= 60 and strong_agree is not False:
             tier = "Média-alta"
         elif conf >= 50:
             tier = "Média"
         else:
             tier = "Baixa"
-        if agree is False:
-            out["notes"].append("O modelo de golos discorda do palpite principal — confiança reduzida.")
-            if tier in ("Alta", "Média-alta"):
-                tier = "Média"
+        if strong_agree is False:
+            out["notes"].append("Elo e mercado discordam no favorito — leitura menos segura.")
+            if tier == "Alta":
+                tier = "Média-alta"
+        if goals_agree is False:
+            out["notes"].append("O modelo de golos aponta noutra direção (sinal fraco, só contexto).")
         out["confidence_tier"] = tier
+
+        # RELIABILITY OF THE READ — data-driven, so the user knows how much to
+        # trust it before betting. Based on which strong signals are present and
+        # whether they confirm each other.
+        if market and elo and strong_agree:
+            rel, why = "Alta", "linha sharp + Elo concordam"
+        elif market and elo:
+            rel, why = "Média", "linha sharp + Elo, mas divergem no favorito"
+        elif market:
+            rel, why = "Média", "só a linha sharp (sem Elo destas equipas)"
+        elif elo:
+            rel, why = "Baixa", "só o Elo (sem linha sharp da Pinnacle)"
+        else:
+            rel, why = "Baixa", "dados escassos"
+        # thin context caps reliability at Média (a rich read needs some history)
+        has_ctx = bool(out.get("form")) or ((out.get("h2h") or {}).get("n", 0) >= 3)
+        if rel == "Alta" and not has_ctx and category != "tennis":
+            rel, why = "Média", why + " (sem forma/H2H suficientes)"
+        out["reliability"] = rel
+        out["reliability_why"] = why
     else:
         out["notes"].append("Sem rating Elo nem odds Pinnacle para estas equipas — prognóstico indisponível.")
+        out["reliability"] = "Baixa"
 
     # ---- MARKET RANKING: most-likely market per match ("qual o mercado mais
     # provável?"). Derived from the calibrated blend; O/U + BTTS come from the

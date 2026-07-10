@@ -40,6 +40,7 @@
   .md-tier.Média-alta { background: #d1ecf1; color: #0c5460; }
   .md-tier.Média { background: #fff3cd; color: #856404; }
   .md-tier.Baixa { background: #f8d7da; color: #721c24; }
+  .md-reliability { margin-top: 0.75rem; font-size: 13px; padding-top: 0.6rem; border-top: 1px solid var(--border); }
 
   .md-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }
   .md-stat { background: var(--bg); border-radius: 6px; padding: 0.85rem; text-align: center; }
@@ -112,11 +113,13 @@ function render(d) {
     A confiança vem da fusão Elo + linha sharp, o sinal mais preciso e calibrado no backtest (27.844 jogos).
   </div>`;
 
-  // === MELHOR PALPITE + CONFIANÇA ===
+  // === MELHOR PALPITE + CONFIANÇA + FIABILIDADE ===
   if (d.best_pick && d.confidence != null) {
     const tier = d.confidence_tier || 'Média';
-    const agr = d.agreement === true ? '✓ modelo de golos concorda'
-              : d.agreement === false ? '⚠ modelo de golos discorda' : '';
+    const agr = d.agreement === true ? '✓ Elo e mercado concordam'
+              : d.agreement === false ? '⚠ Elo e mercado divergem' : '';
+    const relCls = d.reliability === 'Alta' ? 'Alta' : d.reliability === 'Baixa' ? 'Baixa' : 'Média';
+    const relDot = d.reliability === 'Alta' ? '🟢' : d.reliability === 'Baixa' ? '🔴' : '🟡';
     html += `<div class="md-pick-box">
       <div class="md-pick-title">🎯 Melhor palpite do modelo</div>
       <div class="md-pick-selection">${d.best_pick.selection}</div>
@@ -125,6 +128,10 @@ function render(d) {
         <span>Probabilidade (${basis}): <strong>${d.confidence}%</strong> (odd justa ${fairOdd(d.confidence)})</span>
         ${agr ? `<span>${agr}</span>` : ''}
       </div>
+      ${d.reliability ? `<div class="md-reliability">
+        ${relDot} <strong>Fiabilidade da leitura: ${d.reliability}</strong>
+        <span style="color:var(--text3)">— ${d.reliability_why || ''}</span>
+      </div>` : ''}
       ${(d.notes && d.notes.length) ? `<div class="md-warn-banner">${d.notes.join(' ')}</div>` : ''}
     </div>`;
   }
@@ -185,8 +192,10 @@ function render(d) {
     const rows = d.h2h.matches.map(m =>
       `<div class="md-h2h-row"><span>${(m.date||'').slice(0,10)}</span>
        <span>${m.home_team} ${m.home_goals}–${m.away_goals} ${m.away_team}</span></div>`).join('');
+    const smallSample = d.h2h.n < 3
+      ? ` <span style="font-size:11px;color:#b45309;font-weight:400">(amostra pequena — pouco fiável)</span>` : '';
     html += `<div class="md-section">
-      <div class="md-section-title">⚔️ Confrontos diretos (${d.h2h.n})</div>
+      <div class="md-section-title">⚔️ Confrontos diretos (${d.h2h.n})${smallSample}</div>
       <div class="md-stats-grid" style="margin-bottom:0.75rem">
         <div class="md-stat"><div class="md-stat-label">${home}</div><div class="md-stat-value">${d.h2h.home_wins}</div></div>
         <div class="md-stat"><div class="md-stat-label">Empates</div><div class="md-stat-value">${d.h2h.draws}</div></div>
