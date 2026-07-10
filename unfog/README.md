@@ -27,15 +27,22 @@ Open http://127.0.0.1:8000
 | `SECRET_KEY` | no | Session signing key; auto-generated and persisted next to the DB if unset |
 | `DB_PATH` | on Railway/Render | e.g. `/data/unfog.db` — point it at a mounted volume |
 
-## Deploy (Railway)
+## Deploy (Render — recommended)
 
-1. New Project → **Deploy from GitHub repo** → pick this repo.
-   If deploying from the `beetingapp` monorepo: Settings → **Root Directory** = `unfog`, Branch = your branch.
-2. Add a **Volume** mounted at `/data`, and set `DB_PATH=/data/unfog.db` (otherwise the SQLite DB is wiped on every deploy).
-3. Variables: `ANTHROPIC_API_KEY`, `ADMIN_TOKEN` (any random string), optionally `ANTHROPIC_MODEL=claude-haiku-4-5`.
-4. Settings → Networking → **Generate Domain**. `/healthz` answers GET and HEAD for uptime monitors.
+This repo ships a `render.yaml` blueprint, so most of the setup is automatic:
 
-Render works the same way (Web Service → root dir `unfog` → start command from the Procfile → add a Disk at `/data`).
+1. Dashboard → **New +** → **Blueprint** → connect/select this repo → Apply.
+2. When prompted, paste your `ANTHROPIC_API_KEY` ([console.anthropic.com](https://console.anthropic.com) → API keys).
+3. Done. The blueprint creates the web service (starter plan), a 1 GB disk at `/var/data`
+   for the SQLite DB, `DB_PATH`, a random `ADMIN_TOKEN`, and the `/healthz` health check.
+
+Manual alternative (New + → Web Service): build `pip install -r requirements.txt`,
+start `uvicorn app:app --host 0.0.0.0 --port $PORT`, add a Disk mounted at `/var/data`,
+set `DB_PATH=/var/data/unfog.db` + `ANTHROPIC_API_KEY` + `ADMIN_TOKEN`.
+Note: free instances can't have disks — the DB (accounts + waitlist!) would be wiped
+on every deploy, so use starter.
+
+Railway works too: Deploy from GitHub → Volume at `/data` → `DB_PATH=/data/unfog.db` → same variables.
 
 ## Structure
 

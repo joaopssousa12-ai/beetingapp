@@ -1,0 +1,25 @@
+# Render Blueprint — Dashboard → New + → Blueprint → select this repo.
+# The starter plan is required for the persistent disk (free instances lose the
+# SQLite DB on every deploy). ANTHROPIC_API_KEY is prompted for in the dashboard.
+services:
+  - type: web
+    name: unfog
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeploy: true
+    disk:
+      name: unfog-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DB_PATH
+        value: /var/data/unfog.db
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ADMIN_TOKEN
+        generateValue: true
