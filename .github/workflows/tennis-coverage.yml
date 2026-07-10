@@ -1,0 +1,35 @@
+name: tennis-coverage
+
+# One-shot: what tennis does The Odds API actually expose as ACTIVE right now,
+# and do we get events for each? Answers "are we missing other ATP tournaments
+# besides Wimbledon?" empirically. Costs a few credits (pulls odds per active
+# tennis key). Reads only, no product change.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  cover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: List active tennis keys + event counts from The Odds API
+        run: |
+          python3 - <<'EOF'
+          import json, urllib.request
+          BASE = "https://beetingapp-1.onrender.com"
+          def get(path, t=120):
+              with urllib.request.urlopen(BASE + path, timeout=t) as r:
+                  return json.loads(r.read().decode())
+          d = get("/api/diag/odds-sports")
+          print("credits remaining:", d.get("remaining"))
+          print("\n=== ALL tennis keys The Odds API knows (active flag) ===")
+          for k in d.get("all_tennis_keys", []):
+              print(f"  {'ACTIVE' if k.get('active') else '  off '}  {k.get('key'):32} {k.get('title')}")
+          print("\n=== ACTIVE ATP/WTA right now ===")
+          for k in d.get("active_tennis", []):
+              print("  ", k)
+          print("\n=== events actually returned per active key ===")
+          for k, n in (d.get("event_counts") or {}).items():
+              print(f"  {k:32} {n} events")
+          print("\nstored tennis events in DB:", d.get("stored_tennis"))
+          EOF
