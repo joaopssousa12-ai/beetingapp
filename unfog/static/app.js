@@ -11,11 +11,13 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-// show progress on slow submits (AI breakdown)
-document.querySelectorAll("form#dumpform").forEach((f) => {
+// show progress on slow submits (AI breakdown / day planning)
+document.querySelectorAll("form").forEach((f) => {
+  const b = f.querySelector("button[data-busy]");
+  if (!b) return;
   f.addEventListener("submit", () => {
-    const b = f.querySelector("button[data-busy]");
-    if (b) { b.textContent = b.dataset.busy; b.disabled = true; }
+    b.textContent = b.dataset.busy;
+    b.disabled = true;
   });
 });
 

@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Plan — Unfog{% endblock %}
+{% block content %}
+<section class="daypage">
+  <div class="dayhead">
+    <div>
+      <h1>Today, mapped</h1>
+      <p class="sub">Your tasks, placed where your brain can actually do them.</p>
+    </div>
+    {% if blocks %}
+    <form method="post" action="/app/day/plan"><button class="ghost small" data-busy="Re-planning…">↻ Re-plan</button></form>
+    {% endif %}
+  </div>
+
+  {% if blocks %}
+  <div class="timeline" id="timeline">
+    {% for b in blocks %}
+    <div class="tblock {{ 'is-break' if b.kind == 'break' }} {{ 'is-done' if b.task_status == 'done' }}"
+         data-start="{{ b.start_min }}" data-end="{{ b.start_min + b.dur_min }}">
+      <div class="twhen">{{ b.time }}</div>
+      <div class="tbody">
+        <div class="trow">
+          <span class="chip">{{ b.icon }} {{ b.context }}</span>
+          <span class="tdur">{{ b.dur_min }} min</span>
+        </div>
+        {% if b.kind == 'task' and b.task_id %}
+          <a class="tlabel" href="/app/focus/{{ b.task_id }}">{{ b.label }}</a>
+        {% else %}
+          <div class="tlabel break">{{ b.label }}</div>
+        {% endif %}
+        {% if b.why %}<div class="twhy">{{ b.why }}</div>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="tiny muted center">Tap any block to start focusing on it. The plan is a suggestion — drift is allowed.</p>
+  {% else %}
+  <div class="card dayempty">
+    {% if active %}
+      <p>You have {{ active }} task{{ 's' if active != 1 }} waiting. Let Unfog lay them into a calm, doable day.</p>
+      <form method="post" action="/app/day/plan"><button class="solid btn huge" data-busy="Building your day…">🗓️ Plan my day</button></form>
+      {% if not ai_on %}<p class="tiny muted">No AI key set — you'll get a sensible time-ordered plan.</p>{% endif %}
+    {% else %}
+      <p>Nothing to plan yet.</p>
+      <a class="solid btn huge" href="/app/dump">🧠 Brain dump first</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <details class="prefs card">
+    <summary>Tune when you work best</summary>
+    <form method="post" action="/app/day/prefs" class="prefsform">
+      <label>My energy peaks in the
+        <select name="energy">
+          <option value="morning" {{ 'selected' if energy=='morning' }}>morning</option>
+          <option value="afternoon" {{ 'selected' if energy=='afternoon' }}>afternoon</option>
+          <option value="evening" {{ 'selected' if energy=='evening' }}>evening</option>
+        </select>
+      </label>
+      <label>I'm usually awake from
+        <input type="number" name="wake" min="4" max="12" value="{{ wake }}"> :00
+      </label>
+      <label>until
+        <input type="number" name="sleep" min="18" max="26" value="{{ sleep }}"> :00
+      </label>
+      <button class="ghost btn" type="submit">Save</button>
+    </form>
+  </details>
+</section>
+<script>
+// Highlight the block matching the user's LOCAL current time (server is UTC).
+(function () {
+  var now = new Date();
+  var mins = now.getHours() * 60 + now.getMinutes();
+  document.querySelectorAll("#timeline .tblock").forEach(function (el) {
+    var s = +el.dataset.start, e = +el.dataset.end;
+    if (mins >= s && mins < e) {
+      el.classList.add("is-now");
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  });
+})();
+</script>
+{% endblock %}

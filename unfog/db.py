@@ -67,12 +67,32 @@ _TABLES = [
         email TEXT UNIQUE NOT NULL,
         source TEXT DEFAULT 'landing',
         created_at TEXT DEFAULT ({now})"""),
+    ("day_plans", """
+        id {pk},
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day TEXT NOT NULL,
+        task_id INTEGER,
+        start_min INTEGER NOT NULL,
+        dur_min INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        context TEXT DEFAULT '',
+        kind TEXT DEFAULT 'task',
+        why TEXT DEFAULT '',
+        done INTEGER DEFAULT 0"""),
+]
+
+# Columns added after the first release. ALTER runs once; duplicate errors are
+# swallowed so it's safe on every boot, on both SQLite and Postgres.
+_MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN wake_hour INTEGER DEFAULT 8",
+    "ALTER TABLE users ADD COLUMN sleep_hour INTEGER DEFAULT 23",
 ]
 
 _INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id, status, order_idx)",
     "CREATE INDEX IF NOT EXISTS idx_steps_task ON microsteps(task_id, order_idx)",
     "CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, at)",
+    "CREATE INDEX IF NOT EXISTS idx_dayplans ON day_plans(user_id, day, start_min)",
 ]
 
 
@@ -124,6 +144,24 @@ def init():
         con.commit()
     finally:
         con.close()
+    _migrate()
+
+
+def _migrate():
+    """Apply additive column migrations; ignore 'already exists' errors."""
+    for stmt in _MIGRATIONS:
+        con = _connect()
+        try:
+            if IS_PG:
+                with con.cursor() as cur:
+                    cur.execute(stmt)
+            else:
+                con.execute(stmt)
+            con.commit()
+        except Exception:
+            con.rollback()
+        finally:
+            con.close()
 
 
 def q(sql, params=()):

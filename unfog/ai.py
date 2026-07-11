@@ -59,6 +59,115 @@ SPLIT_SCHEMA = {
     "additionalProperties": False,
 }
 
+PLAN_SYSTEM = """You are the day-planning engine of Unfog, for ADHD brains.
+Given the person's tasks (with time estimates), their energy peak, and their
+waking hours, lay out a realistic time-blocked plan for TODAY.
+
+Rules:
+- Schedule the hardest / most focus-heavy tasks during their energy peak window.
+  Put light admin, errands and quick wins in the low-energy troughs.
+- ADHD brains underestimate time and hate being rushed: add buffer, never pack
+  the day wall-to-wall, and don't schedule past their sleep hour.
+- Insert short breaks (task_index -1) between focus blocks. A day with 3-5 real
+  work blocks is a GOOD day — do not try to fit everything in.
+- Batch similar contexts together (all calls, all errands) to cut task-switching.
+- start_min and dur_min are minutes. start_min is minutes from midnight
+  (e.g. 9:30 = 570). Blocks must not overlap and must run in time order.
+- context is ONE short word: Focus, Admin, Calls, Errands, Home, Body, Break.
+- why is a short, warm reason this block sits here (max ~12 words)."""
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "blocks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task_index": {"type": "integer"},
+                    "start_min": {"type": "integer"},
+                    "dur_min": {"type": "integer"},
+                    "label": {"type": "string"},
+                    "context": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["task_index", "start_min", "dur_min", "label", "context", "why"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["blocks"],
+    "additionalProperties": False,
+}
+
+
+def plan_day(tasks, energy_peak="morning", wake_hour=8, sleep_hour=23):
+    """Lay tasks into a time-blocked day. Returns normalized blocks. Never raises.
+
+    tasks: [{"title": str, "estimate_min": int}]  (order = current priority)
+    Each returned block: {task_index, start_min, dur_min, label, context, why}
+    task_index -1 means a break.
+    """
+    if not tasks:
+        return []
+    listing = "\n".join(
+        f"{i}. {t['title']} (~{t.get('estimate_min', 25)} min)" for i, t in enumerate(tasks)
+    )
+    user_text = (
+        f"Energy peak: {energy_peak}. Awake roughly {wake_hour}:00 to {sleep_hour}:00.\n\n"
+        f"Tasks (index. title (estimate)):\n{listing}\n\n"
+        "Build today's time-blocked plan."
+    )
+    try:
+        data = _ask(PLAN_SYSTEM, user_text, PLAN_SCHEMA, max_tokens=2500)
+        blocks = []
+        for b in data.get("blocks", []):
+            ti = int(b.get("task_index", -1))
+            sm = int(b.get("start_min", 0))
+            dm = max(5, min(int(b.get("dur_min", 25)), 240))
+            if not (0 <= sm < 24 * 60):
+                continue
+            blocks.append({
+                "task_index": ti if 0 <= ti < len(tasks) else -1,
+                "start_min": sm,
+                "dur_min": dm,
+                "label": (b.get("label") or "").strip()[:120] or "Focus block",
+                "context": (b.get("context") or "Focus").strip()[:20],
+                "why": (b.get("why") or "").strip()[:140],
+            })
+        blocks.sort(key=lambda x: x["start_min"])
+        if blocks:
+            return blocks
+    except Exception:
+        pass
+    return _fallback_plan(tasks, energy_peak, wake_hour, sleep_hour)
+
+
+def _fallback_plan(tasks, energy_peak, wake_hour, sleep_hour):
+    """Greedy scheduler used when the API is unavailable."""
+    start = max(wake_hour, 0) * 60 + 30  # ease into the day, 30 min after waking
+    end = min(sleep_hour, 24) * 60
+    ordered = list(tasks)  # order already reflects priority; peak-heavy first
+    blocks, cur, i = [], start, 0
+    for n, t in enumerate(ordered):
+        dur = max(15, min(int(t.get("estimate_min", 25)), 90))
+        if cur + dur > end:
+            break
+        blocks.append({
+            "task_index": n, "start_min": cur, "dur_min": dur,
+            "label": t["title"][:120], "context": "Focus",
+            "why": "Scheduled in priority order.",
+        })
+        cur += dur
+        if i % 2 == 1 and cur + 10 <= end:  # a break after every 2 blocks
+            blocks.append({
+                "task_index": -1, "start_min": cur, "dur_min": 10,
+                "label": "Breathe / move", "context": "Break", "why": "Reset before the next block.",
+            })
+            cur += 10
+        i += 1
+    return blocks
+
 
 def _client():
     if anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):

@@ -20,7 +20,7 @@
         </form>
       </div>
     </div>
-    <p class="tiny muted center">{{ active }} task{{ 's' if active != 1 }} waiting quietly · {{ done_today }} step{{ 's' if done_today != 1 }} done today</p>
+    <p class="tiny muted center">{{ active }} task{{ 's' if active != 1 }} waiting quietly · {{ done_today }} step{{ 's' if done_today != 1 }} done today · <a href="/app/day">see today's plan →</a></p>
   </section>
 {% else %}
   <section class="now empty">

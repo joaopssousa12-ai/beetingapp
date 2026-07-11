@@ -314,6 +314,88 @@ def task_drop(request: Request, tid: int):
     return RedirectResponse("/app/today?m=Let+go.+Not+everything+has+to+happen.", status_code=303)
 
 
+def _fmt(m):
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+CONTEXT_ICON = {
+    "Focus": "🎯", "Admin": "🗂️", "Calls": "📞", "Errands": "🧭",
+    "Home": "🏠", "Body": "🏃", "Break": "🌿",
+}
+
+
+@app.get("/app/day")
+def day_view(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    day = date.today().isoformat()
+    rows = db.q(
+        "SELECT dp.*, t.status task_status FROM day_plans dp "
+        "LEFT JOIN tasks t ON t.id = dp.task_id "
+        "WHERE dp.user_id=? AND dp.day=? ORDER BY dp.start_min",
+        (user["id"], day),
+    )
+    blocks = []
+    for r in rows:
+        r["time"] = _fmt(r["start_min"])
+        r["end"] = _fmt(min(r["start_min"] + r["dur_min"], 24 * 60 - 1))
+        r["icon"] = CONTEXT_ICON.get(r["context"], "🎯")
+        blocks.append(r)
+    active = db.one(
+        "SELECT COUNT(*) c FROM tasks WHERE user_id=? AND status='active'", (user["id"],)
+    )["c"]
+    return render(request, "day.html", user=user, page="plan", blocks=blocks,
+                  active=active, energy=user.get("energy_peak") or "morning",
+                  wake=user.get("wake_hour") or 8, sleep=user.get("sleep_hour") or 23,
+                  ai_on=bool(os.environ.get("ANTHROPIC_API_KEY")))
+
+
+@app.post("/app/day/prefs")
+def day_prefs(request: Request, energy: str = Form("morning"),
+              wake: int = Form(8), sleep: int = Form(23)):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    energy = energy if energy in ("morning", "afternoon", "evening") else "morning"
+    wake = max(4, min(int(wake), 12))
+    sleep = max(18, min(int(sleep), 26))  # allow up to 2am (26) for night owls
+    db.x("UPDATE users SET energy_peak=?, wake_hour=?, sleep_hour=? WHERE id=?",
+         (energy, wake, sleep, user["id"]))
+    return RedirectResponse("/app/day", status_code=303)
+
+
+@app.post("/app/day/plan")
+def day_make_plan(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    tasks = db.q(
+        "SELECT * FROM tasks WHERE user_id=? AND status='active' ORDER BY order_idx, id",
+        (user["id"],),
+    )
+    if not tasks:
+        return RedirectResponse("/app/day?m=Nothing+to+plan+yet.+Dump+your+brain+first.", status_code=303)
+    blocks = ai.plan_day(
+        [{"title": t["title"], "estimate_min": t["estimate_min"]} for t in tasks],
+        user.get("energy_peak") or "morning",
+        user.get("wake_hour") or 8, user.get("sleep_hour") or 23,
+    )
+    day = date.today().isoformat()
+    db.x("DELETE FROM day_plans WHERE user_id=? AND day=?", (user["id"], day))
+    for b in blocks:
+        tid = tasks[b["task_index"]]["id"] if b["task_index"] >= 0 else None
+        kind = "break" if b["task_index"] < 0 else "task"
+        db.x(
+            "INSERT INTO day_plans(user_id, day, task_id, start_min, dur_min, label, context, kind, why) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (user["id"], day, tid, b["start_min"], b["dur_min"], b["label"],
+             b["context"], kind, b["why"]),
+        )
+    n = sum(1 for b in blocks if b["task_index"] >= 0)
+    return RedirectResponse(f"/app/day?m=Your+day%2C+mapped.+{n}+block{'s' if n != 1 else ''}%2C+one+at+a+time.", status_code=303)
+
+
 @app.get("/app/today")
 def today(request: Request):
     user = current_user(request)

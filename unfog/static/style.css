@@ -140,6 +140,43 @@ label { display: block; margin: 12px 0; font-size: .92rem; color: var(--muted); 
 .dot { width: 38px; height: 38px; border-radius: 50%; background: var(--soft); display: flex; align-items: center; justify-content: center; font-size: .75rem; color: var(--muted); }
 .dot.lit { background: var(--accent); color: var(--accent-ink); }
 
+/* plan / day timeline */
+.dayhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.dayhead form { flex-shrink: 0; }
+.timeline { margin: 20px 0 10px; }
+.tblock {
+  display: flex; gap: 14px; padding: 12px 0;
+  border-left: 3px solid var(--soft); padding-left: 16px; margin-left: 6px;
+  position: relative;
+}
+.tblock::before {
+  content: ""; position: absolute; left: -7px; top: 20px;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--soft); border: 2px solid var(--bg);
+}
+.tblock.is-now { border-left-color: var(--accent); }
+.tblock.is-now::before { background: var(--accent); }
+.tblock.is-now .tlabel { color: var(--accent); }
+.tblock.is-break { opacity: .72; }
+.tblock.is-done .tlabel { text-decoration: line-through; color: var(--muted); }
+.twhen { font-variant-numeric: tabular-nums; font-weight: 700; min-width: 46px; color: var(--muted); padding-top: 12px; }
+.tbody { flex: 1; min-width: 0; }
+.trow { display: flex; align-items: center; gap: 8px; }
+.chip { font-size: .78rem; background: var(--soft); border-radius: 999px; padding: 3px 10px; }
+.tdur { font-size: .78rem; color: var(--muted); }
+.tlabel { display: block; font-size: 1.12rem; font-weight: 600; margin: 4px 0 2px; text-decoration: none; color: var(--ink); }
+a.tlabel:hover { color: var(--accent); }
+.tlabel.break { font-weight: 500; color: var(--muted); }
+.twhy { font-size: .88rem; color: var(--muted); }
+.dayempty { text-align: center; padding: 30px 22px; margin: 18px 0; }
+.dayempty .btn { margin-top: 12px; }
+.prefs { margin-top: 20px; padding: 16px 20px; }
+.prefs summary { cursor: pointer; font-weight: 600; }
+.prefsform { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 14px; }
+.prefsform label { margin: 0; color: var(--ink); font-size: .95rem; display: flex; align-items: center; gap: 6px; }
+.prefsform select, .prefsform input { width: auto; display: inline-block; }
+.prefsform input[type=number] { width: 64px; }
+
 /* focus timer */
 .focuspage { padding-top: 4vh; }
 .timer { margin: 26px auto; width: 240px; height: 240px; }
