@@ -79,6 +79,13 @@ _TABLES = [
         kind TEXT DEFAULT 'task',
         why TEXT DEFAULT '',
         done INTEGER DEFAULT 0"""),
+    ("push_subscriptions", """
+        id {pk},
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        endpoint TEXT UNIQUE NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        created_at TEXT DEFAULT ({now})"""),
 ]
 
 # Columns added after the first release. ALTER runs once; duplicate errors are
@@ -86,6 +93,7 @@ _TABLES = [
 _MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN wake_hour INTEGER DEFAULT 8",
     "ALTER TABLE users ADD COLUMN sleep_hour INTEGER DEFAULT 23",
+    "ALTER TABLE users ADD COLUMN companion_name TEXT DEFAULT 'Sprout'",
 ]
 
 _INDEXES = [

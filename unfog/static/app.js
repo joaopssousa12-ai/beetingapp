@@ -21,6 +21,39 @@ document.querySelectorAll("form").forEach((f) => {
   });
 });
 
+// push: turn on the daily nudge
+const pushbtn = document.getElementById("pushbtn");
+if (pushbtn && "serviceWorker" in navigator && "PushManager" in window) {
+  const keyMeta = document.querySelector('meta[name="vapid-key"]');
+  const b64ToUint8 = (s) => {
+    const pad = "=".repeat((4 - (s.length % 4)) % 4);
+    const b = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from([...b].map((c) => c.charCodeAt(0)));
+  };
+  pushbtn.addEventListener("click", async () => {
+    if (!keyMeta) return;
+    pushbtn.disabled = true;
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { pushbtn.textContent = "Notifications blocked"; return; }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64ToUint8(keyMeta.content),
+      });
+      const r = await fetch("/app/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub),
+      });
+      pushbtn.textContent = r.ok ? pushbtn.dataset.on : "Try again";
+    } catch (e) {
+      pushbtn.textContent = "Try again";
+      pushbtn.disabled = false;
+    }
+  });
+}
+
 // focus timer
 const timer = document.getElementById("timer");
 if (timer) {

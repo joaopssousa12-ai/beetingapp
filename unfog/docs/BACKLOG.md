@@ -14,15 +14,13 @@ Legend — effort: S (hours) · M (a day) · L (multi-day). Champion = the advis
 - **Close the day** — shame-free evening reflection. *Contrarian (retention).*
 - **Wins** — streaks that bend, don't break. *Contrarian.*
 - **Founding-member** willingness-to-pay test. *Outsider.*
+- **Companion that grows** 🌱→🌳 — shame-free, only ever grows; drives retention + sharing. *Expansionist.*
+- **Shareable progress card** — a gorgeous 4:5 card users screenshot & post. *Outsider.*
+- **Daily nudge (web push)** — built, feature-flagged; enable per docs/NOTIFICATIONS.md. *Executor.*
 
-## P0 — next (retention + validation; the council says this beats new features)
-1. **Daily reminder notifications** (web push) — the #1 churn fix. Bring people back to
-   the "plan my day" ritual. *Executor.* Effort M. **(approved, building)**
-2. **A companion that grows with you** (the Finch mechanic) — a small plant/creature that
-   levels up as you do steps; never guilts you on off-days. This is BOTH the retention
-   unlock AND the free marketing engine (people screenshot & share it). *Expansionist.* Effort L.
-3. **Shareable cards** — auto-generate a pretty image of "my plan today" / "my week of wins"
-   the user can post. Product-as-marketing, exactly how Finch went viral. *Outsider.* Effort M.
+## P0 — next
+1. **Enable notifications in prod** (3 steps in docs/NOTIFICATIONS.md) + verify on a real phone.
+2. **Voice capture** for the brain dump (see P1 #4) — biggest remaining friction cut.
 
 ## P1 — strong, cheap wins stolen from competitors
 4. **Voice capture** for the brain dump (speak instead of type) — every retention study says

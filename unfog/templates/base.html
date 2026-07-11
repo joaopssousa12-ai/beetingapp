@@ -6,6 +6,7 @@
 <title>{% block title %}Unfog — the gentle planner for ADHD brains{% endblock %}</title>
 <meta name="description" content="Dump the chaos in your head. Unfog turns it into one tiny next step at a time. A gentle planner built for ADHD brains.">
 <meta name="theme-color" content="#5b5bd6">
+{% if vapid_key %}<meta name="vapid-key" content="{{ vapid_key }}">{% endif %}
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/static/icon-192.png">

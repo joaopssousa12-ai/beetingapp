@@ -38,3 +38,29 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request)));
   }
 });
+
+// Push: show the gentle daily nudge.
+self.addEventListener("push", (e) => {
+  let d = { title: "Unfog", body: "Your day is waiting 🌱", url: "/app" };
+  try { d = Object.assign(d, e.data.json()); } catch (err) {}
+  e.waitUntil(
+    self.registration.showNotification(d.title, {
+      body: d.body,
+      icon: "/static/icon-192.png",
+      badge: "/static/icon-192.png",
+      data: { url: d.url },
+      tag: "unfog-daily",
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/app";
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+      for (const c of cs) { if ("focus" in c) { c.navigate(url); return c.focus(); } }
+      return self.clients.openWindow(url);
+    })
+  );
+});

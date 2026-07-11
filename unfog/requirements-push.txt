@@ -1,0 +1,4 @@
+# Optional: enables web-push daily nudges. Install alongside requirements.txt
+# only when you're ready to turn notifications on (and set the VAPID_* env vars).
+# See docs/NOTIFICATIONS.md.
+pywebpush==2.0.0

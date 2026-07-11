@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>My Unfog progress</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="sharebody">
+<main class="sharewrap">
+  <div class="sharecard" id="card">
+    <div class="share-brand">un<span>fog</span></div>
+    <div class="share-emoji">{{ companion.emoji }}</div>
+    <p class="share-comp">{{ companion.name }} is {{ companion.desc }}</p>
+    <div class="share-stats">
+      <div><span class="s-big">{{ current }}</span><span class="s-lbl">day streak</span></div>
+      <div><span class="s-big">{{ steps }}</span><span class="s-lbl">steps done</span></div>
+      <div><span class="s-big">{{ focus_min }}</span><span class="s-lbl">focus min</span></div>
+    </div>
+    <p class="share-tag">My ADHD brain, one tiny step at a time.</p>
+    <p class="share-url">unfog.onrender.com</p>
+  </div>
+
+  <div class="share-actions">
+    <button class="solid btn" id="sharebtn">Share</button>
+    <a class="ghost btn" href="/app/wins">← Back</a>
+  </div>
+  <p class="tiny muted center">Tip: screenshot the card above and post it — that's how brains find us. 💚</p>
+</main>
+<script>
+document.getElementById("sharebtn").addEventListener("click", async () => {
+  const data = {
+    title: "Unfog",
+    text: "My ADHD brain, one tiny step at a time — with Unfog 🌱",
+    url: "https://unfog.onrender.com",
+  };
+  try {
+    if (navigator.share) { await navigator.share(data); }
+    else {
+      await navigator.clipboard.writeText(data.text + " " + data.url);
+      const b = document.getElementById("sharebtn");
+      b.textContent = "Link copied ✓";
+    }
+  } catch (e) {}
+});
+</script>
+</body>
+</html>

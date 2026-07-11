@@ -25,6 +25,7 @@ from itsdangerous import URLSafeTimedSerializer
 
 import ai
 import db
+import push
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SESSION_MAX_AGE = 60 * 60 * 24 * 30
@@ -94,6 +95,7 @@ def login_redirect(uid: int, to: str = "/app"):
 
 def render(request, name, **ctx):
     ctx.setdefault("m", request.query_params.get("m", ""))
+    ctx.setdefault("vapid_key", push.PUBLIC_KEY if push.ENABLED else "")
     return templates.TemplateResponse(request, name, ctx)
 
 
@@ -212,7 +214,8 @@ def now_view(request: Request):
     active, done_today = _counts(user["id"])
     return render(request, "now.html", user=user, task=task, step=step,
                   steps_total=steps_total, steps_done=steps_done,
-                  active=active, done_today=done_today, page="now")
+                  active=active, done_today=done_today, page="now",
+                  companion=_companion(user["id"], user.get("companion_name")))
 
 
 @app.get("/app/dump")
@@ -482,6 +485,39 @@ def focus_done(request: Request, tid: int, minutes: int = Form(...)):
 
 # ---------- wins ----------
 
+# Companion: a shame-free creature that only ever grows (never wilts, never dies).
+# Stage is derived from lifetime steps done — inactivity never sets it back.
+COMPANION_STAGES = [
+    (0, "🌰", "a seed, waiting"),
+    (1, "🌱", "a sprout"),
+    (5, "🌿", "a seedling"),
+    (15, "🪴", "a little plant"),
+    (40, "🌷", "budding"),
+    (100, "🌸", "in full bloom"),
+    (250, "🌳", "a strong tree"),
+]
+
+
+def _companion(uid, name="Sprout"):
+    steps = db.one(
+        "SELECT COUNT(*) c FROM events WHERE user_id=? AND kind='step_done'", (uid,)
+    )["c"]
+    stage = COMPANION_STAGES[0]
+    nxt = None
+    for i, s in enumerate(COMPANION_STAGES):
+        if steps >= s[0]:
+            stage = s
+            nxt = COMPANION_STAGES[i + 1] if i + 1 < len(COMPANION_STAGES) else None
+    return {
+        "name": name or "Sprout",
+        "emoji": stage[1],
+        "desc": stage[2],
+        "steps": steps,
+        "to_next": (nxt[0] - steps) if nxt else 0,
+        "next_emoji": nxt[1] if nxt else stage[1],
+    }
+
+
 def _streaks(uid):
     days = [r["d"] for r in db.q(
         "SELECT DISTINCT substr(at,1,10) d FROM events WHERE user_id=? ORDER BY d DESC", (uid,)
@@ -566,7 +602,78 @@ def wins(request: Request):
         week.append({"day": d[8:], "active": c > 0})
     return render(request, "wins.html", user=user, page="wins", current=current,
                   best=best, steps=steps, tasks_done=tasks_done,
-                  focus_min=focus_min, week=week)
+                  focus_min=focus_min, week=week,
+                  companion=_companion(uid, user.get("companion_name")),
+                  push_on=push.ENABLED)
+
+
+@app.post("/app/companion/name")
+def companion_name(request: Request, name: str = Form(...)):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    clean = name.strip()[:24] or "Sprout"
+    db.x("UPDATE users SET companion_name=? WHERE id=?", (clean, user["id"]))
+    return RedirectResponse("/app/wins?m=Named+%F0%9F%92%9A", status_code=303)
+
+
+# ---------- push notifications (feature-flagged) ----------
+
+@app.post("/app/push/subscribe")
+async def push_subscribe(request: Request):
+    user = current_user(request)
+    if not user or not push.ENABLED:
+        return JSONResponse({"ok": False}, status_code=400)
+    try:
+        sub = await request.json()
+        endpoint = sub["endpoint"]
+        keys = sub["keys"]
+        db.x(
+            "INSERT OR IGNORE INTO push_subscriptions(user_id, endpoint, p256dh, auth) VALUES (?,?,?,?)",
+            (user["id"], endpoint, keys["p256dh"], keys["auth"]),
+        )
+        return JSONResponse({"ok": True})
+    except Exception:
+        return JSONResponse({"ok": False}, status_code=400)
+
+
+@app.get("/tasks/remind")
+def send_reminders(token: str = ""):
+    """Hit by a free external cron (cron-job.org) once a day. Sends a gentle nudge
+    to everyone who hasn't done a step yet today. Guarded by CRON_TOKEN."""
+    secret = os.environ.get("CRON_TOKEN")
+    if not push.ENABLED or not secret or not hmac.compare_digest(token, secret):
+        return JSONResponse({"ok": False}, status_code=404)
+    today = date.today().isoformat()
+    subs = db.q(
+        "SELECT ps.* FROM push_subscriptions ps WHERE ps.user_id NOT IN "
+        "(SELECT DISTINCT user_id FROM events WHERE kind='step_done' AND substr(at,1,10)=?)",
+        (today,),
+    )
+    sent = 0
+    for s in subs:
+        try:
+            if push.send(s, "Your day is waiting 🌱",
+                         "Two minutes to map it out. One tiny step is enough.", "/app/day"):
+                sent += 1
+        except push.DeadSubscription:
+            db.x("DELETE FROM push_subscriptions WHERE id=?", (s["id"],))
+    return JSONResponse({"ok": True, "sent": sent, "candidates": len(subs)})
+
+
+# ---------- shareable card (product-as-marketing) ----------
+
+@app.get("/app/share")
+def share_card(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    uid = user["id"]
+    current, best = _streaks(uid)
+    steps = db.one("SELECT COUNT(*) c FROM events WHERE user_id=? AND kind='step_done'", (uid,))["c"]
+    focus_min = db.one("SELECT COALESCE(SUM(minutes),0) c FROM focus_sessions WHERE user_id=?", (uid,))["c"]
+    return render(request, "share.html", user=user, current=current, steps=steps,
+                  focus_min=focus_min, companion=_companion(uid, user.get("companion_name")))
 
 
 # ---------- pwa + health ----------

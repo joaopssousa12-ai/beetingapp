@@ -3,6 +3,25 @@
 {% block content %}
 <section class="winspage">
   <h1>Look what you did</h1>
+
+  <div class="card companion">
+    <div class="comp-emoji">{{ companion.emoji }}</div>
+    <div class="comp-body">
+      <p class="comp-name">{{ companion.name }} — {{ companion.desc }}</p>
+      {% if companion.to_next %}
+        <p class="tiny muted">{{ companion.to_next }} more step{{ 's' if companion.to_next != 1 }} to grow into {{ companion.next_emoji }}</p>
+      {% else %}
+        <p class="tiny muted">Fully grown. Every step keeps them thriving. 💚</p>
+      {% endif %}
+      <details class="renamewrap">
+        <summary class="tiny">rename</summary>
+        <form method="post" action="/app/companion/name" class="renameform">
+          <input type="text" name="name" value="{{ companion.name }}" maxlength="24">
+          <button class="ghost small" type="submit">Save</button>
+        </form>
+      </details>
+    </div>
+  </div>
   <div class="statgrid">
     <div class="card stat"><span class="big">{{ current }}</span><span class="lbl">day streak</span></div>
     <div class="card stat"><span class="big">{{ best }}</span><span class="lbl">best streak</span></div>
@@ -19,6 +38,12 @@
     </div>
     <p class="tiny muted">A quiet day doesn't erase anything. Streaks here bend — they don't break you.</p>
   </div>
-  <p class="center"><a class="ghost btn" href="/app/reflect">🌙 Close today</a></p>
+  <div class="row gap center winactions">
+    <a class="solid btn" href="/app/share">📸 Share my progress</a>
+    <a class="ghost btn" href="/app/reflect">🌙 Close today</a>
+  </div>
+  {% if push_on %}
+  <p class="center"><button class="ghost btn" id="pushbtn" data-on="🔔 Daily nudge is on">🔔 Turn on a daily nudge</button></p>
+  {% endif %}
 </section>
 {% endblock %}
