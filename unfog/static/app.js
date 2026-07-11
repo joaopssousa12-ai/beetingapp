@@ -1,6 +1,14 @@
 // Unfog client bits: PWA registration, busy buttons, focus timer.
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
+  // When a new service worker takes control, reload once so the fresh version
+  // (and its cache) is in charge — prevents an old cached worker lingering.
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloaded) return;
+    reloaded = true;
+    window.location.reload();
+  });
 }
 
 // show progress on slow submits (AI breakdown)
