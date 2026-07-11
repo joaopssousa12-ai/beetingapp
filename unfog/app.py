@@ -109,11 +109,14 @@ def landing(request: Request):
 
 
 @app.post("/waitlist")
-def waitlist(email: str = Form(""), website: str = Form("")):
+def waitlist(email: str = Form(""), website: str = Form(""), source: str = Form("landing")):
     # `website` is a honeypot: humans never fill it
+    src = "founding" if source == "founding" else "landing"
     if not website and EMAIL_RE.match(email.strip().lower()):
-        db.x("INSERT OR IGNORE INTO waitlist(email) VALUES (?)", (email.strip().lower(),))
-    return RedirectResponse("/?joined=1#join", status_code=303)
+        db.x("INSERT OR IGNORE INTO waitlist(email, source) VALUES (?,?)",
+             (email.strip().lower(), src))
+    tag = "founding" if src == "founding" else "1"
+    return RedirectResponse(f"/?joined={tag}#join", status_code=303)
 
 
 @app.get("/admin/waitlist.csv")
@@ -222,11 +225,11 @@ def dump_page(request: Request):
 
 
 @app.post("/app/dump")
-def dump(request: Request, text: str = Form(...)):
+def dump(request: Request, text: str = Form(...), spiciness: int = Form(2)):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
-    tasks = ai.breakdown(text)
+    tasks = ai.breakdown(text, spiciness)
     base = db.one("SELECT COALESCE(MAX(order_idx),0) m FROM tasks WHERE user_id=?", (user["id"],))["m"]
     for i, t in enumerate(tasks):
         tid = db.x(
@@ -501,6 +504,47 @@ def _streaks(uid):
         best = max(best, cur)
         prev = this
     return current, best
+
+
+@app.get("/app/reflect")
+def reflect(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    uid, today = user["id"], date.today().isoformat()
+    steps = db.one(
+        "SELECT COUNT(*) c FROM events WHERE user_id=? AND kind='step_done' AND substr(at,1,10)=?",
+        (uid, today))["c"]
+    tasks_done = db.one(
+        "SELECT COUNT(*) c FROM tasks WHERE user_id=? AND status='done' AND substr(done_at,1,10)=?",
+        (uid, today))["c"]
+    focus_min = db.one(
+        "SELECT COALESCE(SUM(minutes),0) c FROM focus_sessions WHERE user_id=? AND substr(started_at,1,10)=?",
+        (uid, today))["c"]
+    done_titles = db.q(
+        "SELECT title FROM tasks WHERE user_id=? AND status='done' AND substr(done_at,1,10)=? ORDER BY done_at",
+        (uid, today))
+    did_something = steps or tasks_done or focus_min
+    closed = db.one(
+        "SELECT COUNT(*) c FROM events WHERE user_id=? AND kind='day_closed' AND substr(at,1,10)=?",
+        (uid, today))["c"] > 0
+    return render(request, "reflect.html", user=user, page="reflect", steps=steps,
+                  tasks_done=tasks_done, focus_min=focus_min, done_titles=done_titles,
+                  did_something=did_something, closed=closed)
+
+
+@app.post("/app/reflect/close")
+def reflect_close(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    today = date.today().isoformat()
+    already = db.one(
+        "SELECT COUNT(*) c FROM events WHERE user_id=? AND kind='day_closed' AND substr(at,1,10)=?",
+        (user["id"], today))["c"]
+    if not already:
+        db.x("INSERT INTO events(user_id, kind) VALUES (?,'day_closed')", (user["id"],))
+    return RedirectResponse("/app/reflect?m=Day+closed.+Rest+is+part+of+the+work.", status_code=303)
 
 
 @app.get("/app/wins")

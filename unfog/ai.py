@@ -192,16 +192,32 @@ def _ask(system, user_text, schema, max_tokens=4000):
     return json.loads(text)
 
 
-def breakdown(text):
-    """Brain dump -> [{title, estimate_min, microsteps}]. Never raises."""
+# Spiciness (à la Goblin Tools): how granular the microsteps should be.
+SPICE = {
+    1: ("chill", "Give each task just 2-3 broad steps. Keep it light.", 3),
+    2: ("normal", "Give each task 2-5 concrete steps.", 5),
+    3: ("tiny", "Give each task 5-8 TINY steps — near-comically small, one physical "
+        "action each (e.g. 'Pick up your phone', 'Open the contacts app'). For a brain "
+        "that's badly stuck, starting is everything.", 8),
+}
+
+
+def breakdown(text, spiciness=2):
+    """Brain dump -> [{title, estimate_min, microsteps}]. Never raises.
+
+    spiciness 1..3 controls how small the steps are (chill / normal / tiny).
+    """
     text = (text or "").strip()
     if not text:
         return []
+    level = SPICE.get(int(spiciness) if str(spiciness).isdigit() else 2, SPICE[2])
+    _, guidance, cap = level
+    system = SYSTEM + "\n\nStep granularity for this request: " + guidance
     try:
-        data = _ask(SYSTEM, f"Brain dump:\n\n{text}", BREAKDOWN_SCHEMA)
+        data = _ask(system, f"Brain dump:\n\n{text}", BREAKDOWN_SCHEMA)
         tasks = []
         for t in data.get("tasks", [])[:MAX_TASKS]:
-            steps = [s.strip() for s in t.get("microsteps", []) if s.strip()][:MAX_STEPS]
+            steps = [s.strip() for s in t.get("microsteps", []) if s.strip()][:cap]
             title = (t.get("title") or "").strip()
             if title and steps:
                 tasks.append({

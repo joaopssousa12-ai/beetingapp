@@ -44,7 +44,11 @@
 </section>
 
 <section class="join" id="join">
-  {% if joined %}
+  {% if joined == 'founding' %}
+    <h2>You're a founding member 💜</h2>
+    <p class="sub">Your spot is reserved. We'll email you to set it up before public launch —
+    lifetime access, locked in.</p>
+  {% elif joined %}
     <h2>You're on the list 💜</h2>
     <p class="sub">We'll email you the moment your spot opens. It'll be worth it.</p>
   {% else %}
@@ -57,6 +61,22 @@
     </form>
   {% endif %}
 </section>
+
+{% if not joined %}
+<section class="founding" id="founding">
+  <span class="badge">Founding member</span>
+  <h2>Lock in Unfog for life — €5, once.</h2>
+  <p class="sub">The first 100 people get lifetime access for a single €5 — no subscription, ever.
+  You'll shape what we build. When we launch publicly it becomes €4.99/month.</p>
+  <form method="post" action="/waitlist" class="waitform">
+    <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+    <input type="hidden" name="source" value="founding">
+    <input type="email" name="email" placeholder="you@example.com" required>
+    <button class="solid btn" type="submit">Claim my founding spot →</button>
+  </form>
+  <p class="tiny muted">Reserve now with your email — we'll send the payment link before launch. No charge today.</p>
+</section>
+{% endif %}
 
 <footer class="foot">
   <p>Unfog is a planning tool, not medical advice or treatment.</p>

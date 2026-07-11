@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Close the day — Unfog{% endblock %}
+{% block content %}
+<section class="reflectpage center">
+  <p class="eyebrow">Close the day</p>
+  {% if did_something %}
+    <h1>Look what today held.</h1>
+    <div class="statgrid">
+      {% if tasks_done %}<div class="card stat"><span class="big">{{ tasks_done }}</span><span class="lbl">task{{ 's' if tasks_done != 1 }} finished</span></div>{% endif %}
+      <div class="card stat"><span class="big">{{ steps }}</span><span class="lbl">step{{ 's' if steps != 1 }} done</span></div>
+      {% if focus_min %}<div class="card stat"><span class="big">{{ focus_min }}</span><span class="lbl">focus minutes</span></div>{% endif %}
+    </div>
+    {% if done_titles %}
+    <div class="card donelist">
+      <p class="lbl">Finished today</p>
+      <ul>{% for t in done_titles %}<li>✓ {{ t.title }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+  {% else %}
+    <h1>Today was a quiet one.</h1>
+    <p class="sub">And that's allowed. Rest counts. Showing up tomorrow is the whole game —
+    your streak of trying doesn't break here.</p>
+  {% endif %}
+
+  {% if closed %}
+    <p class="closed-note">🌙 You've closed today. Sleep easy.</p>
+  {% else %}
+    <form method="post" action="/app/reflect/close">
+      <button class="solid btn huge" type="submit">🌙 Close the day</button>
+    </form>
+    <p class="tiny muted">Closing the day is just for you — a small full stop. No score, no judgement.</p>
+  {% endif %}
+  <p><a class="tiny muted" href="/app">← back to Now</a></p>
+</section>
+{% endblock %}
