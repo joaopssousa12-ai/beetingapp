@@ -19,13 +19,20 @@ Open http://127.0.0.1:8000
 
 ## Environment variables
 
+AI is optional and provider-agnostic (priority: Gemini → Groq → Claude → rule-based
+fallback). Set **one** of the AI keys — Gemini/Groq are free. See `docs/AI.md`.
+
 | Variable | Required | What it does |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | recommended | Enables AI task breakdown ([console.anthropic.com](https://console.anthropic.com)) |
-| `ANTHROPIC_MODEL` | no | Default `claude-opus-4-8`. Set `claude-haiku-4-5` for ~5x cheaper breakdowns in production |
+| `GEMINI_API_KEY` | one AI key (free) | Google Gemini ([aistudio.google.com/apikey](https://aistudio.google.com/apikey)) |
+| `GROQ_API_KEY` | one AI key (free) | Groq ([console.groq.com/keys](https://console.groq.com/keys)) |
+| `ANTHROPIC_API_KEY` | one AI key (paid) | Anthropic Claude ([console.anthropic.com](https://console.anthropic.com)) |
+| `GEMINI_MODEL` / `GROQ_MODEL` / `ANTHROPIC_MODEL` | no | Override the default model per provider |
+| `DATABASE_URL` | on Render free | Postgres connection string (Neon). Falls back to SQLite if unset |
 | `ADMIN_TOKEN` | for waitlist export | `GET /admin/waitlist.csv?token=...` |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` / `CRON_TOKEN` | for push | Daily nudge notifications — see `docs/NOTIFICATIONS.md` |
 | `SECRET_KEY` | no | Session signing key; auto-generated and persisted next to the DB if unset |
-| `DB_PATH` | on Railway/Render | e.g. `/data/unfog.db` — point it at a mounted volume |
+| `DB_PATH` | no | SQLite path when not using `DATABASE_URL` (e.g. `/var/data/unfog.db` on a disk) |
 
 ## Deploy (Render free tier + Neon free Postgres — $0/month)
 

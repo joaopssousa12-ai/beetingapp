@@ -224,7 +224,7 @@ def dump_page(request: Request):
     if not user:
         return RedirectResponse("/login", status_code=303)
     return render(request, "dump.html", user=user, page="dump",
-                  ai_on=bool(os.environ.get("ANTHROPIC_API_KEY")))
+                  ai_on=ai.enabled())
 
 
 @app.post("/app/dump")
@@ -354,7 +354,7 @@ def day_view(request: Request):
     return render(request, "day.html", user=user, page="plan", blocks=blocks,
                   active=active, energy=user.get("energy_peak") or "morning",
                   wake=user.get("wake_hour") or 8, sleep=user.get("sleep_hour") or 23,
-                  ai_on=bool(os.environ.get("ANTHROPIC_API_KEY")))
+                  ai_on=ai.enabled())
 
 
 @app.post("/app/day/prefs")

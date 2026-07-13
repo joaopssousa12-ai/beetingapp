@@ -1,10 +1,13 @@
-"""AI engine: turns a brain dump into tasks with tiny first steps.
+"""AI engine: turns a brain dump into tasks with tiny first steps, and plans the day.
 
-Uses the Anthropic API with structured outputs so the JSON shape is guaranteed.
-Model is configurable via ANTHROPIC_MODEL (default claude-opus-4-8; set
-claude-haiku-4-5 in production if you want ~5x cheaper breakdowns).
-Every function degrades to a rule-based fallback so the app never breaks
-when the API key is missing or a request fails.
+Works with whichever provider has a key set, in this priority order:
+  1. Google Gemini   — GEMINI_API_KEY   (free tier; GEMINI_MODEL, default gemini-2.0-flash)
+  2. Groq            — GROQ_API_KEY     (free tier; GROQ_MODEL, default llama-3.3-70b-versatile)
+  3. Anthropic Claude— ANTHROPIC_API_KEY (paid; ANTHROPIC_MODEL, default claude-opus-4-8)
+  4. none            — a rule-based fallback so the app always works, key or not.
+
+Every function degrades to the rule-based fallback if the request fails, times out,
+or hits a rate limit — the app never breaks.
 """
 import json
 import os
@@ -169,27 +172,100 @@ def _fallback_plan(tasks, energy_peak, wake_hour, sleep_hour):
     return blocks
 
 
-def _client():
-    if anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):
-        return None
-    return anthropic.Anthropic()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+
+def _provider():
+    """Which AI backend to use, in priority order. None -> rule-based fallback."""
+    if GEMINI_API_KEY:
+        return "gemini"
+    if GROQ_API_KEY:
+        return "groq"
+    if anthropic is not None and os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    return None
+
+
+def enabled():
+    return _provider() is not None
+
+
+def provider_name():
+    return {"gemini": "Gemini", "groq": "Groq", "anthropic": "Claude"}.get(_provider(), "")
+
+
+def _http_json(url, payload, headers, timeout=30):
+    """POST json, return parsed json. Stdlib only (no extra dependency)."""
+    import urllib.request
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _strip_json(text):
+    """Pull a JSON object out of a model reply that may wrap it in code fences."""
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\n?", "", t)
+        t = re.sub(r"\n?```$", "", t).strip()
+    if not t.startswith("{"):
+        i, j = t.find("{"), t.rfind("}")
+        if i != -1 and j != -1:
+            t = t[i:j + 1]
+    return json.loads(t)
 
 
 def _ask(system, user_text, schema, max_tokens=4000):
-    client = _client()
-    if client is None:
-        raise RuntimeError("no api key")
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user_text}],
-        output_config={"format": {"type": "json_schema", "schema": schema}},
+    p = _provider()
+    if p is None:
+        raise RuntimeError("no ai provider configured")
+    if p == "anthropic":
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model=MODEL, max_tokens=max_tokens, system=system,
+            messages=[{"role": "user", "content": user_text}],
+            output_config={"format": {"type": "json_schema", "schema": schema}},
+        )
+        text = next(b.text for b in resp.content if b.type == "text")
+        return json.loads(text)
+
+    # Gemini and Groq: force JSON output and describe the shape in the prompt.
+    schema_hint = ("\n\nReturn ONLY a JSON object (no markdown, no prose) matching "
+                   "this JSON schema:\n" + json.dumps(schema))
+    if p == "groq":
+        resp = _http_json(
+            "https://api.groq.com/openai/v1/chat/completions",
+            {
+                "model": GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": system + schema_hint},
+                    {"role": "user", "content": user_text},
+                ],
+                "response_format": {"type": "json_object"},
+                "max_tokens": max_tokens,
+                "temperature": 0.4,
+            },
+            {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+        )
+        return _strip_json(resp["choices"][0]["message"]["content"])
+
+    # gemini
+    resp = _http_json(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}",
+        {
+            "system_instruction": {"parts": [{"text": system + schema_hint}]},
+            "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+            "generationConfig": {"responseMimeType": "application/json",
+                                 "maxOutputTokens": max_tokens, "temperature": 0.4},
+        },
+        {"Content-Type": "application/json"},
     )
-    if resp.stop_reason not in ("end_turn", "stop_sequence"):
-        raise RuntimeError(f"unexpected stop_reason: {resp.stop_reason}")
-    text = next(b.text for b in resp.content if b.type == "text")
-    return json.loads(text)
+    parts = resp["candidates"][0]["content"]["parts"]
+    return _strip_json("".join(pt.get("text", "") for pt in parts))
 
 
 # Spiciness (à la Goblin Tools): how granular the microsteps should be.
