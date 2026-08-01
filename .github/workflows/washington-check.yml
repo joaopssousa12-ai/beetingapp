@@ -1,0 +1,50 @@
+name: washington-check
+
+# One-shot diagnostic: why do only a couple of Washington (or any current ATP)
+# matches show, and without odds? Compares what The Odds API has priced RIGHT NOW
+# vs what we have stored + when we last collected. A few credits (diag pulls odds
+# per active tennis key). Reads only.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compare API vs stored + last collection
+        run: |
+          python3 - <<'EOF'
+          import json, urllib.request
+          BASE = "https://beetingapp-1.onrender.com"
+          def get(path, t=120):
+              with urllib.request.urlopen(BASE + path, timeout=t) as r:
+                  return json.loads(r.read().decode())
+
+          print("=== what the API has priced NOW (active tennis keys + event counts) ===")
+          d = get("/api/diag/odds-sports")
+          print("credits remaining:", d.get("remaining"))
+          for k in d.get("active_tennis", []):
+              print("  ACTIVE:", k)
+          for k, n in (d.get("event_counts") or {}).items():
+              print(f"    {k:32} -> {n} events priced")
+          print("  stored tennis events in DB:", d.get("stored_tennis"))
+
+          print("\n=== tennis events in our 48h value-bets window ===")
+          vb = get("/api/value-bets")
+          tn = [b for b in vb if (b.get('sport_key','') or '').startswith('tennis')]
+          print(f"tennis events shown: {len(tn)}")
+          for b in tn:
+              has_pin = b.get("pin_home") is not None
+              has_x1 = b.get("x1_home") is not None
+              has_best = b.get("best_home") is not None
+              print(f"  {b.get('sport_name')}: {b.get('home_team')} v {b.get('away_team')} "
+                    f"@ {b.get('commence_time')} | pin={has_pin} 1xbet={has_x1} best={has_best}")
+
+          print("\n=== last collection ===")
+          cs = get("/api/collection/status")
+          print("last_run:", cs.get("last_run"))
+          for m in (cs.get("messages") or []):
+              if "ashington" in m or "ATP" in m or "WTA" in m or "tennis" in m.lower():
+                  print("  ", m)
+          EOF
