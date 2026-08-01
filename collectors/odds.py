@@ -406,6 +406,33 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
                 if _sport_class(k) == cls and k not in seen:
                     seen.add(k)
                     targets.append(k)
+        # NEW-TOURNAMENT DISCOVERY (only on the 2h imminent job): a freshly-
+        # activated tournament (e.g. a new ATP week) isn't in odds_events yet, so
+        # keys_in_window can't surface it — it would only appear at the 03:00 full
+        # sweep. Add any ACTIVE in-scope (football/tennis) key we don't yet have
+        # stored, so new tournaments show within ~2h. An /odds call that returns
+        # no events costs 0 Odds-API credits, so this is effectively free until a
+        # tournament actually has games.
+        try:
+            active = set(get_active_sports())
+            conn = get_connection()
+            stored = {r["sport_key"] for r in conn.execute(
+                "SELECT DISTINCT sport_key FROM odds_events "
+                "WHERE commence_time > datetime('now')").fetchall() if r["sport_key"]}
+            conn.close()
+            newly = 0
+            for k in active:
+                if k in seen or k in stored or not _sport_class(k):
+                    continue
+                seen.add(k)
+                targets.append(k)
+                newly += 1
+                if newly >= 12:   # safety cap: bound worst-case probes per cycle
+                    break
+            if newly:
+                cb(f"Imminent refresh: discovering {newly} newly-active tournament(s).")
+        except Exception as e:
+            cb(f"Imminent discovery skipped: {e}")
 
     if not targets:
         cb(f"Imminent refresh: no football/tennis match starting in <{window_desc}.")
