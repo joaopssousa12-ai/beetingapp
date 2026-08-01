@@ -1,0 +1,42 @@
+name: refresh-and-check
+
+# One-shot: trigger a fast odds refresh (same as the site Refresh button) to pull
+# newly-activated tournaments (e.g. Canadian Open that went live after the last
+# sweep), then re-list the tennis events in the 48h window. Costs the refresh's
+# normal credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Refresh + recheck tennis coverage
+        run: |
+          python3 - <<'EOF'
+          import json, urllib.request, time
+          BASE = "https://beetingapp-1.onrender.com"
+          def get(path, t=120):
+              with urllib.request.urlopen(BASE + path, timeout=t) as r:
+                  return json.loads(r.read().decode())
+          def post(path, t=120):
+              req = urllib.request.Request(BASE + path, method="POST")
+              with urllib.request.urlopen(req, timeout=t) as r:
+                  return json.loads(r.read().decode())
+          print("POST /api/odds/refresh ...")
+          print(post("/api/odds/refresh"))
+          print("waiting 100s for the fetch to finish...")
+          time.sleep(100)
+          vb = get("/api/value-bets")
+          tn = [b for b in vb if (b.get('sport_key','') or '').startswith('tennis')]
+          print(f"\ntennis events now in 48h window: {len(tn)}")
+          for b in tn:
+              print(f"  {b.get('sport_name')}: {b.get('home_team')} v {b.get('away_team')} @ {b.get('commence_time')}"
+                    f" | pin={b.get('pin_home') is not None} 1xbet={b.get('x1_home') is not None}")
+          cs = get("/api/collection/status")
+          print("\nlast_run:", cs.get("last_run"))
+          for m in (cs.get("messages") or []):
+              if "anadian" in m or "ashington" in m:
+                  print("  ", m)
+          EOF
