@@ -577,14 +577,12 @@ async def run_odds_only():
         # The Odds API (covers tennis, MMA, etc.)
         await loop.run_in_executor(None, lambda: collect_odds(status_callback=cb))
         
-        # The-Odds-API for multiple bookmakers (NEW v2)
-        cb("Fetching odds from The-Odds-API (multiple bookmakers)...")
-        try:
-            football_odds = await loop.run_in_executor(None, collect_odds_multiple_bookmakers)
-            tennis_odds = await loop.run_in_executor(None, collect_tennis_odds)
-            cb(f"✓ Collected {len(football_odds)} football odds + {len(tennis_odds)} tennis odds from API")
-        except Exception as e:
-            cb(f"The-Odds-API ERROR (non-critical): {repr(e)}")
+        # REMOVED (credit waste): collect_odds_multiple_bookmakers + collect_tennis_odds
+        # fetched odds with region 'us' + US-only books (draftkings/betmgm/…) and
+        # markets h2h,spreads,totals, then THREW THE RESULT AWAY — the records were
+        # only ever counted for a log line, never stored. That was ~25 Odds-API
+        # credits burned per refresh for nothing. The useful 1X2 odds come from
+        # collect_odds (above, eu/h2h → odds_events); nothing here is lost.
         # OddsPapi DISABLED — 403-blocked from the Render datacentre IP (see startup note).
         # Betfair Exchange — primary reference for liquid markets (peer-to-peer, 0% margin)
         try:
