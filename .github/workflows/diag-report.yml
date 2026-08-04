@@ -1,0 +1,20 @@
+name: diag-report
+
+# One-shot (Part A): pull the read-only /api/diag/report JSON from production and
+# print it, so the diagnostic report + CSVs can be assembled. No credits, no writes.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch diagnostic report
+        run: |
+          curl -fsS -m 120 "https://beetingapp-1.onrender.com/api/diag/report" -o report.json
+          echo "===== RAW JSON ====="
+          cat report.json
+          echo
+          echo "===== QUOTA (headers now) ====="
+          curl -fsS -m 60 "https://beetingapp-1.onrender.com/api/diag/quota" || true
