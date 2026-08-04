@@ -1,7 +1,9 @@
 name: diag-report
 
-# One-shot (Part A): pull the read-only /api/diag/report JSON from production and
-# print it, so the diagnostic report + CSVs can be assembled. No credits, no writes.
+# One-shot (Part A): pull the read-only /api/diag/report JSON from production.
+# Falls back to already-deployed endpoints (value-bets, bets, collection log,
+# quota) so partial live data is available even if the new endpoint hasn't
+# deployed yet. No credits, no writes.
 on:
   workflow_dispatch: {}
 
@@ -10,11 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch diagnostic report
+      - name: Fetch diagnostic report (+ fallbacks)
         run: |
-          curl -fsS -m 120 "https://beetingapp-1.onrender.com/api/diag/report" -o report.json
-          echo "===== RAW JSON ====="
-          cat report.json
+          B=https://beetingapp-1.onrender.com
+          echo "===== /api/diag/report (new endpoint) ====="
+          curl -sS -m 120 -w "\nHTTP %{http_code}\n" "$B/api/diag/report" || true
           echo
-          echo "===== QUOTA (headers now) ====="
-          curl -fsS -m 60 "https://beetingapp-1.onrender.com/api/diag/quota" || true
+          echo "===== FALLBACK /api/value-bets (current window) ====="
+          curl -sS -m 90 "$B/api/value-bets" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("events:",len(d)); import collections; print("sports:",dict(collections.Counter(b.get("sport_name") for b in d)))' || true
+          echo "===== FALLBACK /api/diag/quota ====="
+          curl -sS -m 60 "$B/api/diag/quota" || true
+          echo
+          echo "===== FALLBACK /api/collection/log ====="
+          curl -sS -m 60 "$B/api/collection/log" || true
