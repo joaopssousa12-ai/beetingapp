@@ -773,6 +773,146 @@ async def api_diag_quota():
         },
     })
 
+@app.get("/api/diag/report")
+async def api_diag_report():
+    """READ-ONLY diagnostic report (Part A). SELECT-only — never writes to the DB.
+    Volume/Pinnacle-coverage over the retained odds_history, the value-bet discard
+    funnel + edge histogram on the current window, and the My Bets / CLV sample."""
+    from collectors.database import remove_vig_power, VB_MAX_HOURS_AHEAD
+    out = {}
+    conn = get_connection()
+
+    def q(sql):
+        try:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+        except Exception as e:
+            return [{"_error": repr(e)}]
+
+    # 1. VOLUME per day (odds_history snapshots + collection runs), last 60d
+    out["volume_odds_history"] = q(
+        "SELECT substr(captured_at,1,10) AS day, COUNT(DISTINCT event_id) AS events, "
+        "COUNT(*) AS odds_rows FROM odds_history "
+        "WHERE captured_at > datetime('now','-60 days') "
+        "GROUP BY substr(captured_at,1,10) ORDER BY day")
+    out["volume_collection_runs"] = q(
+        "SELECT substr(ran_at,1,10) AS day, COUNT(*) AS runs, "
+        "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS ok, "
+        "SUM(CASE WHEN status<>'success' THEN 1 ELSE 0 END) AS errors "
+        "FROM collection_log WHERE ran_at > datetime('now','-60 days') "
+        "GROUP BY substr(ran_at,1,10) ORDER BY day")
+
+    # 2. PINNACLE COVERAGE per day (odds_history) + current snapshot
+    out["pinnacle_coverage_daily"] = q(
+        "SELECT substr(captured_at,1,10) AS day, COUNT(*) AS rows, "
+        "SUM(CASE WHEN pin_home IS NOT NULL THEN 1 ELSE 0 END) AS with_pin, "
+        "SUM(CASE WHEN x1_home IS NOT NULL THEN 1 ELSE 0 END) AS with_x1 "
+        "FROM odds_history WHERE captured_at > datetime('now','-60 days') "
+        "GROUP BY substr(captured_at,1,10) ORDER BY day")
+    cur = q("SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN pin_home IS NOT NULL THEN 1 ELSE 0 END) AS with_pin, "
+            "SUM(CASE WHEN x1_home IS NOT NULL THEN 1 ELSE 0 END) AS with_x1 "
+            "FROM odds_events WHERE commence_time > datetime('now','-3 hours')")
+    out["pinnacle_coverage_current"] = cur[0] if cur else {}
+
+    # 3 + 4. FUNNEL + EDGE HISTOGRAM on the current actionable window
+    win = q("SELECT event_id, sport_name, commence_time, pin_home, pin_draw, pin_away, "
+            "x1_home, x1_draw, x1_away, best_home, best_draw, best_away FROM odds_events "
+            "WHERE commence_time > datetime('now','-3 hours') "
+            f"AND commence_time < datetime('now','+{int(VB_MAX_HOURS_AHEAD)} hours')")
+    up = q("SELECT COUNT(*) AS n FROM odds_events WHERE commence_time > datetime('now','-3 hours')")
+    funnel = {"upcoming_stored": (up[0]["n"] if up and "n" in up[0] else None),
+              "within_48h": len(win), "has_pinnacle": 0, "has_1xbet": 0,
+              "odd_in_1_4_to_4_0": 0, "green_eligible": 0}
+    edges = []  # best-selection edge per event (incl. below threshold)
+    for r in win:
+        if r.get("pin_home") is None or r.get("pin_away") is None:
+            continue
+        funnel["has_pinnacle"] += 1
+        if r.get("x1_home") is None and r.get("x1_away") is None:
+            continue
+        funnel["has_1xbet"] += 1
+        dv = remove_vig_power(r.get("pin_home"), r.get("pin_draw"), r.get("pin_away"))
+        if not dv:
+            continue
+        probs = {"home": dv.get("home"), "draw": dv.get("draw"), "away": dv.get("away")}
+        best_edge, best_odd = None, None
+        for sel, x1 in (("home", r.get("x1_home")), ("draw", r.get("x1_draw")), ("away", r.get("x1_away"))):
+            p = probs.get(sel)
+            if not x1 or x1 <= 1 or p is None:
+                continue
+            e = x1 * p - 100  # remove_vig_power probs are 0-100, so edge% = odd*prob-100
+            if best_edge is None or e > best_edge:
+                best_edge, best_odd = e, x1
+        if best_edge is None:
+            continue
+        edges.append(round(best_edge, 2))
+        if best_odd and 1.4 <= best_odd <= 4.0:
+            funnel["odd_in_1_4_to_4_0"] += 1
+            if best_edge >= 2:
+                funnel["green_eligible"] += 1
+        elif best_odd and 1.3 <= best_odd < 1.4 and best_edge >= 3:
+            funnel["green_eligible"] += 1
+    out["funnel_current_window"] = funnel
+
+    # edge histogram (current window best-pick edges) + a 60-day odds_history view
+    def hist(vals):
+        bins = [(-99, -5), (-5, -2), (-2, 0), (0, 1), (1, 2), (2, 3), (3, 5), (5, 10), (10, 999)]
+        h = {f"{lo}..{hi}": 0 for lo, hi in bins}
+        for v in vals:
+            for lo, hi in bins:
+                if lo <= v < hi:
+                    h[f"{lo}..{hi}"] += 1
+                    break
+        return h
+    out["edge_histogram_current"] = {"n": len(edges), "bins": hist(edges),
+                                     "near_frontier_1_to_2pct": sum(1 for v in edges if 1 <= v < 2)}
+
+    hrows = q("SELECT event_id, captured_at, pin_home, pin_draw, pin_away, x1_home, x1_draw, x1_away "
+              "FROM odds_history WHERE captured_at > datetime('now','-60 days') "
+              "AND pin_home IS NOT NULL AND x1_home IS NOT NULL ORDER BY event_id, captured_at")
+    last_per_event = {}
+    for r in hrows:
+        if "_error" in r:
+            last_per_event = {"_error": r["_error"]}; break
+        last_per_event[r["event_id"]] = r
+    h_edges = []
+    if isinstance(last_per_event, dict) and "_error" not in last_per_event:
+        for r in last_per_event.values():
+            dv = remove_vig_power(r.get("pin_home"), r.get("pin_draw"), r.get("pin_away"))
+            if not dv:
+                continue
+            probs = {"home": dv.get("home"), "draw": dv.get("draw"), "away": dv.get("away")}
+            be = None
+            for sel, x1 in (("home", r.get("x1_home")), ("draw", r.get("x1_draw")), ("away", r.get("x1_away"))):
+                p = probs.get(sel)
+                if not x1 or x1 <= 1 or p is None:
+                    continue
+                e = x1 * p - 100  # probs are 0-100 (percent)
+                be = e if be is None or e > be else be
+            if be is not None:
+                h_edges.append(round(be, 2))
+    out["edge_histogram_60d"] = {"n": len(h_edges), "bins": hist(h_edges),
+                                 "near_frontier_1_to_2pct": sum(1 for v in h_edges if 1 <= v < 2)}
+
+    # 7. SAMPLE — My Bets + CLV closed
+    b = q("SELECT COUNT(*) AS total, "
+          "SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending, "
+          "SUM(CASE WHEN status<>'pending' THEN 1 ELSE 0 END) AS settled, "
+          "SUM(CASE WHEN pin_close_odds IS NOT NULL THEN 1 ELSE 0 END) AS clv_closed, "
+          "SUM(CASE WHEN pin_implied_prob IS NOT NULL THEN 1 ELSE 0 END) AS has_pin_at_bet "
+          "FROM bets")
+    out["sample_bets"] = b[0] if b else {}
+
+    # 5. QUOTA (last seen)
+    try:
+        from collectors.odds import _LAST_REMAINING
+        out["quota_last_remaining"] = _LAST_REMAINING.get("v")
+    except Exception as e:
+        out["quota_last_remaining"] = f"err {e}"
+
+    conn.close()
+    return JSONResponse(out)
+
 @app.get("/api/diag/books")
 async def api_diag_books(sport: str = None):
     """1-credit probe: fetch ONE sport (auto-picked, or ?sport=<key>) with ALL EU
