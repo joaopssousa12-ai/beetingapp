@@ -3787,9 +3787,13 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
 
 def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
     """Rank upcoming fixtures by (calibrated) Elo confidence, keeping only picks
-    where the goals-Poisson AGREES with Elo — the combination the backtest showed
-    actually raises the realised hit-rate. Returns the top legs for a "Múltipla do
-    Dia". FOR FUN ONLY: an accumulator multiplies the bookmaker margin, so this is
+    where the goals-Poisson AGREES with Elo (football) — the combination the
+    backtest showed actually raises the realised hit-rate. For tennis, legs are
+    additionally vetoed by _tennis_flags (long lay-off, 0% on this surface,
+    recent retirements, or a clean H2H sweep for the OTHER player) — Elo alone
+    has no notion of any of that. This changes which fixtures qualify, never
+    the probability math. Returns the top legs for a "Múltipla do Dia".
+    FOR FUN ONLY: an accumulator multiplies the bookmaker margin, so this is
     -EV by construction and is never part of the edge/CLV system."""
     # preload Elo once so per-event lookups are cheap
     global _session_elo
@@ -3829,6 +3833,7 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
     dedup_rows.sort(key=lambda d: d.get("commence_time") or "")
 
     candidates = []
+    tennis_filtered = [0]  # mutable counter: legs the flag engine actively vetoed
     for d in dedup_rows:
         home, away, sport = d["home_team"], d["away_team"], d["sport_name"]
         category, surface = _prognosis_category(sport)
@@ -3857,6 +3862,38 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         conf = probs[top]
         if conf < min_conf:
             continue
+        # ---- tennis-only gate: veto legs the flag engine actively contradicts ----
+        # Elo/market confidence has no idea a player hasn't competed in two
+        # months, is 0% on this surface, or that the opponent has never even
+        # dropped a set between them. Reusing the same _tennis_flags shown on
+        # the match page as a FILTER — never touching the probability itself —
+        # keeps this an honestly-built "for fun" accumulator rather than a
+        # confidently wrong one. Non-tennis fixtures are unaffected.
+        tennis_leg_flags = None
+        if is_tennis:
+            try:
+                tf_h = _tennis_recent(conn, home, surface=surface)
+                tf_a = _tennis_recent(conn, away, surface=surface)
+                th2h_leg = _tennis_h2h(conn, home, away, surface=surface)
+                flags_leg = _tennis_flags(home, tf_h, away, tf_a, th2h_leg, surface)
+            except Exception:
+                flags_leg = []
+            picked, other = (home, away) if top == "home" else (away, home)
+            # objective, physical/structural warns on the BACKED player only —
+            # deliberately excludes the softer "level" flag (built form a tier
+            # down), which is context rather than a hard disqualifier
+            red_flag = any(f["level"] == "warn" and f["player"] == picked
+                           and f["kind"] in ("layoff", "physical", "surface")
+                           for f in flags_leg)
+            # the model picked this player, but H2H says the other one has
+            # never even lost a set to them — a direct contradiction worth
+            # trusting over Elo, which has no per-set memory
+            h2h_against = any(f["kind"] == "h2h" and f["level"] == "good" and f["player"] == other
+                              for f in flags_leg)
+            if red_flag or h2h_against:
+                tennis_filtered[0] += 1
+                continue
+            tennis_leg_flags = [f for f in flags_leg if f["player"] in (picked, None)]
         # agreement vote with goals-Poisson (football only) using the shared conn
         agree = None
         if not is_tennis:
@@ -3883,6 +3920,7 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
             "event_id": d["event_id"], "sport_name": sport, "commence_time": d["commence_time"],
             "home_team": home, "away_team": away, "selection": sel, "outcome": top,
             "confidence": conf, "agreement": agree, "odd": odd,
+            "tennis_flags": tennis_leg_flags,
         }
         # safe variant: double chance fav-or-draw (football only). Book odd derived
         # by dutching the two 1X2 prices: odd_DC = 1/(1/o_fav + 1/o_draw).
@@ -3915,6 +3953,11 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
     # much shorter combined odd — only legs where DC applies
     safe_legs = [l for l in candidates if l.get("dc_prob")][:max_legs]
     safe_odd, safe_hit = _combine(safe_legs, "dc_odd", "dc_prob")
+    note = ("Informativo e para diversão. Uma múltipla multiplica a margem da casa — é -EV. "
+            "Nada disto tem a ver com o sistema de edge/CLV da página Value Bets.")
+    if tennis_filtered[0]:
+        note += (f" {tennis_filtered[0]} jogo(s) de ténis excluído(s) por alerta "
+                "(paragem longa, forma fraca nesta superfície, ou domínio total no confronto direto).")
     return {
         "legs": legs,
         "combined_odd": combined_odd,
@@ -3922,8 +3965,8 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         "safe_legs": safe_legs,
         "safe_combined_odd": safe_odd,
         "safe_all_hit_pct": safe_hit,
-        "note": "Informativo e para diversão. Uma múltipla multiplica a margem da casa — é -EV. "
-                "Nada disto tem a ver com o sistema de edge/CLV da página Value Bets.",
+        "tennis_filtered": tennis_filtered[0],
+        "note": note,
     }
 
 
