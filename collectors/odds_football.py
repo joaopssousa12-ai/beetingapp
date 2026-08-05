@@ -107,8 +107,9 @@ def collect_openfootball_fixtures(cb):
                     match_date = datetime.strptime(date_str, "%Y-%m-%d").date()
                     if match_date < today - timedelta(days=2):
                         continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    cb(f"  FIXTURES_WARN: {sport_name} — unparseable date "
+                       f"'{date_str}' for {home} v {away} ({repr(e)}); kept anyway")
                 commence = parse_iso_datetime(date_str, time_str)
                 round_info = m.get("round", "") or m.get("group", "")
                 eid = f"of_wc_{date_str}_{home}_{away}".replace(" ", "_")
@@ -142,7 +143,9 @@ def collect_openfootball_fixtures(cb):
                     match_date = datetime.strptime(date_str, "%Y-%m-%d").date()
                     if match_date < today:
                         continue
-                except Exception:
+                except Exception as e:
+                    cb(f"  FIXTURES_WARN: {league_name} — bad date '{date_str}' "
+                       f"for {home} v {away} ({repr(e)}); skipped")
                     continue
                 commence = parse_iso_datetime(date_str, time_str)
                 eid = f"of_{league_name[:3]}_{date_str}_{home}_{away}".replace(" ", "_")
@@ -151,8 +154,9 @@ def collect_openfootball_fixtures(cb):
             if stored:
                 cb(f"  -> {league_name}: {stored} upcoming fixtures stored")
             total += stored
-        except Exception:
-            pass
+        except Exception as e:
+            # A whole league silently vanishing used to look like "no fixtures".
+            cb(f"  FIXTURES_WARN: league '{league_name}' failed — {repr(e)}")
 
     return total
 

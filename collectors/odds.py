@@ -120,13 +120,36 @@ def _sport_class(key):
 
 
 def get_active_sports():
+    """Active sport keys from The Odds API (free — /sports doesn't bill quota).
+
+    CRITICAL PATH: an empty return means the collector fetches NOTHING, so a
+    silent failure here looks exactly like "no sports in season" and the whole
+    system appears healthy while collecting zero odds. Always shout about it.
+    """
     try:
         r = requests.get(f"{BASE}/sports", params={"apiKey": API_KEY}, timeout=15)
         if r.status_code == 200:
             return {s["key"] for s in r.json() if s.get("active")}
-    except Exception:
-        pass
+        msg = f"ACTIVE_SPORTS_ERROR: HTTP {r.status_code} — {r.text[:200]}"
+        print(msg, flush=True)
+        _alert_critical(msg)
+    except Exception as e:
+        import traceback
+        msg = f"ACTIVE_SPORTS_ERROR: {repr(e)}"
+        print(f"{msg}\n{traceback.format_exc()[-500:]}", flush=True)
+        _alert_critical(msg)
+    print("ACTIVE_SPORTS_ERROR: returning EMPTY set — collector will fetch NO sports.",
+          flush=True)
     return set()
+
+
+def _alert_critical(text):
+    """Best-effort Telegram alert for silent-failure paths. Never raises."""
+    try:
+        from collectors.telegram_alerts import _send
+        _send(f"🚨 <b>BetIQ</b>\n{text}")
+    except Exception as e:
+        print(f"ALERT_SEND_FAILED: {repr(e)}", flush=True)
 
 
 def fetch_odds(sport_key, markets=None):

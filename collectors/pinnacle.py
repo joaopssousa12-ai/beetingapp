@@ -45,8 +45,10 @@ def get_leagues(sport_id, auth):
         )
         if r.status_code == 200:
             return r.json().get("leagues", [])
-    except Exception:
-        pass
+        print(f"PINNACLE_WARN: get_leagues(sport={sport_id}) HTTP {r.status_code} — "
+              f"{r.text[:160]}", flush=True)
+    except Exception as e:
+        print(f"PINNACLE_WARN: get_leagues(sport={sport_id}) failed — {repr(e)}", flush=True)
     return []
 
 
@@ -62,8 +64,10 @@ def get_fixtures(sport_id, league_ids, auth):
         )
         if r.status_code == 200:
             return r.json().get("league", [])
-    except Exception:
-        pass
+        print(f"PINNACLE_WARN: get_fixtures(sport={sport_id}) HTTP {r.status_code} — "
+              f"{r.text[:160]}", flush=True)
+    except Exception as e:
+        print(f"PINNACLE_WARN: get_fixtures(sport={sport_id}) failed — {repr(e)}", flush=True)
     return []
 
 
@@ -83,8 +87,11 @@ def get_odds(sport_id, league_ids, auth):
         )
         if r.status_code == 200:
             return r.json().get("leagues", [])
-    except Exception:
-        pass
+        # This is the CLV benchmark line — losing it silently is severe.
+        print(f"PINNACLE_WARN: get_odds(sport={sport_id}) HTTP {r.status_code} — "
+              f"{r.text[:160]}", flush=True)
+    except Exception as e:
+        print(f"PINNACLE_WARN: get_odds(sport={sport_id}) failed — {repr(e)}", flush=True)
     return []
 
 

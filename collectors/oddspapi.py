@@ -60,7 +60,9 @@ def _api_get(path, params, _retries=2):
         if r.status_code == 200:
             try:
                 return r.json(), remaining, 200
-            except Exception:
+            except Exception as e:
+                print(f"ODDSPAPI_DEBUG: 200 but unparseable JSON for {path} — "
+                      f"{repr(e)}; body[:120]={r.text[:120]!r}", flush=True)
                 return None, remaining, 200
         if r.status_code == 401:
             return None, "invalid_key", 401
