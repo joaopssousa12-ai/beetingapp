@@ -779,35 +779,44 @@ async def api_diag_report():
     Volume/Pinnacle-coverage over the retained odds_history, the value-bet discard
     funnel + edge histogram on the current window, and the My Bets / CLV sample."""
     from collectors.database import remove_vig_power, VB_MAX_HOURS_AHEAD
+    from datetime import timedelta
     out = {}
     conn = get_connection()
+    # captured_at/ran_at are TEXT in 'YYYY-MM-DD HH:MM:SS' UTC, so compare against a
+    # Python-computed cutoff string (same trick as purge_old_odds_history): portable
+    # across SQLite and Postgres, and avoids the text-vs-timestamptz operator error.
+    cutoff60 = (datetime.utcnow() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
 
-    def q(sql):
+    def q(sql, params=()):
+        # Each query is isolated: on Postgres a failed statement aborts the whole
+        # transaction, so roll back to keep the remaining sections working.
         try:
-            return [dict(r) for r in conn.execute(sql).fetchall()]
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
         except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return [{"_error": repr(e)}]
 
     # 1. VOLUME per day (odds_history snapshots + collection runs), last 60d
     out["volume_odds_history"] = q(
         "SELECT substr(captured_at,1,10) AS day, COUNT(DISTINCT event_id) AS events, "
-        "COUNT(*) AS odds_rows FROM odds_history "
-        "WHERE captured_at > datetime('now','-60 days') "
-        "GROUP BY substr(captured_at,1,10) ORDER BY day")
+        "COUNT(*) AS odds_rows FROM odds_history WHERE captured_at > ? "
+        "GROUP BY substr(captured_at,1,10) ORDER BY day", (cutoff60,))
     out["volume_collection_runs"] = q(
-        "SELECT substr(ran_at,1,10) AS day, COUNT(*) AS runs, "
+        "SELECT substr(CAST(ran_at AS CHAR(19)),1,10) AS day, COUNT(*) AS runs, "
         "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS ok, "
         "SUM(CASE WHEN status<>'success' THEN 1 ELSE 0 END) AS errors "
-        "FROM collection_log WHERE ran_at > datetime('now','-60 days') "
-        "GROUP BY substr(ran_at,1,10) ORDER BY day")
+        "FROM collection_log GROUP BY substr(CAST(ran_at AS CHAR(19)),1,10) ORDER BY day")
 
     # 2. PINNACLE COVERAGE per day (odds_history) + current snapshot
     out["pinnacle_coverage_daily"] = q(
-        "SELECT substr(captured_at,1,10) AS day, COUNT(*) AS rows, "
+        "SELECT substr(captured_at,1,10) AS day, COUNT(*) AS snapshots, "
         "SUM(CASE WHEN pin_home IS NOT NULL THEN 1 ELSE 0 END) AS with_pin, "
         "SUM(CASE WHEN x1_home IS NOT NULL THEN 1 ELSE 0 END) AS with_x1 "
-        "FROM odds_history WHERE captured_at > datetime('now','-60 days') "
-        "GROUP BY substr(captured_at,1,10) ORDER BY day")
+        "FROM odds_history WHERE captured_at > ? "
+        "GROUP BY substr(captured_at,1,10) ORDER BY day", (cutoff60,))
     cur = q("SELECT COUNT(*) AS total, "
             "SUM(CASE WHEN pin_home IS NOT NULL THEN 1 ELSE 0 END) AS with_pin, "
             "SUM(CASE WHEN x1_home IS NOT NULL THEN 1 ELSE 0 END) AS with_x1 "
@@ -868,8 +877,9 @@ async def api_diag_report():
                                      "near_frontier_1_to_2pct": sum(1 for v in edges if 1 <= v < 2)}
 
     hrows = q("SELECT event_id, captured_at, pin_home, pin_draw, pin_away, x1_home, x1_draw, x1_away "
-              "FROM odds_history WHERE captured_at > datetime('now','-60 days') "
-              "AND pin_home IS NOT NULL AND x1_home IS NOT NULL ORDER BY event_id, captured_at")
+              "FROM odds_history WHERE captured_at > ? "
+              "AND pin_home IS NOT NULL AND x1_home IS NOT NULL ORDER BY event_id, captured_at",
+              (cutoff60,))
     last_per_event = {}
     for r in hrows:
         if "_error" in r:
