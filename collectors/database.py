@@ -3147,55 +3147,333 @@ def _h2h_football(conn, home, away, limit=6, national=False):
     return out
 
 
-def _tennis_recent(conn, player, limit=8):
-    """Last matches for a tennis player from tennis_matches (winner/loser rows).
-    Returns {'results': ['W','L',...] most-recent-first, wins, losses, n, last_surface}."""
+# Tournament tiers. A 9-1 run in WTA 125s is not a 9-1 run in WTA 1000s, and
+# reading a raw W-L record without this is the single easiest way to overrate a
+# player who dominates one rung below the level they're about to play at.
+_TOURNEY_TIERS = {
+    "G":  ("Grand Slam", 6),
+    "F":  ("Finals", 6),
+    "M":  ("Masters 1000", 5),
+    "PM": ("Premier Mandatory", 5),
+    "O":  ("Olímpicos", 5),
+    "P":  ("Premier / WTA 1000", 4),
+    "W":  ("WTA 1000", 4),
+    "A":  ("ATP 250/500", 3),
+    "I":  ("WTA 250/500", 3),
+    "D":  ("Taça Davis/BJK", 3),
+    "C":  ("Challenger / WTA 125", 2),
+    "S":  ("ITF / Satélite", 1),
+}
+
+
+def _tourney_tier(level):
+    """(label, tier 1-6) for a Sackmann tourney_level code. Unknown -> tier 3."""
+    return _TOURNEY_TIERS.get((level or "").strip().upper(), ("Outro", 3))
+
+
+def _parse_tennis_score(score, best_of=3):
+    """Parse a Sackmann score string ('6-4 3-6 7-6(5)', '6-2 RET', 'W/O').
+
+    Returns {'sets_w', 'sets_l', 'straight', 'retired', 'walkover'} from the
+    WINNER's point of view. 'straight' powers the correct-score (2-0) read:
+    a player who keeps needing a decider against weaker opposition is a bad
+    bet to close in straight sets, however short their match-winner price is.
+    """
+    s = (score or "").strip()
+    low = s.lower()
+    out = {"sets_w": 0, "sets_l": 0, "straight": None,
+           "retired": ("ret" in low), "walkover": ("w/o" in low or "walkover" in low or "def" in low)}
+    if out["walkover"]:
+        return out
+    for tok in s.split():
+        t = tok.split("(")[0]           # drop tie-break detail "7-6(5)" -> "7-6"
+        if "-" not in t:
+            continue                     # RET / W/O / stray text
+        a, _, b = t.partition("-")
+        try:
+            ga, gb = int(a), int(b)
+        except ValueError:
+            continue
+        if ga > gb:
+            out["sets_w"] += 1
+        elif gb > ga:
+            out["sets_l"] += 1
+    played = out["sets_w"] + out["sets_l"]
+    if played and not out["retired"]:
+        need = 3 if (best_of or 3) >= 5 else 2
+        out["straight"] = (out["sets_w"] == need and out["sets_l"] == 0)
+    return out
+
+
+def _tennis_recent(conn, player, surface=None, limit=25):
+    """Rich recent-form profile for a tennis player from tennis_matches.
+
+    Beyond the raw W-L this returns the signals that actually move a tennis
+    price and which a plain win-rate hides:
+      - surface_form  : record on the surface this match is played on
+      - levels        : which tier the wins came at (Challenger vs Masters)
+      - opp           : quality of beaten opponents (avg / best rank)
+      - layoff_days   : gap since the last match — the lay-off detector
+      - straight_rate : share of wins closed in straight sets (2-0 markets)
+      - retirements   : mid-match retirements = physical red flag
+
+    Backwards compatible: 'results', 'wins', 'losses', 'n' keep their meaning
+    so the existing template keeps rendering while the new blocks are added.
+    """
     _, like = _fuzzy_team_filter(player)
     key = like.strip("%").lower()
     try:
         rows = conn.execute(
-            "SELECT tourney_date, winner_name, loser_name, surface, tourney_name "
+            "SELECT tourney_date, tourney_name, tourney_level, round, surface, best_of, score, "
+            "winner_name, loser_name, winner_rank, loser_rank "
             "FROM tennis_matches WHERE (winner_name LIKE ? OR loser_name LIKE ?) "
             "ORDER BY tourney_date DESC LIMIT ?", (like, like, limit)).fetchall()
     except Exception:
         return None
-    results = []
+
+    matches = []
     for r in rows:
-        w = (r["winner_name"] or "").lower()
-        if key in w:
-            results.append(("W", r["surface"], r["tourney_name"]))
-        elif key in (r["loser_name"] or "").lower():
-            results.append(("L", r["surface"], r["tourney_name"]))
-    if not results:
+        won = key in (r["winner_name"] or "").lower()
+        if not won and key not in (r["loser_name"] or "").lower():
+            continue
+        opp_rank = r["loser_rank"] if won else r["winner_rank"]
+        sc = _parse_tennis_score(r["score"], r["best_of"])
+        label, tier = _tourney_tier(r["tourney_level"])
+        matches.append({
+            "won": won,
+            "date": r["tourney_date"],
+            "tourney": r["tourney_name"],
+            "level": label,
+            "tier": tier,
+            "surface": r["surface"],
+            "round": r["round"],
+            "opponent": r["loser_name"] if won else r["winner_name"],
+            "opp_rank": opp_rank,
+            "score": r["score"],
+            "straight": sc["straight"],
+            "retired": sc["retired"],
+        })
+    if not matches:
         return None
-    wins = sum(1 for x in results if x[0] == "W")
-    return {"results": [x[0] for x in results], "wins": wins,
-            "losses": len(results) - wins, "n": len(results)}
+
+    wins = [m for m in matches if m["won"]]
+    losses = [m for m in matches if not m["won"]]
+
+    # --- form on THIS surface (the Altmaier 0-6-on-hard signal) ---
+    surface_form = None
+    if surface and surface != "All":
+        sm = [m for m in matches if (m["surface"] or "").lower() == surface.lower()]
+        if sm:
+            sw = sum(1 for m in sm if m["won"])
+            surface_form = {"surface": surface, "wins": sw, "losses": len(sm) - sw,
+                            "n": len(sm), "pct": round(100.0 * sw / len(sm))}
+
+    # --- level of the wins (the WTA-125 filter) ---
+    lvl_counts = {}
+    for m in wins:
+        lvl_counts[m["level"]] = lvl_counts.get(m["level"], 0) + 1
+    levels = sorted(lvl_counts.items(), key=lambda kv: -kv[1])
+    top_tier_wins = sum(1 for m in wins if m["tier"] >= 4)
+    # Same count restricted to the surface being played. A pile of Grand Slam
+    # wins on clay says very little about a hard court — reporting the two
+    # separately stops a big-sounding résumé being read as current form.
+    top_tier_on_surface = (
+        sum(1 for m in wins if m["tier"] >= 4 and (m["surface"] or "").lower() == surface.lower())
+        if surface and surface != "All" else None)
+
+    # --- opponent quality ---
+    ranked = [m["opp_rank"] for m in wins if m["opp_rank"]]
+    best_win = None
+    if wins:
+        cand = [m for m in wins if m["opp_rank"]]
+        if cand:
+            b = min(cand, key=lambda m: m["opp_rank"])
+            best_win = {"opponent": b["opponent"], "rank": b["opp_rank"],
+                        "tourney": b["tourney"], "date": b["date"]}
+    opp = {"avg_rank_beaten": round(sum(ranked) / len(ranked)) if ranked else None,
+           "best_win": best_win, "ranked_sample": len(ranked)}
+
+    # --- lay-off detector (Draper / Bencic / Fonseca) ---
+    layoff_days = None
+    last_date = matches[0]["date"]
+    if last_date:
+        try:
+            from datetime import datetime as _dt
+            d = _dt.strptime(str(last_date)[:10], "%Y-%m-%d")
+            layoff_days = (_dt.utcnow() - d).days
+        except Exception:
+            layoff_days = None
+
+    # --- straight-sets rate (feeds the 2-0 markets) ---
+    decided = [m for m in wins if m["straight"] is not None]
+    straight_rate = (round(100.0 * sum(1 for m in decided if m["straight"]) / len(decided))
+                     if decided else None)
+
+    return {
+        # legacy keys — template compatibility
+        "results": ["W" if m["won"] else "L" for m in matches][:10],
+        "wins": len(wins), "losses": len(losses), "n": len(matches),
+        # new signals
+        "surface_form": surface_form,
+        "levels": [{"level": k, "wins": v} for k, v in levels],
+        "top_tier_wins": top_tier_wins,
+        "top_tier_on_surface": top_tier_on_surface,
+        "opp": opp,
+        "layoff_days": layoff_days,
+        "straight_rate": straight_rate,
+        "retirements": sum(1 for m in matches if m["retired"]),
+        "last_matches": matches[:8],
+    }
 
 
-def _tennis_h2h(conn, p1, p2, limit=8):
-    """Head-to-head matches between two tennis players."""
+def _tennis_h2h(conn, p1, p2, surface=None, limit=10):
+    """Head-to-head between two tennis players, counted in MATCHES and in SETS.
+
+    The set count matters on its own: '3-0 in matches' reads very differently
+    from '3-0 in matches and 6-0 in sets' when pricing a correct-score (2-0)
+    market — the second says the loser has never even taken a set. Also splits
+    the record on the surface this match is played on.
+    """
     _, l1 = _fuzzy_team_filter(p1)
     _, l2 = _fuzzy_team_filter(p2)
     k1, k2 = l1.strip("%").lower(), l2.strip("%").lower()
     try:
         rows = conn.execute(
-            "SELECT tourney_date, winner_name, loser_name, surface, tourney_name, score "
+            "SELECT tourney_date, winner_name, loser_name, surface, tourney_name, score, best_of "
             "FROM tennis_matches WHERE ((winner_name LIKE ? AND loser_name LIKE ?) "
             "OR (winner_name LIKE ? AND loser_name LIKE ?)) ORDER BY tourney_date DESC LIMIT ?",
             (l1, l2, l2, l1, limit)).fetchall()
     except Exception:
         return None
     matches, w1, w2 = [], 0, 0
+    sets1 = sets2 = 0
+    surf1 = surf2 = 0
     for r in rows:
         win = r["winner_name"]
-        if k1 in (win or "").lower(): w1 += 1
+        p1_won = k1 in (win or "").lower()
+        if p1_won: w1 += 1
         else: w2 += 1
+        sc = _parse_tennis_score(r["score"], r["best_of"])
+        # score is written from the winner's side — flip when p1 lost
+        if p1_won:
+            sets1 += sc["sets_w"]; sets2 += sc["sets_l"]
+        else:
+            sets2 += sc["sets_w"]; sets1 += sc["sets_l"]
+        if surface and (r["surface"] or "").lower() == surface.lower():
+            if p1_won: surf1 += 1
+            else: surf2 += 1
         matches.append({"date": r["tourney_date"], "winner": win,
-                        "surface": r["surface"], "tourney": r["tourney_name"], "score": r["score"]})
+                        "surface": r["surface"], "tourney": r["tourney_name"],
+                        "score": r["score"], "straight": sc["straight"]})
     if not matches:
         return None
-    return {"matches": matches, "p1_wins": w1, "p2_wins": w2, "n": len(matches)}
+    out = {"matches": matches, "p1_wins": w1, "p2_wins": w2, "n": len(matches),
+           "p1_sets": sets1, "p2_sets": sets2}
+    if surface and (surf1 + surf2):
+        out["surface_split"] = {"surface": surface, "p1_wins": surf1, "p2_wins": surf2,
+                                "n": surf1 + surf2}
+    return out
+
+
+def _tennis_flags(p1, f1, p2, f2, h2h, surface=None):
+    """Turn the raw tennis signals into the short warnings a human would write.
+
+    Each flag is {kind, level, player, text}. 'level' is warn (a real red flag),
+    good (a real edge) or info. These are deliberately NOT folded into the
+    probability — they sit next to it so the reader can see WHY a price might
+    be wrong, which is the part a bare percentage always hides.
+    """
+    flags = []
+
+    def per_player(name, f):
+        if not f:
+            return
+        # --- lay-off: priced as match-sharp after weeks away ---
+        d = f.get("layoff_days")
+        if d is not None:
+            if d >= 45:
+                flags.append({"kind": "layoff", "level": "warn", "player": name,
+                              "text": f"Sem jogos registados há ~{d} dias — regressa sem ritmo de competição."})
+            elif d >= 21:
+                flags.append({"kind": "layoff", "level": "info", "player": name,
+                              "text": f"~{d} dias desde o último jogo — pouca actividade recente."})
+        # --- surface record (the 0-6-on-hard signal) ---
+        sf = f.get("surface_form")
+        if sf and sf["n"] >= 3:
+            lvl = "warn" if sf["pct"] < 40 else ("good" if sf["pct"] >= 70 else "info")
+            flags.append({"kind": "surface", "level": lvl, "player": name,
+                          "text": f"{sf['wins']}V-{sf['losses']}D em {sf['surface']} ({sf['pct']}%) nos jogos recentes."})
+        elif surface and surface != "All":
+            flags.append({"kind": "surface", "level": "info", "player": name,
+                          "text": f"Poucos jogos recentes em {surface} — leitura de superfície fraca."})
+        # --- level of the wins (the WTA-125 filter) ---
+        lv = f.get("levels") or []
+        if lv and f.get("wins"):
+            top = f.get("top_tier_wins", 0)
+            on_surf = f.get("top_tier_on_surface")
+            if top == 0:
+                main = lv[0]["level"]
+                flags.append({"kind": "level", "level": "warn", "player": name,
+                              "text": f"Nenhuma vitória recente acima de {main} — forma construída num escalão inferior."})
+            elif on_surf == 0 and surface and surface != "All":
+                # big wins exist, but none of them on the surface being played
+                flags.append({"kind": "level", "level": "info", "player": name,
+                              "text": f"{top} vitória(s) de topo recentes, mas <strong>nenhuma em {surface}</strong> — currículo noutra superfície."})
+            else:
+                extra = f" ({on_surf} em {surface})" if on_surf else ""
+                flags.append({"kind": "level", "level": "good", "player": name,
+                              "text": f"{top} vitória(s) recente(s) em Masters/WTA 1000 ou superior{extra}."})
+        # --- opponent quality ---
+        opp = f.get("opp") or {}
+        bw = opp.get("best_win")
+        if bw and bw.get("rank"):
+            flags.append({"kind": "opponent", "level": "info", "player": name,
+                          "text": f"Melhor vitória recente: {bw['opponent']} (#{bw['rank']}) em {bw['tourney']}."})
+        if opp.get("avg_rank_beaten") and opp.get("ranked_sample", 0) >= 3:
+            flags.append({"kind": "opponent", "level": "info", "player": name,
+                          "text": f"Ranking médio dos adversários batidos: #{opp['avg_rank_beaten']}."})
+        # --- physical red flags ---
+        if f.get("retirements"):
+            flags.append({"kind": "physical", "level": "warn", "player": name,
+                          "text": f"{f['retirements']} abandono(s) a meio de jogo no histórico recente — sinal físico."})
+        # --- congestion (the 'played a final 48h ago' signal) ---
+        recent = [m for m in (f.get("last_matches") or []) if m.get("date")]
+        try:
+            from datetime import datetime as _dt
+            now = _dt.utcnow()
+            busy = sum(1 for m in recent
+                       if (now - _dt.strptime(str(m["date"])[:10], "%Y-%m-%d")).days <= 10)
+            if busy >= 5:
+                flags.append({"kind": "fatigue", "level": "warn", "player": name,
+                              "text": f"{busy} jogos em ~10 dias — carga alta, atenção ao desgaste."})
+        except Exception:
+            pass
+        # --- straight-sets habit (2-0 markets) ---
+        sr = f.get("straight_rate")
+        if sr is not None and f.get("wins", 0) >= 4:
+            if sr >= 70:
+                flags.append({"kind": "sets", "level": "good", "player": name,
+                              "text": f"Fecha {sr}% das vitórias em sets directos — apoia mercados 2-0."})
+            elif sr <= 45:
+                flags.append({"kind": "sets", "level": "warn", "player": name,
+                              "text": f"Só {sr}% das vitórias em sets directos — mau candidato a 2-0."})
+
+    per_player(p1, f1)
+    per_player(p2, f2)
+
+    # --- H2H in sets: '3-0 in matches' vs '3-0 and 6-0 in sets' ---
+    if h2h and h2h.get("n"):
+        s1, s2 = h2h.get("p1_sets", 0), h2h.get("p2_sets", 0)
+        if h2h["p1_wins"] and not h2h["p2_wins"] and s2 == 0 and s1 >= 4:
+            flags.append({"kind": "h2h", "level": "good", "player": p1,
+                          "text": f"Lidera o confronto directo {h2h['p1_wins']}-0 e nunca cedeu um set ({s1}-0)."})
+        elif h2h["p2_wins"] and not h2h["p1_wins"] and s1 == 0 and s2 >= 4:
+            flags.append({"kind": "h2h", "level": "good", "player": p2,
+                          "text": f"Lidera o confronto directo {h2h['p2_wins']}-0 e nunca cedeu um set ({s2}-0)."})
+        if h2h["n"] < 3:
+            flags.append({"kind": "h2h", "level": "info", "player": None,
+                          "text": f"Confronto directo com amostra pequena ({h2h['n']} jogo(s)) — peso reduzido."})
+    return flags
 
 
 def _poisson_shape(lam_h, lam_a, max_goals=8):
@@ -3268,6 +3546,7 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
         "category": category, "commence_time": commence_time, "surface": surface if is_tennis else None,
         "elo": None, "market": None, "probs": None, "basis": None,
         "poisson": None, "form": None, "h2h": None, "tennis_form": None, "tennis_h2h": None,
+        "tennis_flags": None,
         "best_pick": None, "confidence": None, "confidence_tier": None,
         "agreement": None, "notes": [],
     }
@@ -3366,14 +3645,19 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
     if is_tennis:
         try:
             conn = get_connection()
-            tf_h = _tennis_recent(conn, home_team)
-            tf_a = _tennis_recent(conn, away_team)
-            th2h = _tennis_h2h(conn, home_team, away_team)
+            # NB: pass the real match surface, not out["surface"] — that one may
+            # have been downgraded to "All" when no surface-specific Elo existed.
+            tf_h = _tennis_recent(conn, home_team, surface=surface)
+            tf_a = _tennis_recent(conn, away_team, surface=surface)
+            th2h = _tennis_h2h(conn, home_team, away_team, surface=surface)
             conn.close()
             if tf_h or tf_a:
                 out["tennis_form"] = {"home": tf_h, "away": tf_a}
             if th2h:
                 out["tennis_h2h"] = th2h
+            flags = _tennis_flags(home_team, tf_h, away_team, tf_a, th2h, surface)
+            if flags:
+                out["tennis_flags"] = flags
         except Exception:
             pass
 

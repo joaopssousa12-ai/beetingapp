@@ -176,6 +176,25 @@ function render(d) {
     </div>`;
   }
 
+  // === TÉNIS: sinais de alerta / leitura ===
+  if (d.tennis_flags && d.tennis_flags.length) {
+    const order = { warn: 0, good: 1, info: 2 };
+    const icon = { warn: '🚩', good: '✅', info: 'ℹ️' };
+    const colour = { warn: '#b45309', good: '#15803d', info: 'var(--text3)' };
+    const items = [...d.tennis_flags]
+      .sort((a, b) => (order[a.level] ?? 3) - (order[b.level] ?? 3))
+      .map(f => `<div class="md-h2h-row" style="align-items:flex-start">
+         <span style="color:${colour[f.level] || 'var(--text3)'}">${icon[f.level] || '·'} ${f.player ? `<strong>${f.player}</strong> — ` : ''}${f.text}</span>
+       </div>`).join('');
+    html += `<div class="md-section">
+      <div class="md-section-title">🔎 Leitura do jogo <span style="font-size:11px;color:var(--text3);font-weight:400">(o que o preço pode não estar a ver)</span></div>
+      ${items}
+      <div style="font-size:11.5px;color:var(--text3);margin-top:0.6rem;line-height:1.5">
+        Estes sinais <strong>não entram</strong> na probabilidade acima — servem para explicar porque é que ela pode estar errada.
+      </div>
+    </div>`;
+  }
+
   // === TÉNIS: forma recente dos jogadores ===
   if (d.tennis_form && (d.tennis_form.home || d.tennis_form.away)) {
     html += `<div class="md-section">
@@ -185,6 +204,21 @@ function render(d) {
         ${tennisFormCol(away, d.tennis_form.away)}
       </div>
     </div>`;
+    const lm = (p, f) => (!f || !f.last_matches || !f.last_matches.length) ? '' :
+      `<div style="font-size:12px;color:var(--text3);margin:0.6rem 0 0.3rem">${p}</div>` +
+      f.last_matches.map(m => `<div class="md-h2h-row">
+         <span>${(m.date||'').slice(0,10)} · ${m.tourney||''} <span style="color:var(--text3)">(${m.surface||'?'} · ${m.level||'?'})</span></span>
+         <span><span style="color:${m.won ? '#15803d' : '#b91c1c'};font-weight:600">${m.won ? 'V' : 'D'}</span>
+           ${m.opponent||''}${m.opp_rank ? ` <span style="color:var(--text3)">#${m.opp_rank}</span>` : ''}
+           ${m.score ? ` · ${m.score}` : ''}${m.retired ? ' <span style="color:#b45309">(ab.)</span>' : ''}</span>
+       </div>`).join('');
+    const detail = lm(home, d.tennis_form.home) + lm(away, d.tennis_form.away);
+    if (detail) {
+      html += `<div class="md-section">
+        <div class="md-section-title">📋 Últimos jogos <span style="font-size:11px;color:var(--text3);font-weight:400">(adversário · ranking · nível)</span></div>
+        ${detail}
+      </div>`;
+    }
   }
 
   // === TÉNIS: confrontos diretos ===
@@ -194,11 +228,17 @@ function render(d) {
     const rows = th.matches.map(m =>
       `<div class="md-h2h-row"><span>${(m.date||'').slice(0,10)} · ${m.tourney||''} (${m.surface||'?'})</span>
        <span>${m.winner} venceu ${m.score||''}</span></div>`).join('');
+    const sets = (th.p1_sets != null && th.p2_sets != null)
+      ? `<div class="md-stat"><div class="md-stat-label">Sets</div><div class="md-stat-value">${th.p1_sets}–${th.p2_sets}</div></div>` : '';
+    const surf = th.surface_split
+      ? `<div class="md-stat"><div class="md-stat-label">Em ${th.surface_split.surface}</div>
+         <div class="md-stat-value">${th.surface_split.p1_wins}–${th.surface_split.p2_wins}</div></div>` : '';
     html += `<div class="md-section">
       <div class="md-section-title">⚔️ Confrontos diretos (${th.n})${small}</div>
       <div class="md-stats-grid" style="margin-bottom:0.75rem">
         <div class="md-stat"><div class="md-stat-label">${home}</div><div class="md-stat-value">${th.p1_wins}</div></div>
         <div class="md-stat"><div class="md-stat-label">${away}</div><div class="md-stat-value">${th.p2_wins}</div></div>
+        ${sets}${surf}
       </div>
       ${rows}
     </div>`;
@@ -261,10 +301,29 @@ function tennisFormCol(player, f) {
   }
   const pills = f.results.map(r =>
     `<span class="md-pill ${r === 'W' ? 'W' : 'L'}">${r === 'W' ? 'V' : 'D'}</span>`).join('');
+  const line = (label, value, tone) => value == null || value === '' ? '' :
+    `<div style="display:flex;justify-content:space-between;gap:0.5rem;font-size:12px;margin-top:0.3rem">
+       <span style="color:var(--text3)">${label}</span>
+       <span style="font-weight:600${tone ? `;color:${tone}` : ''}">${value}</span></div>`;
+
+  const sf = f.surface_form;
+  const sfTone = sf ? (sf.pct < 40 ? '#b91c1c' : (sf.pct >= 70 ? '#15803d' : '')) : '';
+  const lay = f.layoff_days;
+  const layTone = lay == null ? '' : (lay >= 45 ? '#b91c1c' : (lay >= 21 ? '#b45309' : ''));
+  const lv = (f.levels || []).slice(0, 3).map(x => `${x.wins}× ${x.level}`).join(' · ');
+  const opp = f.opp || {};
+
   return `<div class="md-form-col">
     <div class="md-form-team">${player}</div>
     <div class="md-strength">${f.wins}V–${f.losses}D nos últimos ${f.n}</div>
     <div class="md-form-pills">${pills}</div>
+    ${line('Nesta superfície', sf ? `${sf.wins}V–${sf.losses}D (${sf.pct}%)` : 'sem amostra', sfTone)}
+    ${line('Dias desde o último jogo', lay == null ? null : `${lay}`, layTone)}
+    ${line('Vitórias por nível', lv || null)}
+    ${line('Ranking médio batido', opp.avg_rank_beaten ? `#${opp.avg_rank_beaten}` : null)}
+    ${line('Melhor vitória', opp.best_win ? `${opp.best_win.opponent}${opp.best_win.rank ? ` (#${opp.best_win.rank})` : ''}` : null)}
+    ${line('Vitórias em 2 sets', f.straight_rate == null ? null : `${f.straight_rate}%`)}
+    ${line('Abandonos recentes', f.retirements ? `${f.retirements}` : null, f.retirements ? '#b45309' : '')}
   </div>`;
 }
 
