@@ -1252,7 +1252,10 @@ function renderCard(b) {
   const starsHtmlFor = (n) => Array.from({length:5}, (_,i) =>
     `<span class="vb-star${i >= (n||0) ? ' empty' : ''}">★</span>`).join('');
   const trophyIcon = '<svg class="vb-pick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h12v6c0 3-3 6-6 6s-6-3-6-6V2z"/><path d="M9 18h6v3H9z"/></svg>';
-  const refLabel = b.ref_sources || (b.odds_source === 'betfair' ? 'Betfair' : 'Pinnacle');
+  // Never claim a sharp source we don't have: xg_model events have no Pinnacle/Betfair line.
+  const refLabel = b.ref_sources
+    || (b.odds_source === 'betfair' ? 'Betfair'
+        : b.odds_source === 'xg_model' ? 'Modelo puro (sem fonte sharp)' : 'Pinnacle');
   // Sharp-consensus badge (A+B): tells the user how trustworthy the fair line is.
   const refChip = (() => {
     const ra = b.ref_agreement;
@@ -1261,6 +1264,10 @@ function renderCard(b) {
     if (ra === 'single')        return `<span class="vb-ref-chip ref-single">1 fonte sharp · ${src}</span>`;
     if (ra === 'diverge_sharp') return `<span class="vb-ref-chip ref-diverge">⚠ Sharps divergem${b.ref_max_diff_pp ? ` (${b.ref_max_diff_pp}pp)` : ''} — edge incerto</span>`;
     if (ra === 'diverge_model') return `<span class="vb-ref-chip ref-diverge">⚠ Modelo discorda do mercado — cautela</span>`;
+    // No sharp line at all → the fair odd is a model estimate. Say so plainly:
+    // there is no CLV benchmark for this event, so the "edge" is unverifiable.
+    if (ra === 'model_only' || b.odds_source === 'xg_model')
+      return `<span class="vb-ref-chip ref-diverge">⚠ Sem fonte sharp — valor justo só do modelo (sem CLV)</span>`;
     return '';
   })();
 
@@ -1361,7 +1368,7 @@ function renderCard(b) {
     heroBlock = hasAnyPrice
       ? `<div class="vb-hero-pick no-value">
           <div class="vb-pick-label">${trophyIcon}Best Pick</div>
-          <div style="color:var(--text3);font-size:13px;padding:10px 0">No value at odds ≤ ${ODDS_CEILING.toFixed(1)} — informational only</div>
+          <div style="color:var(--text3);font-size:13px;padding:10px 0">Sem edge positivo em nenhuma seleção — analisámos as odds (até ${ODDS_CEILING.toFixed(1)}) e nenhuma paga acima do valor justo. Informativo.</div>
         </div>`
       : `<div class="vb-hero-pick no-value">
           <div class="vb-pick-label">${trophyIcon}Best Pick</div>

@@ -2,7 +2,7 @@
 import os
 import requests
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from collectors.database import get_connection, log_collection
@@ -84,6 +84,7 @@ BOOKMAKERS = "pinnacle,bet365,unibet_eu,williamhill,betfair_ex_eu,bwin,betway,ma
 # Last known free-tier quota (set by fetch_odds from x-requests-remaining), so the
 # frequent near-kickoff refresh can back off before exhausting the monthly budget.
 _LAST_REMAINING = {"v": None}
+_LAST_COST = {"v": 0}        # credits billed by the most recent API call (x-requests-last)
 IMMINENT_MIN_QUOTA = int(os.environ.get("IMMINENT_MIN_QUOTA", "50"))  # HARD BRAKE: skip ALL non-essential refreshes below this.
 
 # SCOPE (free-tier conservation): auto-collection — full sweep + imminent + closing —
@@ -152,7 +153,60 @@ def _alert_critical(text):
         print(f"ALERT_SEND_FAILED: {repr(e)}", flush=True)
 
 
-def fetch_odds(sport_key, markets=None):
+def _iso_window(hours_ahead):
+    """(commenceTimeFrom, commenceTimeTo) in the API's ISO8601 'Z' format."""
+    now = datetime.utcnow().replace(microsecond=0)
+    return (now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            (now + timedelta(hours=int(hours_ahead))).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
+def _quota_log(tag, sport_key, r):
+    """Record + log the real quota headers of one call.
+
+    x-requests-last is the credits THAT call actually cost (0 for free endpoints
+    and for empty responses), so it's the honest per-call cost meter.
+    """
+    remaining = r.headers.get("x-requests-remaining", "?")
+    used = r.headers.get("x-requests-used", "?")
+    last = r.headers.get("x-requests-last", "?")
+    try:
+        _LAST_REMAINING["v"] = int(remaining)
+    except (ValueError, TypeError):
+        pass
+    cost = 0
+    try:
+        cost = int(last)
+    except (ValueError, TypeError):
+        pass
+    _LAST_COST["v"] = cost      # so callers can bill the exact per-call cost
+    print(f"QUOTA {tag} {sport_key}: cost={last} used={used} remaining={remaining}", flush=True)
+    return remaining, cost
+
+
+def fetch_events(sport_key, hours_ahead=None):
+    """FREE probe (/events costs 0 credits): which events does this sport have in
+    the window? Used to skip paying for /odds on leagues whose games are all
+    outside the actionable window.
+
+    NOTE: commenceTimeFrom/To are NOT supported on the 'upcoming' pseudo-key.
+    Returns (events|None, credits_cost) — cost should be 0.
+    """
+    params = {"apiKey": API_KEY}
+    if hours_ahead and sport_key != "upcoming":
+        params["commenceTimeFrom"], params["commenceTimeTo"] = _iso_window(hours_ahead)
+    try:
+        r = requests.get(f"{BASE}/sports/{sport_key}/events", params=params, timeout=20)
+        _, cost = _quota_log("EVENTS(free)", sport_key, r)
+        if r.status_code == 200:
+            return r.json(), cost
+        print(f"EVENTS_FETCH {sport_key}: HTTP {r.status_code} — {r.text[:160]}", flush=True)
+        return None, cost
+    except Exception as e:
+        print(f"EVENTS_FETCH {sport_key}: {repr(e)}", flush=True)
+        return None, 0
+
+
+def fetch_odds(sport_key, markets=None, hours_ahead=None):
     # QUOTA: The Odds API bills 1 credit per (region × market). We use 1 region ('eu'
     # — 1xBet/onexbet, Pinnacle and every book in BOOKMAKERS live there; 'us' only
     # added US-only books) and **h2h ONLY** by default = 1 credit/call. The value
@@ -168,13 +222,12 @@ def fetch_odds(sport_key, markets=None):
         "bookmakers": BOOKMAKERS,
         "oddsFormat": "decimal",
     }
+    # Narrowing to the actionable window also keeps the response (and the parse) small.
+    if hours_ahead and sport_key != "upcoming":
+        params["commenceTimeFrom"], params["commenceTimeTo"] = _iso_window(hours_ahead)
     try:
         r = requests.get(f"{BASE}/sports/{sport_key}/odds", params=params, timeout=20)
-        remaining = r.headers.get("x-requests-remaining", "?")
-        try:
-            _LAST_REMAINING["v"] = int(remaining)
-        except (ValueError, TypeError):
-            pass
+        remaining, cost = _quota_log("ODDS", sport_key, r)
         if r.status_code == 200:
             return r.json(), remaining
         # Surface the reason (422 invalid market, 401 bad key, 404 unknown sport…)
@@ -705,18 +758,46 @@ def collect_odds(status_callback=None):
     # MMA, boxing, basketball, cricket, NFL, … from the daily sweep too).
     to_fetch = {k: v for k, v in to_fetch.items() if _sport_class(k)}
 
-    cb(f"Fetching odds for {len(to_fetch)} football/tennis sports...")
-
     if not to_fetch:
         cb("No watched sports currently in season.")
         log_collection("the-odds-api", "success", 0, "No watched sports in season")
         return 0
 
-    total = 0
-    remaining = "?"
+    # ════════════════════════════════════════════════════════════════════
+    # 3-PHASE PROBE (credit saver). The old collector paid 1 credit for EVERY
+    # in-season league, including ones whose games are all outside the 48h
+    # actionable window — the bulk of the ~30 credits/run.
+    #   1. /sports                       → 0 credits (already done: `active`)
+    #   2. /sports/{key}/events + window → 0 credits (free probe)
+    #   3. /sports/{key}/odds + window   → 1 credit, ONLY if the probe found games
+    # Empty responses aren't billed either, so the probe is doubly safe.
+    # ════════════════════════════════════════════════════════════════════
+    window_h = int(os.environ.get("COLLECT_WINDOW_HOURS", "48"))
+    cb(f"Probing {len(to_fetch)} in-season sports for games in the next {window_h}h (free)...")
+
+    with_games, probe_cost, probed = {}, 0, 0
     for sport_key, sport_name in to_fetch.items():
-        cb(f"  Fetching: {sport_name}...")
-        events, remaining = fetch_odds(sport_key)
+        evs, cost = fetch_events(sport_key, hours_ahead=window_h)
+        probe_cost += cost
+        probed += 1
+        if evs:                       # >=1 event inside the window → worth paying for
+            with_games[sport_key] = (sport_name, len(evs))
+    skipped = len(to_fetch) - len(with_games)
+    cb(f"  Probe: {len(with_games)} sport(s) with games in window, {skipped} skipped "
+       f"(probe cost {probe_cost} credits).")
+
+    if not with_games:
+        cb("No games inside the window — nothing to price.")
+        log_collection("the-odds-api", "success", 0,
+                       f"No games in {window_h}h window (probe cost {probe_cost})")
+        return 0
+
+    total, remaining, paid_cost, paid_calls = 0, "?", 0, 0
+    for sport_key, (sport_name, n_evs) in with_games.items():
+        cb(f"  Fetching: {sport_name} ({n_evs} game(s) in window)...")
+        events, remaining = fetch_odds(sport_key, hours_ahead=window_h)
+        paid_calls += 1
+        paid_cost += _LAST_COST.get("v", 0)
         if not events:
             cb(f"  -> no events")
             continue
@@ -724,7 +805,16 @@ def collect_odds(status_callback=None):
         total += n
         cb(f"  -> {n} events (credits left: {remaining})")
 
-    log_collection("the-odds-api", "success", total, f"Credits remaining: {remaining}")
+    # Old method = 1 credit per in-season league, regardless of the window.
+    old_cost = len(to_fetch)
+    new_cost = probe_cost + paid_cost
+    saved = old_cost - new_cost
+    cb(f"💳 Credits — old method would cost ~{old_cost} (1 per in-season league); "
+       f"3-phase used {new_cost} ({probe_cost} probe + {paid_cost} odds over "
+       f"{paid_calls} call(s)) → saved ~{saved}.")
+
+    log_collection("the-odds-api", "success", total,
+                   f"Credits remaining: {remaining} | cost {new_cost} vs {old_cost} old (saved {saved})")
     cb(f"✓ Odds done: {total} events stored. Credits left: {remaining}")
     return total
 

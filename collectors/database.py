@@ -1229,7 +1229,11 @@ def get_value_bets():
             d["odds_source"] = "pinnacle"
             d["pin_vig_pct"] = pin_nv["vig"]
         else:
-            d["ref_agreement"] = None
+            # NO sharp reference at all: the "fair" line is a pure model estimate.
+            # Label it explicitly — the card used to fall back to showing "Pinnacle",
+            # which claimed a sharp source that does not exist for this event.
+            d["ref_agreement"] = "model_only"
+            d["ref_sources"] = "Modelo puro (sem fonte sharp)"
             d["odds_source"] = "xg_model"
             print(f"NO_REFERENCE: {d.get('home_team')} vs {d.get('away_team')} "
                   f"— no Betfair or Pinnacle odds, using xG model", flush=True)
