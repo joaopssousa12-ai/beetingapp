@@ -1197,13 +1197,17 @@ function renderCard(b) {
   // ── Kelly helper ────────────────────────────────────────────────
   const _br = vbState.bankroll || 0;
   function _calcKelly(edge, odd) {
-    const kQ = vbKellyFraction(edge, odd);   // ¼-Kelly + short-odd softening (see vbKellyFraction)
+    const kQ = vbKellyFraction(edge, odd);        // limited (short-odd softened) = "seguro"
     if (kQ <= 0) return null;
-    const pct = (kQ * 100).toFixed(1);
-    // With a bankroll set, the headline is the CONCRETE euro amount to bet;
-    // the % of bankroll stays visible in small next to the label + tooltip.
-    if (_br > 0) return { text: `€${Math.round(_br * kQ)}`, pct };
-    return { text: `${pct}%`, pct: null };
+    const kFull = (edge / 100) / (odd - 1) * 0.25;  // raw ¼-Kelly, no limiter = "cheio"
+    const limited = kFull > kQ + 1e-9;              // true only when the short-odd cap actually bit
+    const pct = (kQ * 100).toFixed(1), pctFull = (kFull * 100).toFixed(1);
+    // With a bankroll set, the headline is the CONCRETE euro amount; the % stays in the label.
+    if (_br > 0) return {
+      text: `€${Math.round(_br * kQ)}`, pct, limited,
+      fullText: `€${Math.round(_br * kFull)}`, pctFull,
+    };
+    return { text: `${pct}%`, pct: null, limited, fullText: `${pctFull}%`, pctFull };
   }
 
   // ── Compact probability line (replaces BetIQ big bar chart) ────
@@ -1317,9 +1321,9 @@ function renderCard(b) {
           <span class="vb-hero-big edge-${eCls}">${edge >= 0 ? '+' : ''}${edge.toFixed(1)}%</span>
           <span class="vb-hero-lbl">Edge</span>
         </div>
-        ${kelly ? `<div class="vb-hero-num-block"${kelly.pct ? ` title="¼-Kelly = ${kelly.pct}% do bankroll"` : ''}>
+        ${kelly ? `<div class="vb-hero-num-block"${kelly.pct ? ` title="Seguro (¼-Kelly com limitador de odd curta) = ${kelly.pct}% do bankroll${kelly.limited ? ` · ¼-Kelly cheia = ${kelly.pctFull}%` : ''}"` : ''}>
           <span class="vb-hero-big kelly-val">${kelly.text}</span>
-          <span class="vb-hero-lbl">${kelly.pct ? `Apostar · ${kelly.pct}%` : '¼ Kelly'}</span>
+          <span class="vb-hero-lbl">${kelly.limited ? `Seguro · cheio ${kelly.fullText}` : (kelly.pct ? `Apostar · ${kelly.pct}%` : '¼ Kelly')}</span>
         </div>` : (stakeState === 'na' ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big" style="color:#dc2626">€0</span>
           <span class="vb-hero-lbl">n/d na 1xBet</span>
@@ -1926,10 +1930,26 @@ function quickAddBet(b) {
     document.getElementById('bet-odds').value = useOdd || '';
     document.getElementById('bet-bookmaker').value = useBook;
     const stakeField = document.getElementById('bet-stake');
+    // FULL ¼-Kelly, NO limiter — user chose to size low-odd bets themselves.
     const kellyQ = (useEdge > 0 && useOdd > 1)
       ? (useEdge / 100) / (useOdd - 1) * 0.25 : (pick.kelly_pct || 0) / 100;
     if (vbState.bankroll > 0 && kellyQ > 0 && !stakeField.value) {
       stakeField.value = (vbState.bankroll * kellyQ).toFixed(2);
+    }
+    // Reference hint: the "safe" limited stake (short-odd softened), so you can
+    // dial down from the full ¼-Kelly if it feels too aggressive. Editable field.
+    const stakeHint = document.getElementById('bet-stake-hint');
+    if (stakeHint) {
+      const safeQ = (useOdd > 1) ? vbKellyFraction(useEdge, useOdd) : 0;
+      if (vbState.bankroll > 0 && kellyQ > 0) {
+        const fullE = Math.round(vbState.bankroll * kellyQ);
+        const safeE = Math.round(vbState.bankroll * safeQ);
+        stakeHint.innerHTML = safeQ > 0 && kellyQ > safeQ + 1e-9
+          ? `¼-Kelly cheia: <strong>€${fullE}</strong> (${(kellyQ*100).toFixed(1)}%) · versão segura (odd curta): <strong>€${safeE}</strong> (${(safeQ*100).toFixed(1)}%). Ajusta à vontade.`
+          : `¼-Kelly: <strong>€${fullE}</strong> (${(kellyQ*100).toFixed(1)}% do bankroll). Ajusta à vontade.`;
+      } else {
+        stakeHint.textContent = '';
+      }
     }
     // Store edge for later analysis (the 1xBet edge — your real one)
     const edgeField = document.getElementById('bet-edge-pct');
