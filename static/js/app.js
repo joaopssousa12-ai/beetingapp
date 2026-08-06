@@ -819,6 +819,19 @@ function surfaceBadge(surface) {
 
 // The user bets at 1xBet — return their pick (same market+selection) so we can
 // show the price THEY can actually get + their real expected CLV.
+// Single source of truth for emptying the bet form (used after a successful
+// submit AND whenever a Track Bet is aborted, so stale values never linger).
+function clearBetFormFields() {
+  ['bet-sport','bet-home','bet-away','bet-commence','bet-selection','bet-odds',
+   'bet-stake','bet-notes','bet-edge-pct'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const hint = document.getElementById('bet-stake-hint');
+  if (hint) hint.textContent = '';
+  const f = document.getElementById('bet-form');
+  if (f) { f.dataset.eventId = ''; f.dataset.pinImplied = ''; }
+}
+
 function _myBookPick(b, p) {
   return (b.all_picks || []).find(q => q.book === '1xBet'
     && q.market === p.market && q.selection === p.selection && q.book_odd) || null;
@@ -1903,6 +1916,10 @@ function quickAddBet(b) {
   // can place → block tracking instead of recording someone else's price.
   const mine = _myBookPick(b, pick);
   if (!mine || !mine.book_odd) {
+    // Wipe any leftovers from a PREVIOUS Track Bet: aborting used to leave the
+    // last bet's odds/stake/teams sitting in the form, which is easy to submit by
+    // mistake against the wrong game.
+    clearBetFormFields();
     alert('A 1xBet não cota esta seleção — não dá para registar (só registamos o teu preço/edge da 1xBet).');
     return;
   }
@@ -1940,9 +1957,13 @@ function quickAddBet(b) {
     // FULL ¼-Kelly, NO limiter — user chose to size low-odd bets themselves.
     const kellyQ = (useEdge > 0 && useOdd > 1)
       ? (useEdge / 100) / (useOdd - 1) * 0.25 : (pick.kelly_pct || 0) / 100;
-    if (vbState.bankroll > 0 && kellyQ > 0 && !stakeField.value) {
-      stakeField.value = (vbState.bankroll * kellyQ).toFixed(2);
-    }
+    // ALWAYS overwrite. This used to be guarded by `!stakeField.value`, so the
+    // first value that ever landed here stuck FOREVER: every later Track Bet
+    // re-opened the form still showing the previous bet's stake (e.g. 2.80),
+    // regardless of the pick. The form is never cleared between bets (only after
+    // submit), so "only fill when empty" meant "never fill again".
+    stakeField.value = (vbState.bankroll > 0 && kellyQ > 0)
+      ? (vbState.bankroll * kellyQ).toFixed(2) : '';
     // Reference hint: the "safe" limited stake (short-odd softened), so you can
     // dial down from the full ¼-Kelly if it feels too aggressive. Editable field.
     const stakeHint = document.getElementById('bet-stake-hint');
