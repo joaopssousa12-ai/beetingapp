@@ -1,0 +1,80 @@
+name: trackbet-odd-diag
+
+# One-shot: reproduce EXACTLY what "+ Track Bet" prefills into the odds field,
+# for every event in the live window, to find why it always shows 2.8.
+# Read-only, no credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Replicate quickAddBet prefill on live data
+        run: |
+          curl -fsS -m 120 "https://beetingapp-1.onrender.com/api/value-bets" -o vb.json
+          python3 - <<'EOF'
+          import json
+          d = json.load(open("vb.json"))
+          print(f"events: {len(d)}\n")
+
+          CEIL = 8.0          # vbOddCeiling() default
+          MIN_EDGE = 3        # vbState.minEdge default
+
+          def vb_eval_bestpick(b):
+              byKey = {}
+              for p in (b.get("all_picks") or []):
+                  o = p.get("book_odd")
+                  if not o or o <= 1 or o > CEIL:
+                      continue
+                  key = f"{p.get('market')}|||{p.get('selection')}"
+                  ex = byKey.get(key)
+                  if not ex:
+                      byKey[key] = p; continue
+                  if p.get("book") == "Best" and ex.get("book") != "Best":
+                      byKey[key] = p
+                  elif ex.get("book") != "Best" and o > (ex.get("book_odd") or 0):
+                      byKey[key] = p
+              real = list(byKey.values())
+              vals = [p for p in real if p.get("edge_pct") is not None
+                      and MIN_EDGE <= p["edge_pct"] <= 15]
+              if not vals:
+                  return None
+              return max(vals, key=lambda p: (p.get("confidence") or 0)*100 + p["edge_pct"])
+
+          def my_book_pick(b, p):
+              for q in (b.get("all_picks") or []):
+                  if (q.get("book") == "1xBet" and q.get("market") == p.get("market")
+                          and q.get("selection") == p.get("selection") and q.get("book_odd")):
+                      return q
+              return None
+
+          odds_seen = {}
+          for b in d:
+              pick = vb_eval_bestpick(b) or b.get("best_value")
+              if not pick:
+                  continue
+              mine = my_book_pick(b, pick)
+              label = f"{b.get('home_team')} v {b.get('away_team')}"
+              if not mine:
+                  print(f"  BLOCKED (1xBet não cota): {label} | pick={pick.get('selection')}")
+                  continue
+              o = mine.get("book_odd")
+              odds_seen[o] = odds_seen.get(o, 0) + 1
+              print(f"  PREFILL odd={o!r:8} edge={mine.get('edge_pct')!r:7} "
+                    f"sel={mine.get('selection')!r} mkt={mine.get('market')!r} | {label}")
+
+          print("\n=== distribuição das odds que o prefill produziria ===")
+          for o, n in sorted(odds_seen.items(), key=lambda x: -x[1]):
+              print(f"  odd {o}: {n} evento(s)")
+
+          # Also dump one full all_picks so we can inspect the shape
+          for b in d:
+              if b.get("all_picks"):
+                  print(f"\n=== all_picks de exemplo: {b.get('home_team')} v {b.get('away_team')} ===")
+                  for p in b["all_picks"][:14]:
+                      print("   ", {k: p.get(k) for k in
+                            ("book","market","selection","book_odd","edge_pct","confidence")})
+                  break
+          EOF
