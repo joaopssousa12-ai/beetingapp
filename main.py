@@ -1,7 +1,7 @@
 import os
 import asyncio
 from datetime import datetime
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,7 +17,7 @@ from collectors.database import (
     get_national_summary, get_national_recent,
     get_xg_summary, get_team_xg,
     get_elo_summary, get_elo_rating, elo_based_probability,
-    get_match_prognosis, get_daily_multiple,
+    get_match_prognosis, get_daily_multiple, analyze_bet_slip,
     save_manual_odd, delete_manual_odd, get_manual_odds_map,
     invalidate_value_bets_cache,
     value_bets_cache_state, refresh_value_bets, load_vb_cache_from_disk,
@@ -308,6 +308,30 @@ async def api_daily_multiple():
     """Highest-confidence, model-agreeing picks combined into a 'Múltipla do Dia'.
     FOR FUN ONLY — an accumulator is -EV; this is not part of the edge system."""
     return JSONResponse(get_daily_multiple())
+
+@app.get("/bilhete", response_class=HTMLResponse)
+async def bilhete_page(request: Request):
+    """Upload a bet-slip screenshot and get the same depth of analysis as the
+    match page, per leg — reusing the tennis form/H2H/flags engine, not a new one."""
+    from collectors.slip_ai import is_configured
+    return templates.TemplateResponse("bilhete.html", {
+        "request": request, "v": ASSET_VERSION, "ai_configured": is_configured(),
+    })
+
+@app.post("/api/bilhete/analisar")
+async def api_bilhete_analisar(file: UploadFile = File(...)):
+    """Screenshot -> extraction (Claude vision, JSON-schema output) -> match
+    against known fixtures -> full prognosis per leg. Never fabricates: a leg
+    that can't be read or matched is reported as such, not guessed."""
+    if not (file.content_type or "").startswith("image/"):
+        return JSONResponse({"ok": False, "error": "not_an_image",
+                              "message": "O ficheiro enviado não é uma imagem."}, status_code=400)
+    image_bytes = await file.read()
+    if len(image_bytes) > 8 * 1024 * 1024:
+        return JSONResponse({"ok": False, "error": "too_large",
+                              "message": "Imagem demasiado grande (máx. 8MB)."}, status_code=400)
+    result = analyze_bet_slip(image_bytes, media_type=file.content_type)
+    return JSONResponse(result)
 
 @app.get("/api/stats")
 async def api_stats():

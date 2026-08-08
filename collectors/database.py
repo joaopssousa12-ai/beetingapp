@@ -3970,6 +3970,161 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
     }
 
 
+def _normalize_name(s):
+    """Strip accents/case for cross-source name matching (screenshot OCR vs
+    odds-feed spelling — e.g. 'Świątek' vs 'Swiatek', 'Jódar' vs 'Jodar')."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
+    return s.strip().lower()
+
+
+def _name_score(extracted, db_name):
+    """0..1 similarity between a name read off a screenshot and a name from the
+    odds feed. Deliberately simple (exact / last-token / substring / word-overlap)
+    — tennis and football names are short enough that this is reliable, and a
+    cheap heuristic is easier to reason about than a fuzzy-string-distance lib."""
+    e, d = _normalize_name(extracted), _normalize_name(db_name)
+    if not e or not d:
+        return 0.0
+    if e == d:
+        return 1.0
+    e_words, d_words = e.split(), d.split()
+    e_last = e_words[-1] if e_words else e
+    d_last = d_words[-1] if d_words else d
+    if e_last == d_last and len(e_last) >= 3:
+        return 0.9
+    if e in d or d in e:
+        return 0.75
+    overlap = set(e_words) & set(d_words)
+    if overlap:
+        return min(0.5 + 0.15 * len(overlap), 0.85)
+    return 0.0
+
+
+def match_slip_leg(pool, player_a, player_b):
+    """Best-match an (player_a, player_b) pair extracted from a screenshot against
+    the get_value_bets() pool (today's known fixtures). Returns (row, swapped) —
+    swapped=True means player_a corresponds to the row's away side, not home.
+    Returns (None, False) when nothing scores high enough to trust."""
+    best, best_score, best_swapped = None, 0.0, False
+    for row in pool:
+        home, away = row.get("home_team") or "", row.get("away_team") or ""
+        s_direct = _name_score(player_a, home) + _name_score(player_b, away)
+        s_swapped = _name_score(player_a, away) + _name_score(player_b, home)
+        if s_direct >= s_swapped and s_direct > best_score:
+            best, best_score, best_swapped = row, s_direct, False
+        elif s_swapped > s_direct and s_swapped > best_score:
+            best, best_score, best_swapped = row, s_swapped, True
+    # require both names to at least loosely match (>=0.6 each on average) —
+    # a single strong hit plus a total miss is not a trustworthy pairing
+    if best_score < 1.2:
+        return None, False
+    return best, best_swapped
+
+
+def analyze_bet_slip(image_bytes, media_type="image/jpeg"):
+    """Screenshot of a bet slip -> per-leg prognosis (reusing the exact same
+    tennis form/H2H/flags engine as the match page and the daily multiple) plus
+    a combined read. Never fabricates: a leg the AI can't read, or can't be
+    matched to a known fixture, is reported as such — not guessed."""
+    from .slip_ai import extract_slip, is_configured
+
+    raw_legs = extract_slip(image_bytes, media_type)
+    if raw_legs is None:
+        if not is_configured():
+            msg = "A leitura por IA não está configurada neste servidor (falta ANTHROPIC_API_KEY)."
+        else:
+            msg = "O pedido à IA falhou (imagem ilegível ou erro temporário). Tenta novamente."
+        return {"ok": False, "error": "ai_unavailable", "message": msg + " Nada foi inventado."}
+    if not raw_legs:
+        return {
+            "ok": False, "error": "no_legs_found",
+            "message": "Não consegui identificar nenhuma aposta neste print.",
+        }
+
+    pool = get_value_bets()
+    legs_out = []
+    for leg in raw_legs:
+        pa, pb = leg.get("player_a", ""), leg.get("player_b", "")
+        screenshot_odd = leg.get("odd")
+        row, swapped = match_slip_leg(pool, pa, pb)
+
+        if not row:
+            legs_out.append({
+                "player_a": pa, "player_b": pb, "odd_on_slip": screenshot_odd,
+                "date": leg.get("date"), "time": leg.get("time"),
+                "matched": False,
+                "message": ("Não encontrei este jogo na base de dados — pode ainda não "
+                            "ter sido recolhido, ou o nome não bateu certo."),
+            })
+            continue
+
+        home_team, away_team = row["home_team"], row["away_team"]
+        picked = leg.get("picked")
+        picked_is_home = (picked == "a") != swapped if picked in ("a", "b") else None
+        picked_team = (None if picked_is_home is None
+                       else home_team if picked_is_home else away_team)
+
+        try:
+            prog = get_match_prognosis(
+                home_team, away_team, row.get("sport_name"), row.get("commence_time"),
+                pin_odds=(row.get("pin_home"), row.get("pin_draw"), row.get("pin_away")),
+            )
+        except Exception:
+            prog = None
+
+        model_prob = None
+        if prog and prog.get("probs") and picked_is_home is not None:
+            key = "home" if picked_is_home else "away"
+            raw = prog["probs"].get(key)
+            model_prob = round(raw / 100, 4) if raw is not None else None
+
+        ev = (round(model_prob * screenshot_odd - 1, 4)
+              if (model_prob is not None and screenshot_odd) else None)
+
+        flags_for_picked = None
+        if prog and prog.get("tennis_flags"):
+            flags_for_picked = [f for f in prog["tennis_flags"]
+                                 if f.get("player") in (None, picked_team)]
+
+        legs_out.append({
+            "player_a": pa, "player_b": pb, "matched": True,
+            "event_id": row.get("event_id"),
+            "home_team": home_team, "away_team": away_team,
+            "picked_team": picked_team, "sport_name": row.get("sport_name"),
+            "commence_time": row.get("commence_time"),
+            "odd_on_slip": screenshot_odd,
+            "model_probability_pct": round(model_prob * 100, 1) if model_prob is not None else None,
+            "ev_pct": round(ev * 100, 1) if ev is not None else None,
+            "prognosis": prog,
+            "flags": flags_for_picked,
+        })
+
+    matched = [l for l in legs_out if l["matched"]]
+    combined_odd = combined_prob = 1.0
+    has_full_prob = bool(matched)
+    for l in matched:
+        if l.get("odd_on_slip"):
+            combined_odd *= l["odd_on_slip"]
+        if l.get("model_probability_pct") is not None:
+            combined_prob *= l["model_probability_pct"] / 100
+        else:
+            has_full_prob = False
+
+    return {
+        "ok": True,
+        "legs": legs_out,
+        "n_legs": len(legs_out),
+        "n_matched": len(matched),
+        "combined_odd": round(combined_odd, 3) if matched else None,
+        "combined_probability_pct": round(combined_prob * 100, 1) if has_full_prob else None,
+        "combined_ev_pct": (round((combined_odd * combined_prob - 1) * 100, 1)
+                             if has_full_prob else None),
+        "note": ("Uma múltipla multiplica a margem da casa — o EV combinado tende a ser "
+                 "negativo mesmo quando pernas individuais têm valor."),
+    }
+
+
 def get_elo_summary():
     """Top-rated entities per category."""
     conn = get_connection()

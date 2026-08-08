@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analisar Bilhete — BetIQ</title>
+<link rel="stylesheet" href="/static/css/style.css?v={{ v }}">
+<style>
+  .bl-wrap { max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
+  .bl-back { display:inline-flex; gap:.5rem; margin-bottom:1.25rem; color:var(--accent); text-decoration:none; font-weight:500; font-size:14px; }
+  .bl-back:hover { text-decoration: underline; }
+  .bl-title { font-size: 26px; font-weight: 700; margin-bottom: .35rem; }
+  .bl-sub { color: var(--text3); font-size: 14px; margin-bottom: 1rem; }
+  .bl-warn { background:#fff6e6; border:1px solid #ffd591; border-left:4px solid #F39C12; color:#7a4d00; border-radius:8px; padding:.9rem 1.1rem; font-size:13px; line-height:1.55; margin-bottom:1.25rem; }
+  [data-theme="dark"] .bl-warn { background:#33280f; border-color:#6b521c; color:#ffdfa6; }
+  .bl-info { background:#eef4ff; border:1px solid #b9d3ff; border-left:4px solid #4A90E2; color:#1c3d6e; border-radius:8px; padding:.9rem 1.1rem; font-size:13px; line-height:1.55; margin-bottom:1.25rem; }
+  [data-theme="dark"] .bl-info { background:#12233d; border-color:#2b4a78; color:#cfe0ff; }
+
+  .bl-drop { border: 2px dashed var(--border); border-radius: 12px; padding: 2.5rem 1.5rem; text-align: center; cursor: pointer; background: var(--card-bg); transition: border-color .15s; }
+  .bl-drop:hover, .bl-drop.drag { border-color: var(--accent); }
+  .bl-drop-icon { font-size: 34px; margin-bottom: .5rem; }
+  .bl-drop-text { font-size: 14px; color: var(--text2); }
+  .bl-drop input { display: none; }
+  .bl-preview { max-width: 100%; max-height: 320px; border-radius: 10px; margin: 1rem 0; display: none; border: 1px solid var(--border); }
+  .bl-btn { background: var(--accent); color: white; border: none; border-radius: 8px; padding: .8rem 1.4rem; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 1rem; }
+  .bl-btn:disabled { opacity: .5; cursor: default; }
+  .bl-btn.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); margin-left: .6rem; }
+
+  .bl-leg { background:var(--card-bg); border:1px solid var(--border); border-radius:10px; padding:1rem 1.15rem; margin-bottom:.75rem; }
+  .bl-leg-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap: wrap; }
+  .bl-leg-main a { color: inherit; text-decoration: none; }
+  .bl-leg-main a:hover { text-decoration: underline; }
+  .bl-leg-sel { font-size:16px; font-weight:700; }
+  .bl-leg-match { font-size:12.5px; color:var(--text3); margin-top:2px; }
+  .bl-leg-right { text-align:right; white-space:nowrap; }
+  .bl-odd { font-size:15px; font-weight:700; }
+  .bl-ev { font-size: 12.5px; font-weight: 700; margin-top: 2px; }
+  .bl-ev.pos { color: #15803d; } .bl-ev.neg { color: #b91c1c; } .bl-ev.zero { color: var(--text3); }
+  .bl-leg.unmatched { border-style: dashed; }
+  .bl-leg-flags { margin-top: .6rem; padding-top: .6rem; border-top: 1px dashed var(--border); font-size: 12.5px; line-height: 1.6; }
+
+  .bl-summary { background:linear-gradient(135deg,var(--card-bg),var(--bg)); border:2px solid #4A90E2; border-radius:12px; padding:1.25rem 1.4rem; margin-top:1.25rem; }
+  .bl-summary-row { display:flex; justify-content:space-between; font-size:15px; margin:.3rem 0; }
+  .bl-summary-row strong { font-size:20px; }
+  .bl-empty { text-align:center; color:var(--text3); padding:2rem 1rem; }
+  .bl-spinner { text-align:center; padding: 2rem 1rem; color: var(--text3); }
+</style>
+</head>
+<body>
+<div class="bl-wrap">
+  <a href="/" class="bl-back">← Voltar</a>
+  <div class="bl-title">📸 Analisar Bilhete</div>
+  <div class="bl-sub">Tira print ao teu boletim, carrega aqui, e cada perna passa pelo mesmo motor de análise das outras páginas — forma, H2H, alertas de ténis, tudo.</div>
+
+  {% if not ai_configured %}
+  <div class="bl-warn">
+    <strong>Leitura por IA não configurada.</strong> Falta a variável de ambiente <code>ANTHROPIC_API_KEY</code> no servidor.
+    Podes continuar a testar a interface, mas o pedido vai devolver erro até isso ficar configurado.
+  </div>
+  {% endif %}
+
+  <div class="bl-info">
+    Isto lê o print (nomes, odds, seleção) e depois usa o motor determinístico do site para a análise —
+    a parte de "quem vai ganhar" nunca vem da IA que lê a imagem. Um jogo que não esteja na base de dados
+    é reportado como <strong>não encontrado</strong>, nunca inventado.
+  </div>
+
+  <div class="bl-drop" id="drop">
+    <input type="file" id="file-input" accept="image/*">
+    <div class="bl-drop-icon">🖼️</div>
+    <div class="bl-drop-text" id="drop-text">Clica para escolher, ou arrasta o print para aqui</div>
+    <img class="bl-preview" id="preview">
+  </div>
+  <div>
+    <button class="bl-btn" id="analyse-btn" disabled>Analisar bilhete</button>
+    <button class="bl-btn secondary" id="reset-btn" style="display:none">Novo print</button>
+  </div>
+
+  <div id="bl-content"></div>
+</div>
+<script>
+const drop = document.getElementById('drop');
+const input = document.getElementById('file-input');
+const preview = document.getElementById('preview');
+const dropText = document.getElementById('drop-text');
+const analyseBtn = document.getElementById('analyse-btn');
+const resetBtn = document.getElementById('reset-btn');
+const content = document.getElementById('bl-content');
+let selectedFile = null;
+
+drop.addEventListener('click', () => input.click());
+['dragover', 'dragenter'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag'); }));
+drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+input.addEventListener('change', () => { if (input.files[0]) setFile(input.files[0]); });
+
+function setFile(f) {
+  if (!f.type.startsWith('image/')) return;
+  selectedFile = f;
+  preview.src = URL.createObjectURL(f);
+  preview.style.display = 'block';
+  dropText.textContent = f.name;
+  analyseBtn.disabled = false;
+}
+
+resetBtn.addEventListener('click', () => {
+  selectedFile = null;
+  preview.style.display = 'none';
+  dropText.textContent = 'Clica para escolher, ou arrasta o print para aqui';
+  analyseBtn.disabled = true;
+  analyseBtn.style.display = 'inline-block';
+  resetBtn.style.display = 'none';
+  content.innerHTML = '';
+  input.value = '';
+});
+
+function fmtDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return ts;
+  return d.toLocaleString('pt-PT', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+function evClass(ev) { if (ev == null) return 'zero'; return ev > 1 ? 'pos' : ev < -1 ? 'neg' : 'zero'; }
+
+function renderFlags(flags) {
+  if (!flags || !flags.length) return '';
+  const order = { warn: 0, good: 1, info: 2 };
+  const icon = { warn: '🚩', good: '✅', info: 'ℹ️' };
+  const colour = { warn: '#b45309', good: '#15803d', info: 'var(--text3)' };
+  const items = [...flags].sort((a, b) => (order[a.level] ?? 3) - (order[b.level] ?? 3))
+    .map(f => `<div style="color:${colour[f.level] || 'var(--text3)'}">${icon[f.level] || '·'} ${f.player ? `<strong>${f.player}</strong> — ` : ''}${f.text}</div>`).join('');
+  return `<div class="bl-leg-flags">${items}</div>`;
+}
+
+function renderLeg(l) {
+  if (!l.matched) {
+    return `<div class="bl-leg unmatched">
+      <div class="bl-leg-head">
+        <div class="bl-leg-main">
+          <div class="bl-leg-sel">${l.player_a} vs ${l.player_b}</div>
+          <div class="bl-leg-match">${l.date || ''} ${l.time || ''} · odd ${l.odd_on_slip ?? '—'}</div>
+        </div>
+        <div class="bl-leg-right"><span style="color:var(--text3);font-size:12.5px">⚠️ não encontrado</span></div>
+      </div>
+      <div class="bl-leg-flags">${l.message}</div>
+    </div>`;
+  }
+  const evTxt = l.ev_pct != null ? (l.ev_pct > 0 ? '+' : '') + l.ev_pct + '% EV' : 'EV —';
+  const probTxt = l.model_probability_pct != null ? l.model_probability_pct + '% modelo' : 'sem modelo';
+  return `<div class="bl-leg">
+    <div class="bl-leg-head">
+      <div class="bl-leg-main">
+        <a href="/match/${l.event_id}"><div class="bl-leg-sel">${l.picked_team || (l.home_team + ' vs ' + l.away_team)}</div></a>
+        <div class="bl-leg-match">${l.home_team} vs ${l.away_team} · ${l.sport_name || ''} · ${fmtDate(l.commence_time)}</div>
+      </div>
+      <div class="bl-leg-right">
+        <div class="bl-odd">@ ${l.odd_on_slip != null ? Number(l.odd_on_slip).toFixed(2) : '—'}</div>
+        <div style="font-size:12px;color:var(--text3)">${probTxt}</div>
+        <div class="bl-ev ${evClass(l.ev_pct)}">${evTxt}</div>
+      </div>
+    </div>
+    ${renderFlags(l.flags)}
+  </div>`;
+}
+
+analyseBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  analyseBtn.disabled = true;
+  analyseBtn.textContent = 'A analisar…';
+  content.innerHTML = '<div class="bl-spinner">A ler o print e a cruzar com a base de dados…</div>';
+  try {
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+    const resp = await fetch('/api/bilhete/analisar', { method: 'POST', body: fd });
+    const d = await resp.json();
+    analyseBtn.style.display = 'none';
+    resetBtn.style.display = 'inline-block';
+
+    if (!d.ok) {
+      content.innerHTML = `<div class="bl-warn">${d.message || 'Não foi possível analisar este bilhete.'}</div>`;
+      return;
+    }
+
+    let html = d.legs.map(renderLeg).join('');
+    if (d.n_matched > 0) {
+      html += `<div class="bl-summary">
+        <div class="bl-summary-row"><span>Pernas identificadas</span><strong>${d.n_matched} / ${d.n_legs}</strong></div>
+        ${d.combined_odd ? `<div class="bl-summary-row"><span>Odd combinada (bilhete)</span><strong>${d.combined_odd.toFixed(2)}</strong></div>` : ''}
+        ${d.combined_probability_pct != null ? `<div class="bl-summary-row"><span>Probabilidade combinada (modelo)</span><strong>${d.combined_probability_pct}%</strong></div>` : ''}
+        ${d.combined_ev_pct != null ? `<div class="bl-summary-row"><span>EV combinado</span><strong style="color:${d.combined_ev_pct >= 0 ? '#15803d' : '#b91c1c'}">${d.combined_ev_pct > 0 ? '+' : ''}${d.combined_ev_pct}%</strong></div>` : ''}
+        <div style="font-size:12px;color:var(--text3);margin-top:.6rem;line-height:1.5">${d.note || ''}</div>
+      </div>`;
+    }
+    if (d.n_matched < d.n_legs) {
+      html += `<div class="bl-warn" style="margin-top:1rem">${d.n_legs - d.n_matched} perna(s) não foram encontradas na base de dados — confirma-as manualmente antes de apostar.</div>`;
+    }
+    content.innerHTML = html || '<div class="bl-empty">Nada para mostrar.</div>';
+  } catch (e) {
+    content.innerHTML = `<div class="bl-warn">Erro ao analisar: ${e.message}</div>`;
+    analyseBtn.disabled = false;
+    analyseBtn.textContent = 'Analisar bilhete';
+  }
+});
+</script>
+</body>
+</html>
