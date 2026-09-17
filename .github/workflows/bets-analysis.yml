@@ -1,0 +1,15 @@
+name: bets-analysis
+
+# Read-only deep read of the real bet log (production /api/bets).
+# No writes, no API credits. Prints the full statistical breakdown to the log.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  analyse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analyse the bet log
+        run: python3 scripts/bets_analysis.py "https://beetingapp-1.onrender.com/api/bets?limit=500"
