@@ -126,9 +126,24 @@ def main():
     print(f"  ROI realizado         {pct(roi)}")
     print(f"  win rate              {wr:.1f}%  ({wins}/{len(decided)})")
     print(f"  odd média (simples)   {avg_odd:.3f}")
-    print(f"  odd média (ponderada) {wavg_odd:.3f}")
-    print(f"  win rate de break-even a essa odd: {be_wr:.1f}%")
-    print(f"  margem sobre break-even: {wr - be_wr:+.1f} pontos percentuais")
+    print(f"  odd média (ponderada por stake) {wavg_odd:.3f}")
+    # The break-even test must compare like with like: a stake-weighted odd needs a
+    # STAKE-weighted win rate. Comparing it to the head-count win rate mixes two
+    # different denominators and can invent a deficit that does not exist.
+    stk_all = sum(b["stake"] for b in decided) or 1
+    stk_won = sum(b["stake"] for b in decided if b["result"] == "won")
+    wr_w = stk_won / stk_all * 100
+    print(f"  win rate ponderada por stake    {wr_w:.1f}%  "
+          f"(EUR {stk_won:.0f} de EUR {stk_all:.0f} apostados ganharam)")
+    print(f"  break-even a essa odd           {be_wr:.1f}%")
+    print(f"  margem sobre break-even         {wr_w - be_wr:+.1f} pp  "
+          f"(ponderada vs ponderada — a comparacao correta)")
+    print(f"  [referencia nao ponderada: {wr:.1f}% vs {100 / avg_odd:.1f}% "
+          f"= {wr - 100 / avg_odd:+.1f} pp]")
+    conc = sorted((b["stake"] for b in settled), reverse=True)
+    if len(conc) >= 6:
+        print(f"\n  CONCENTRACAO: as 6 maiores stakes valem EUR {sum(conc[:6]):.0f} "
+              f"de EUR {staked:.0f} ({sum(conc[:6]) / staked * 100:.0f}% do dinheiro total)")
 
     # ── 2. Expected vs realised: how much is skill, how much is luck ─────────
     h("2. ESPERADO vs REALIZADO — quanto disto e' edge e quanto e' sorte")
@@ -180,6 +195,34 @@ def main():
                   f"{pct(sum(b['edge_pct'] for b in with_edge) / len(with_edge))}")
             print("  (batem um no outro => a estimativa de edge do modelo esta' a ser")
             print("   confirmada pelo mercado no fecho, nao inflacionada)")
+
+        # ── CLV independence check ──────────────────────────────────────────
+        # A CLV that exactly equals the entry edge means the "close" snapshot is
+        # the SAME price that produced the edge — the line never moved (or was
+        # never re-captured). Those rows restate the edge, they do not confirm it.
+        # Only the rows where the line genuinely moved are independent evidence.
+        moved, frozen = [], []
+        for b in clv:
+            e = b.get("edge_pct")
+            if e is None:
+                continue
+            (frozen if abs(b["clv_pct"] - e) < 0.05 else moved).append(b)
+        print(f"\n  TESTE DE INDEPENDENCIA do CLV:")
+        print(f"    linha NAO mexeu (CLV == edge de entrada)  {len(frozen)}/{len(frozen) + len(moved)}"
+              f"  -> nao sao prova independente")
+        print(f"    linha MEXEU mesmo                         {len(moved)}/{len(frozen) + len(moved)}"
+              f"  -> e' aqui que esta' a prova")
+        if moved:
+            mv = [b["clv_pct"] for b in moved]
+            me = [b["edge_pct"] for b in moved]
+            pos_m = sum(1 for v in mv if v > 0)
+            against = sum(1 for b in moved if b["clv_pct"] < b["edge_pct"])
+            print(f"    subconjunto independente: edge entrada {sum(me) / len(me):+.2f}%"
+                  f"  ->  CLV no fecho {sum(mv) / len(mv):+.2f}%")
+            print(f"    positivos nesse subconjunto: {pos_m}/{len(mv)}")
+            print(f"    a linha mexeu CONTRA nos em {against}/{len(moved)} casos")
+            print("    (se mexe contra na maioria e o CLV continua positivo, o valor vem")
+            print("     da DIFERENCA DE PRECO na entrada, nao de prever o movimento)")
 
         print("\n  Apostas com CLV NEGATIVO (as que o mercado disse que estavam erradas):")
         neg = [b for b in clv if b["clv_pct"] <= 0]
