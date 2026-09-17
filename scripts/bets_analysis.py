@@ -16,6 +16,21 @@ import random
 import sys
 import urllib.request
 from collections import defaultdict
+from datetime import datetime
+
+
+def _parse_iso(s):
+    """Parse the mixed timestamp shapes the DB stores ('YYYY-MM-DDTHH:MM',
+    'YYYY-MM-DD HH:MM:SS', optional trailing Z). Returns None on anything else."""
+    if not s or not isinstance(s, str):
+        return None
+    t = s.strip().replace("Z", "").replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return datetime.strptime(t, fmt)
+        except ValueError:
+            continue
+    return None
 
 URL = sys.argv[1] if len(sys.argv) > 1 else "https://beetingapp-1.onrender.com/api/bets?limit=500"
 random.seed(7)
@@ -224,6 +239,40 @@ def main():
             print("    (se mexe contra na maioria e o CLV continua positivo, o valor vem")
             print("     da DIFERENCA DE PRECO na entrada, nao de prever o movimento)")
 
+        # ── How late was the "close" actually captured? ─────────────────────
+        # A close captured hours before kickoff is not a close. If the capture
+        # lead time is large, the CLV is measured against a mid-week price and
+        # means nothing.
+        leads = []
+        for b in clv:
+            ko = _parse_iso(b.get("commence_time"))
+            cap = _parse_iso(b.get("pin_close_captured_at"))
+            if ko and cap:
+                leads.append(((ko - cap).total_seconds() / 60.0, b))
+        if leads:
+            leads.sort(key=lambda t: t[0])
+            mins = [m for m, _ in leads]
+            print(f"\n  QUALIDADE DO FECHO (minutos entre a captura e o pontape de saida):")
+            print(f"    n com timestamp de captura  {len(mins)}/{len(clv)}")
+            print(f"    mediana                     {mins[len(mins) // 2]:,.0f} min")
+            print(f"    min / max                   {mins[0]:,.0f} / {mins[-1]:,.0f} min")
+            for lo, hi, lbl in ((0, 30, "<30min  (fecho a serio)"),
+                                (30, 120, "30min-2h (aceitavel)"),
+                                (120, 360, "2h-6h    (fraco)"),
+                                (360, 1e9, ">6h      (nao e' fecho)")):
+                grp = [m for m in mins if lo <= m < hi]
+                if grp:
+                    print(f"      {lbl:26s} {len(grp):3d}  ({len(grp) / len(mins) * 100:.0f}%)")
+            worst = [b for m, b in leads if m >= 360]
+            if worst:
+                print("    apostas cujo 'fecho' foi capturado a mais de 6h do jogo:")
+                for b in worst[:12]:
+                    ko = _parse_iso(b.get("commence_time"))
+                    cap = _parse_iso(b.get("pin_close_captured_at"))
+                    print(f"      #{b['id']:<4} {(b.get('home_team') or '')[:24]:24s} "
+                          f"captura {cap:%Y-%m-%d %H:%M}  jogo {ko:%Y-%m-%d %H:%M}  "
+                          f"({(ko - cap).total_seconds() / 3600:.1f}h antes)  CLV {b['clv_pct']:+.1f}%")
+
         print("\n  Apostas com CLV NEGATIVO (as que o mercado disse que estavam erradas):")
         neg = [b for b in clv if b["clv_pct"] <= 0]
         if neg:
@@ -267,6 +316,17 @@ def main():
     group_report(settled, lambda b: b.get("sport_name") or "?", "POR DESPORTO")
     group_report(settled, lambda b: b.get("market") or "?", "POR MERCADO")
     group_report(settled, lambda b: b.get("bookmaker") or "?", "POR CASA")
+    # THE decisive split: bets priced against a real sharp reference vs bets whose
+    # "edge" was only our own Elo/xG estimate. Empty until bets start carrying the
+    # provenance columns.
+    if any(b.get("odds_source") for b in settled):
+        group_report(settled, lambda b: b.get("odds_source") or "(antes do registo)",
+                     "POR FONTE DA PROBABILIDADE  <<< o teste que interessa")
+        group_report(settled, lambda b: b.get("ref_agreement") or "(antes do registo)",
+                     "POR CONCORDANCIA DAS REFERENCIAS")
+    else:
+        print("\nPOR FONTE DA PROBABILIDADE: nenhuma aposta tem odds_source guardado ainda.")
+        print("  (as apostas novas passam a guardar; esta tabela enche-se sozinha)")
 
     # ── 5. Staking ───────────────────────────────────────────────────────────
     h("5. STAKE SIZING — o Kelly esta' a fazer o seu trabalho?")
