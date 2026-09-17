@@ -292,9 +292,14 @@ def main():
             print(f"    n com timestamp de captura  {len(mins)}/{len(clv)}")
             print(f"    mediana                     {mins[len(mins) // 2]:,.0f} min")
             print(f"    min / max                   {mins[0]:,.0f} / {mins[-1]:,.0f} min")
-            for lo, hi, lbl in ((0, 30, "<30min  (fecho a serio)"),
-                                (30, 120, "30min-2h (aceitavel)"),
-                                (120, 360, "2h-6h    (fraco)"),
+            CUT = 180  # CLV_MAX_LEAD_MIN — must mirror collectors/database.py
+            keep = sum(1 for m in mins if 0 <= m <= CUT)
+            print(f"    --> sob o criterio novo (<= {CUT}min): {keep} contam, "
+                  f"{len(mins) - keep} sao descartados")
+            for lo, hi, lbl in ((0, 30, "<30min   (fecho a serio)"),
+                                (30, 60, "30-60min (fecho bom)"),
+                                (60, 180, "1h-3h    (aceitavel, ainda conta)"),
+                                (180, 360, "3h-6h    (descartado)"),
                                 (360, 1e9, ">6h      (nao e' fecho)")):
                 grp = [m for m in mins if lo <= m < hi]
                 if grp:
