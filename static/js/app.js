@@ -555,9 +555,20 @@ function vbEval(b) {
   // 'diverge_model' (our model disagrees with the market → caution, still green)
   const refAgree = b.ref_agreement;
   const sharpConflict = refAgree === 'diverge_sharp';
+  // An edge is only as trustworthy as the line it was measured against.
+  //
+  //  - weakRef: Pinnacle quoting this game with a margin above PINNACLE_MAX_LIQUID_VIG
+  //    means Pinnacle itself has little confidence (thin/unknown market). Devigging a
+  //    6% line produces a "fair" probability with several points of slack, so a 2-3%
+  //    edge against it is inside the noise. Used to pass straight to green.
+  //  - unverifiable: no Pinnacle price for THIS pick's market ⇒ a closing line can
+  //    never be captured ⇒ the bet can never be checked afterwards. We keep showing
+  //    it, but it must not be celebrated as confirmed value.
+  const weakRef = b.pin_low_liquidity === true;
+  const unverifiable = !pinCoversMarket(b, bestPick);
   const isValue = !!bestPick && bestPick.edge_pct >= VB_VALUE_FLOOR
       && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD
-      && !sharpConflict;
+      && !sharpConflict && !weakRef && !unverifiable;
   // Stars = the Pinnacle-earned base confidence (edge quality + liquidity + league).
   // Our xG/Elo model is a WEAKER cross-check than Pinnacle, so a model disagreement
   // is shown as an INFORMATIONAL orange badge ONLY — it does NOT change stars or
@@ -565,7 +576,20 @@ function vbEval(b) {
   // Pinnacle), which is rare and genuinely means the truth is uncertain → cap 2.
   let stars = bestPick ? (bestPick.confidence || 0) : 0;
   if (sharpConflict) stars = Math.min(stars, 2);
-  return { realPicks, bestPick, isValue, stars, ceiling, refAgree };
+  if (weakRef || unverifiable) stars = Math.min(stars, 2);
+  return { realPicks, bestPick, isValue, stars, ceiling, refAgree, weakRef, unverifiable };
+}
+
+// Does Pinnacle quote the market this pick belongs to? Without it there is no
+// snapshot to derive a closing line from, so the bet's CLV stays "—" forever and
+// the edge can never be verified against anything.
+function pinCoversMarket(b, pick) {
+  if (!b || !pick) return false;
+  const m = (pick.market || '').toLowerCase();
+  if (/over|under/.test(m)) return !!(b.pin_over25 && b.pin_under25);
+  if (/btts|both teams/.test(m)) return !!(b.pin_btts_yes && b.pin_btts_no);
+  if (/handicap/.test(m)) return !!(b.pin_ah_home && b.pin_ah_away);
+  return !!(b.pin_home && b.pin_away);
 }
 
 // Est. CLV of a card = the edge at the price the USER can actually get (1xBet) for
@@ -829,7 +853,10 @@ function clearBetFormFields() {
   const hint = document.getElementById('bet-stake-hint');
   if (hint) hint.textContent = '';
   const f = document.getElementById('bet-form');
-  if (f) { f.dataset.eventId = ''; f.dataset.pinImplied = ''; }
+  if (f) {
+    f.dataset.eventId = ''; f.dataset.pinImplied = '';
+    f.dataset.oddsSource = ''; f.dataset.refAgreement = '';
+  }
 }
 
 function _myBookPick(b, p) {
@@ -1325,6 +1352,10 @@ function renderCard(b) {
           ? `Melhor preço está NOUTRA CASA — a 1xBet não cota esta seleção, por isso não tens CLV aqui. Informativo.`
           : b.ref_agreement === 'diverge_sharp'
           ? `Best available — the two sharp markets disagree, so we can't confirm value. Informational only.`
+          : ev.unverifiable
+          ? `A Pinnacle não cota este mercado — esta aposta NUNCA terá CLV. O edge não é verificável, por isso não vai a verde.`
+          : ev.weakRef
+          ? `Referência fraca: a margem da Pinnacle neste jogo é ${b.pin_vig_pct != null ? b.pin_vig_pct + '%' : 'alta'} (acima de 4%), ou seja nem a Pinnacle sabe bem o preço. Um edge pequeno contra uma linha destas está dentro do ruído.`
           : stakeState === 'info'
           ? `Best available — odd >4.0 (azarão, menos fiável). Informativo, sem stake sugerida.`
           : `Best available — below the green value gate (edge ≥2% & odd 1.4–4.0). Size with care.`);
@@ -1988,6 +2019,13 @@ function quickAddBet(b) {
     // reads these dataset fields as the source of truth.
     if (f) {
       f.dataset.eventId = b.event_id || '';
+      // PROVENANCE of this edge — which reference produced the "true probability"
+      // it was measured against. Recorded on the bet so the history can later be
+      // split by reference quality: an edge backed by Pinnacle+Betfair and one
+      // backed only by our own Elo/xG are not the same claim, and until now the
+      // bet log could not tell them apart.
+      f.dataset.oddsSource = b.odds_source || '';
+      f.dataset.refAgreement = b.ref_agreement || '';
       let pinImp = null;
       if (pick.selection === b.home_team) pinImp = b.true_home_pct;
       else if (pick.selection === b.away_team) pinImp = b.true_away_pct;
@@ -2078,12 +2116,18 @@ async function loadBetStats() {
     clvEl.innerHTML = `${s.avg_clv >= 0 ? '+' : ''}${s.avg_clv}%
       <div style="font-size:10px;color:var(--text3);font-weight:400;margin-top:2px;font-family:var(--font)">
         ${s.clv_sample} bets · ${s.positive_clv_rate || 0}% positive
+        ${s.clv_stale ? `<br><span style="color:#d97706">+${s.clv_stale} descartadas: fecho capturado tarde de mais</span>` : ''}
       </div>`;
     clvEl.style.color = s.avg_clv > 0 ? 'var(--green)' : s.avg_clv < 0 ? 'var(--red)' : '';
   } else {
+    // No COUNTABLE CLV. Distinguish "nothing settled yet" from "we have closes but
+    // every one of them was captured too far from kickoff to mean anything" —
+    // the second is a broken capture pipeline, not missing data, and silently
+    // showing "No data yet" hid that for months.
     clvEl.innerHTML = `—
       <div style="font-size:10px;color:var(--text3);font-weight:400;margin-top:2px;font-family:var(--font)">
-        ${s.n_pending > 0 ? 'After matches complete' : 'No data yet'}
+        ${s.clv_stale ? `<span style="color:#d97706">${s.clv_stale} fechos descartados (capturados >${Math.round((s.clv_max_lead_min || 180) / 60)}h antes do jogo)</span>`
+          : s.n_pending > 0 ? 'After matches complete' : 'No data yet'}
       </div>`;
     clvEl.style.color = '';
   }
@@ -2247,7 +2291,17 @@ async function loadBetsTable() {
       const statusCls = 'bet-status-' + (b.status === 'pending' ? 'pending' : (b.result || ''));
       const profit = b.profit != null ? (b.profit >= 0 ? '+' : '') + '€' + b.profit.toFixed(2) : '—';
       const profitCol = b.profit > 0 ? 'var(--green)' : b.profit < 0 ? 'var(--red)' : 'var(--text3)';
-      const clv = b.clv_pct != null ? (b.clv_pct >= 0 ? '+' : '') + b.clv_pct + '%' : '—';
+      // A CLV whose "close" was captured hours before kickoff is not a CLV — the
+      // backend refuses to publish it as clv_pct and hands it over as
+      // clv_pct_unverified instead. Show it struck through with the lead time, so
+      // the number is visible for audit but can never be mistaken for evidence.
+      const clvHours = b.clv_lead_min != null ? (b.clv_lead_min / 60).toFixed(1) + 'h' : '?';
+      const clv = b.clv_pct != null
+        ? (b.clv_pct >= 0 ? '+' : '') + b.clv_pct + '%'
+        : (b.clv_pct_unverified != null
+            ? `<span style="text-decoration:line-through;opacity:.55">${b.clv_pct_unverified >= 0 ? '+' : ''}${b.clv_pct_unverified}%</span>`
+              + `<span style="font-size:10px;opacity:.7;display:block">fecho ${clvHours} antes</span>`
+            : '—');
       const clvCol = b.clv_pct > 0 ? 'var(--green)' : b.clv_pct < 0 ? 'var(--red)' : 'var(--text3)';
       // Audit trail on hover: which Pinnacle close this CLV is measured against
       // and WHEN it was captured (a close taken long before — or after — kickoff
@@ -2352,6 +2406,10 @@ async function submitBet() {
     pin_implied_prob: pinImplied,
     notes: document.getElementById('bet-notes').value.trim() || null,
     edge_pct: parseFloat(document.getElementById('bet-edge-pct')?.value) || null,
+    // Provenance stashed by quickAddBet (empty for hand-entered bets — the server
+    // stores NULL then, which the analysis reports as "sem registo").
+    odds_source: (betForm && betForm.dataset.oddsSource) || null,
+    ref_agreement: (betForm && betForm.dataset.refAgreement) || null,
   };
   if (!data.selection || !data.odds || !data.stake) {
     alert('Please fill in at least Selection, Odds, and Stake.');
@@ -2369,7 +2427,10 @@ async function submitBet() {
       const el = document.getElementById(id); if (el) el.value = '';
     });
     document.getElementById('bet-event-select').value = '';
-    if (betForm) { betForm.dataset.eventId = ''; betForm.dataset.pinImplied = ''; }
+    if (betForm) {
+      betForm.dataset.eventId = ''; betForm.dataset.pinImplied = '';
+      betForm.dataset.oddsSource = ''; betForm.dataset.refAgreement = '';
+    }
     // #4 Reflect the new bet on the value-bets cards right away (also DB-persistent:
     // a reload rebuilds trackedBetsMap from /api/bets, so the state survives reloads).
     if (data.event_id) {

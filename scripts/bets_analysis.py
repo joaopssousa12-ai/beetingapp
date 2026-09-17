@@ -88,7 +88,12 @@ def group_report(bets, keyfn, label, min_n=1):
         settled = [x for x in g if x["result"] in ("won", "lost")]
         avg_odd = sum(x["odds"] for x in g) / len(g)
         edges = [x["edge_pct"] for x in g if x.get("edge_pct") is not None]
-        clvs = [x["clv_pct"] for x in g if x.get("clv_pct") is not None]
+        # "_clv_any" = countable CLV where we have one, otherwise the unverified
+        # figure, so the breakdown columns stay populated. Marked CLV* in the
+        # header precisely because it mixes the two.
+        clvs = [x["_clv_any"] for x in g
+                if x.get("_clv_any") is not None] or \
+               [x["clv_pct"] for x in g if x.get("clv_pct") is not None]
         rows.append([
             str(k)[:28], len(g), f"{st:.0f}", f"{pf:+.2f}",
             pct(pf / st * 100, 1) if st else "—",
@@ -101,7 +106,7 @@ def group_report(bets, keyfn, label, min_n=1):
         ])
     print(f"\n{label}")
     table(rows, ["grupo", "n", "staked", "P/L", "ROI", "W/S", "win%", "odd méd",
-                 "break-even", "edge méd", "CLV méd"])
+                 "break-even", "edge méd", "CLV* méd"])
 
 
 def main():
@@ -190,8 +195,39 @@ def main():
 
     # ── 3. CLV — the leading indicator ───────────────────────────────────────
     h("3. CLV — o indicador que converge depressa (e' aqui que esta' a verdade)")
-    clv = [b for b in settled if b.get("clv_pct") is not None]
+    # The API now publishes clv_pct ONLY when the close was captured close enough
+    # to kickoff to mean anything; everything else arrives as clv_pct_unverified.
+    # We analyse the full set (to see how bad the capture is) but report the two
+    # populations apart, because mixing them is exactly what produced the false
+    # "97.4% positive CLV" headline.
+    for b in settled:
+        if b.get("clv_pct") is None and b.get("clv_pct_unverified") is not None:
+            b["_clv_any"] = b["clv_pct_unverified"]
+            b["_clv_counts"] = False
+        elif b.get("clv_pct") is not None:
+            b["_clv_any"] = b["clv_pct"]
+            b["_clv_counts"] = True
+        else:
+            b["_clv_any"] = None
+            b["_clv_counts"] = False
+
+    countable = [b for b in settled if b.get("_clv_counts")]
+    unverified = [b for b in settled if b.get("_clv_any") is not None and not b.get("_clv_counts")]
+    print(f"  CLV contavel (fecho perto do jogo)  {len(countable)}")
+    print(f"  CLV descartado (fecho tarde demais) {len(unverified)}")
+    if countable:
+        cv = sorted(b["clv_pct"] for b in countable)
+        print(f"  --> CLV medio APENAS dos contaveis  {sum(cv) / len(cv):+.2f}%"
+              f"  (positivos {sum(1 for v in cv if v > 0)}/{len(cv)})")
+    else:
+        print("  --> nenhum CLV contavel: a captura do fecho nao esta' a funcionar")
+
+    # Everything below runs on the FULL set, unverified included, and is labelled
+    # as such — it diagnoses the capture, it does not prove the edge.
+    clv = [dict(b, clv_pct=b["_clv_any"]) for b in settled if b.get("_clv_any") is not None]
     if clv:
+        print("\n  (as estatisticas seguintes incluem os fechos nao verificados —")
+        print("   servem para diagnosticar a captura, NAO para provar o edge)")
         vals = sorted(b["clv_pct"] for b in clv)
         mean_clv = sum(vals) / len(vals)
         med = vals[len(vals) // 2]

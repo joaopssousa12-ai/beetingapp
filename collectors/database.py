@@ -737,6 +737,18 @@ def init_db():
     except Exception:
         pass  # already exists
 
+    # Migrate: PROVENANCE of the edge — which reference produced the "true prob"
+    # this bet was priced against. Without it we cannot tell a bet backed by a
+    # real sharp line (Pinnacle/Betfair) from one whose edge was only our own
+    # Elo/xG guess, and those two deserve completely different trust.
+    #   odds_source:    blend | pinnacle | betfair | xg_model
+    #   ref_agreement:  agree | single | diverge_sharp | diverge_model | model_only
+    for _col in ("odds_source", "ref_agreement"):
+        try:
+            c.execute(f"ALTER TABLE bets ADD COLUMN {_col} TEXT")
+        except Exception:
+            pass  # already exists
+
     # Migrate: normalize bets.commence_time to canonical ISO UTC
     # ('YYYY-MM-DDTHH:MM:SSZ'). Historical rows mixed 'YYYY-MM-DDTHH:MM' (no Z —
     # browsers parse that as LOCAL time, skewing kickoff displays) with other
@@ -995,6 +1007,39 @@ PINNACLE_MAX_LIQUID_VIG = 4.0
 # true probability is genuinely uncertain, so we don't celebrate it as a green
 # value bet. Tunable; 2.5pp ≈ the user's "within ~2%" intuition with a little slack.
 REF_AGREE_PP = 2.5
+
+# ── CLV validity ────────────────────────────────────────────────────────────
+# A "closing line" captured hours before kickoff is not a closing line. Measured
+# on the real bet log, 67% of stored closes were captured MORE THAN 6 HOURS
+# before kickoff (median 9h, worst 43h), because the near-kickoff refresh is
+# skipped whenever Odds-API quota is low or Render has spun the app down. Those
+# snapshots are usually the very same price that produced the entry edge, so the
+# resulting "CLV" just restates the edge and silently looks like confirmation.
+#
+# From here on a CLV only COUNTS as measured when its close was captured within
+# CLV_MAX_LEAD_MIN of kickoff. Anything older is still stored and shown, but
+# labelled unverified and kept OUT of the averages — an honest gap beats a
+# confident-looking number that means nothing.
+CLV_GOOD_LEAD_MIN = int(os.environ.get("CLV_GOOD_LEAD_MIN", "60"))    # a real close
+CLV_MAX_LEAD_MIN = int(os.environ.get("CLV_MAX_LEAD_MIN", "180"))     # still defensible
+
+
+def clv_quality(lead_min):
+    """Classify a captured close by how long before kickoff it was taken."""
+    if lead_min is None:
+        return "unknown"
+    if lead_min < 0:
+        return "post_kickoff"          # should never happen; capture filters it out
+    if lead_min <= CLV_GOOD_LEAD_MIN:
+        return "good"
+    if lead_min <= CLV_MAX_LEAD_MIN:
+        return "ok"
+    return "stale"
+
+
+def clv_counts(quality):
+    """Only these qualities are allowed into any reported CLV average."""
+    return quality in ("good", "ok")
 
 # Teams with massive public following — market odds often biased downward by casual bettors.
 # When model probability is significantly lower than market-implied, flag as possible public trap.
@@ -1923,12 +1968,21 @@ def add_bet(bet_data):
     if _ct:
         commence = _ct.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # Provenance of the edge (see the bets migration). Constrained to the known
+    # vocabulary so a malformed client can't poison the split later.
+    _SOURCES = {"blend", "pinnacle", "betfair", "xg_model"}
+    _AGREEMENTS = {"agree", "single", "diverge_sharp", "diverge_model", "model_only"}
+    odds_source = bet_data.get("odds_source")
+    odds_source = odds_source if odds_source in _SOURCES else None
+    ref_agreement = bet_data.get("ref_agreement")
+    ref_agreement = ref_agreement if ref_agreement in _AGREEMENTS else None
+
     cur.execute("""
         INSERT INTO bets (
             placed_at, event_id, sport_name, home_team, away_team, commence_time,
             market, selection, bookmaker, odds, stake,
-            pin_implied_prob, edge_pct, notes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            pin_implied_prob, edge_pct, notes, odds_source, ref_agreement
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         bet_data.get("placed_at") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         bet_data.get("event_id"),
@@ -1944,6 +1998,8 @@ def add_bet(bet_data):
         pin_implied,
         edge_pct,
         bet_data.get("notes"),
+        odds_source,
+        ref_agreement,
     ))
     bet_id = cur.lastrowid
     conn.commit()
@@ -2012,10 +2068,32 @@ def get_bets(limit=200):
         # happened. Before that, a captured "close" can be premature (esp. tennis,
         # whose scheduled time != actual start), so we report it as pending (None)
         # rather than a definitive-looking number.
+        #
+        # VALIDITY GATE: a close captured long before kickoff is not a close. We
+        # compute how many minutes before kickoff the snapshot was taken and only
+        # publish clv_pct when that lead time is defensible. Stale ones are still
+        # returned — as clv_pct_unverified + clv_lead_min — so the UI can show the
+        # number greyed out with the reason, instead of either hiding the problem
+        # or presenting a meaningless figure as if it were evidence.
+        lead_min = None
+        ko = _parse_ts(d.get("commence_time"))
+        cap = _parse_ts(d.get("pin_close_captured_at"))
+        if ko and cap:
+            lead_min = round((ko - cap).total_seconds() / 60.0)
+        d["clv_lead_min"] = lead_min
+        quality = clv_quality(lead_min)
+        d["clv_quality"] = quality
+
+        raw = None
         if d.get("status") == "settled" and d.get("odds") and d.get("pin_close_fair_odds"):
-            d["clv_pct"] = round((d["odds"] / d["pin_close_fair_odds"] - 1) * 100, 2)
+            raw = round((d["odds"] / d["pin_close_fair_odds"] - 1) * 100, 2)
+
+        if raw is not None and clv_counts(quality):
+            d["clv_pct"] = raw
+            d["clv_pct_unverified"] = None
         else:
             d["clv_pct"] = None
+            d["clv_pct_unverified"] = raw
         bets.append(d)
     return bets
 
@@ -2042,17 +2120,30 @@ def get_bet_stats():
     # CLV stats — only SETTLED bets with a real captured close (consistent with the
     # per-bet rule: no premature/pending closes in the aggregate CLV). No-vig:
     # measured against the DEVIGGED close, same ruler as the per-bet clv_pct.
+    #
+    # Same validity gate as get_bets(): a close captured hours before kickoff is
+    # not a close, so it must not enter the headline average. Averaging stale
+    # closes was making the dashboard report a confident "avg CLV" that largely
+    # just restated the entry edge.
     clv = conn.execute("""
-        SELECT odds, pin_close_fair_odds FROM bets
+        SELECT odds, pin_close_fair_odds, commence_time, pin_close_captured_at
+        FROM bets
         WHERE status='settled' AND pin_close_fair_odds IS NOT NULL AND odds IS NOT NULL
     """).fetchall()
 
-    clv_values = []
+    clv_values, n_stale = [], 0
     for row in clv:
         try:
-            clv_values.append((row["odds"] / row["pin_close_fair_odds"] - 1) * 100)
+            value = (row["odds"] / row["pin_close_fair_odds"] - 1) * 100
         except Exception:
-            pass
+            continue
+        ko = _parse_ts(row["commence_time"])
+        cap = _parse_ts(row["pin_close_captured_at"])
+        lead = round((ko - cap).total_seconds() / 60.0) if (ko and cap) else None
+        if clv_counts(clv_quality(lead)):
+            clv_values.append(value)
+        else:
+            n_stale += 1
 
     avg_clv = round(sum(clv_values) / len(clv_values), 2) if clv_values else None
     positive_clv_pct = round(sum(1 for v in clv_values if v > 0) / len(clv_values) * 100, 1) if clv_values else None
@@ -2080,6 +2171,11 @@ def get_bet_stats():
         "avg_clv": avg_clv,
         "positive_clv_rate": positive_clv_pct,
         "clv_sample": len(clv_values),
+        # How many settled bets HAVE a stored close that we refused to count
+        # because it was captured too long before kickoff. Surfaced in My Bets so
+        # a small clv_sample reads as "the capture is broken", not "no data yet".
+        "clv_stale": n_stale,
+        "clv_max_lead_min": CLV_MAX_LEAD_MIN,
     }
 
 
