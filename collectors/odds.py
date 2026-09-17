@@ -86,6 +86,14 @@ BOOKMAKERS = "pinnacle,bet365,unibet_eu,williamhill,betfair_ex_eu,bwin,betway,ma
 _LAST_REMAINING = {"v": None}
 _LAST_COST = {"v": 0}        # credits billed by the most recent API call (x-requests-last)
 IMMINENT_MIN_QUOTA = int(os.environ.get("IMMINENT_MIN_QUOTA", "50"))  # HARD BRAKE: skip ALL non-essential refreshes below this.
+# ...but the near-kickoff CLOSING capture is not "non-essential": it is the single
+# highest-value credit we spend, because it is the only thing that makes a bet
+# verifiable afterwards. Holding it to the same 50-credit reserve as routine
+# refreshes is what produced the measured damage — 67% of stored closes were
+# captured more than 6h before kickoff (median 9h), leaving the CLV meaningless.
+# Closing mode gets its own, far lower reserve so it keeps running when the
+# routine refreshes have already stood down.
+CLOSING_MIN_QUOTA = int(os.environ.get("CLOSING_MIN_QUOTA", "5"))
 
 # SCOPE (free-tier conservation): auto-collection — full sweep + imminent + closing —
 # is limited to FOOTBALL and TENNIS only. All other sports (basketball, cricket, MMA,
@@ -447,8 +455,11 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
 
     if not API_KEY:
         return 0
-    if _LAST_REMAINING["v"] is not None and _LAST_REMAINING["v"] < IMMINENT_MIN_QUOTA:
-        cb(f"Imminent refresh: skipped (quota low: {_LAST_REMAINING['v']} left).")
+    # Closing mode (within_minutes set) is the priority spend — see CLOSING_MIN_QUOTA.
+    min_quota = CLOSING_MIN_QUOTA if within_minutes is not None else IMMINENT_MIN_QUOTA
+    if _LAST_REMAINING["v"] is not None and _LAST_REMAINING["v"] < min_quota:
+        cb(f"{'Closing' if within_minutes is not None else 'Imminent'} refresh: "
+           f"skipped (quota low: {_LAST_REMAINING['v']} left, floor {min_quota}).")
         return 0
 
     def keys_in_window(interval):
@@ -530,8 +541,9 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
         fetched += 1
         if events:
             total += parse_and_store(events, sk, SPORT_GROUPS.get(sk) or _pretty_sport_name(sk))
-        if _LAST_REMAINING["v"] is not None and _LAST_REMAINING["v"] < IMMINENT_MIN_QUOTA:
-            cb(f"Imminent refresh: stopping early (quota low: {_LAST_REMAINING['v']} left).")
+        if _LAST_REMAINING["v"] is not None and _LAST_REMAINING["v"] < min_quota:
+            cb(f"{'Closing' if within_minutes is not None else 'Imminent'} refresh: "
+               f"stopping early (quota low: {_LAST_REMAINING['v']} left, floor {min_quota}).")
             break
     cb(f"Imminent refresh: {total} events, {fetched} fetched / {skipped} throttled "
        f"(of {len(targets)} in-scope sport(s) <{window_desc}). Credits left: {remaining}")
