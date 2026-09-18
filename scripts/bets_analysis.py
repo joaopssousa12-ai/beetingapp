@@ -129,17 +129,25 @@ def readiness(raw):
     except Exception as e:
         print(f"  [?  ] quota nao lida: {e}")
     if quota:
-        rem = quota.get("remaining")
+        # The counter lives under "the_odds_api"; it is null until the first fetch
+        # after a cold start, which is a different situation from "no credits".
+        api = quota.get("the_odds_api") or quota
+        rem = api.get("remaining")
         try:
             rem_i = int(rem)
         except (TypeError, ValueError):
             rem_i = None
-        ok = rem_i is not None and rem_i >= 5      # CLOSING_MIN_QUOTA
-        print(f"  [{'OK ' if ok else 'NAO'}] creditos: {rem} restantes "
-              f"(a captura do fecho precisa de >=5; a rotina de >=50)")
-        if rem_i is not None and rem_i < 50:
-            print("       abaixo de 50 os refreshes de rotina ja' estao parados,")
-            print("       mas a captura do fecho continua — e' a prioridade.")
+        if rem_i is None:
+            print("  [?  ] creditos: desconhecidos — o contador so' e' preenchido")
+            print("        na primeira chamada a Odds API depois de um arranque a frio.")
+            print(f"        (travao ativo agora: {api.get('brake_active')})")
+        else:
+            ok = rem_i >= 5      # CLOSING_MIN_QUOTA
+            print(f"  [{'OK ' if ok else 'NAO'}] creditos: {rem_i} restantes "
+                  f"(o fecho precisa de >=5; a rotina de >=50)")
+            if rem_i < 50:
+                print("       abaixo de 50 os refreshes de rotina estao parados,")
+                print("       mas a captura do fecho continua — e' a prioridade.")
 
     pend = [b for b in raw if b.get("status") == "pending"]
     no_ev = [b for b in pend if not b.get("event_id")]
