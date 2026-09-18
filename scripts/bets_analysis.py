@@ -109,9 +109,49 @@ def group_report(bets, keyfn, label, min_n=1):
                  "break-even", "edge méd", "CLV* méd"])
 
 
+def readiness(raw):
+    """Is production actually running the honest-CLV contract, and can it pay for
+    the captures? Both must be true before a newly registered bet can ever get a
+    real CLV, so answer it explicitly instead of assuming."""
+    h("0. PRONTIDAO — a aposta que eu registar HOJE vai ter CLV a serio?")
+    sample = raw[0] if raw else {}
+    deployed = "clv_quality" in sample and "clv_lead_min" in sample
+    print(f"  [{'OK ' if deployed else 'NAO'}] codigo novo em producao")
+    if not deployed:
+        print("       /api/bets ainda nao devolve clv_quality/clv_lead_min.")
+        print("       FALTA O MANUAL DEPLOY NO RENDER — sem isso nada mudou.")
+
+    base = URL.split("/api/")[0]
+    quota = None
+    try:
+        with urllib.request.urlopen(base + "/api/diag/quota", timeout=60) as r:
+            quota = json.load(r)
+    except Exception as e:
+        print(f"  [?  ] quota nao lida: {e}")
+    if quota:
+        rem = quota.get("remaining")
+        try:
+            rem_i = int(rem)
+        except (TypeError, ValueError):
+            rem_i = None
+        ok = rem_i is not None and rem_i >= 5      # CLOSING_MIN_QUOTA
+        print(f"  [{'OK ' if ok else 'NAO'}] creditos: {rem} restantes "
+              f"(a captura do fecho precisa de >=5; a rotina de >=50)")
+        if rem_i is not None and rem_i < 50:
+            print("       abaixo de 50 os refreshes de rotina ja' estao parados,")
+            print("       mas a captura do fecho continua — e' a prioridade.")
+
+    pend = [b for b in raw if b.get("status") == "pending"]
+    no_ev = [b for b in pend if not b.get("event_id")]
+    print(f"  [{'OK ' if not no_ev else 'AV '}] apostas pendentes: {len(pend)}"
+          + (f", {len(no_ev)} SEM event_id (essas nunca terao CLV)" if no_ev else ""))
+    return deployed
+
+
 def main():
     raw = fetch()
     print(f"Fonte: {URL}\nApostas recebidas: {len(raw)}")
+    readiness(raw)
 
     bets = []
     for b in raw:
