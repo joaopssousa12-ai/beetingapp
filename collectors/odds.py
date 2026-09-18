@@ -94,6 +94,10 @@ IMMINENT_MIN_QUOTA = int(os.environ.get("IMMINENT_MIN_QUOTA", "50"))  # HARD BRA
 # Closing mode gets its own, far lower reserve so it keeps running when the
 # routine refreshes have already stood down.
 CLOSING_MIN_QUOTA = int(os.environ.get("CLOSING_MIN_QUOTA", "5"))
+# Closing capture targets only leagues holding a TRACKED PENDING bet, so its cost
+# scales with how much you bet (~1 credit/bet) instead of with the fixture list.
+# Set to "0" to go back to refreshing every league with an imminent game.
+CLOSING_TRACKED_ONLY = os.environ.get("CLOSING_TRACKED_ONLY", "1") != "0"
 
 # SCOPE (free-tier conservation): auto-collection — full sweep + imminent + closing —
 # is limited to FOOTBALL and TENNIS only. All other sports (basketball, cricket, MMA,
@@ -482,9 +486,25 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
     targets = []
     if within_minutes is not None:
         window_desc = f"{int(within_minutes)}min"
-        for k in keys_in_window(f"+{int(within_minutes)} minutes"):
-            if _sport_class(k):
-                targets.append(k)
+        # Closing mode: spend credits ONLY where they buy a verifiable bet — the
+        # leagues holding a tracked pending bet about to start. Fetching every
+        # league with an imminent fixture cost 1 credit per league per tick, 96
+        # ticks a day, for games we had no money on; that burn is what kept
+        # emptying the quota and starving the captures that mattered.
+        if CLOSING_TRACKED_ONLY:
+            from collectors.database import sport_keys_with_pending_bets
+            tracked = sport_keys_with_pending_bets(within_minutes)
+            targets = [k for k in tracked if _sport_class(k)]
+            if not targets:
+                cb(f"Closing refresh: no TRACKED bet kicking off in <{window_desc} "
+                   f"— 0 credits spent.")
+                return 0
+            cb(f"Closing refresh: {len(targets)} league(s) with a tracked bet "
+               f"in <{window_desc}.")
+        else:
+            for k in keys_in_window(f"+{int(within_minutes)} minutes"):
+                if _sport_class(k):
+                    targets.append(k)
     else:
         window_desc = "F6h/T3h"
         seen = set()
@@ -529,9 +549,16 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
     now = datetime.utcnow()
     for sk in targets:
         cls = _sport_class(sk)
-        # Closing job + football → no throttle (cheap, true 15-min close). Otherwise
-        # the per-sport throttle (esp. tennis) caps an all-day tournament.
-        throttle = 0 if (within_minutes is not None and cls == "football") else IMMINENT_CFG[cls]["throttle_min"]
+        # The per-sport throttle exists to stop an all-day tennis tournament from
+        # draining quota when we refresh by FIXTURE. In tracked-only closing mode
+        # the target list is already bounded by the bet log, so throttling there
+        # buys nothing and costs accuracy: it was pushing tennis closes up to an
+        # hour late, or skipping them altogether. Football in closing mode was
+        # already unthrottled for the same reason.
+        if within_minutes is not None and (CLOSING_TRACKED_ONLY or cls == "football"):
+            throttle = 0
+        else:
+            throttle = IMMINENT_CFG[cls]["throttle_min"]
         last = _LAST_IMMINENT_FETCH.get(sk)
         if throttle and last and (now - last).total_seconds() < throttle * 60:
             skipped += 1

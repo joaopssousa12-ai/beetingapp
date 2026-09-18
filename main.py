@@ -661,7 +661,11 @@ async def run_closing_capture():
     try:
         from collectors.odds import refresh_imminent_odds
         # 1) Snapshot the near-close line for games starting in the next ~20 min.
-        await loop.run_in_executor(None, lambda: refresh_imminent_odds(within_minutes=20))
+        # 45-min window on a */15 cron ≈ 3 snapshot attempts per tracked game, so a
+        # single missed tick (Render asleep, a slow cold start) no longer costs us
+        # the close. Affordable because closing mode now fetches only leagues with
+        # a tracked pending bet: ~3 credits per bet, not per league per tick.
+        await loop.run_in_executor(None, lambda: refresh_imminent_odds(within_minutes=45))
         # 2) Backfill pin_close_odds for any bet whose game has now kicked off.
         n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
         if n and n > 0:

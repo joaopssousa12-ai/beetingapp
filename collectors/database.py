@@ -2745,6 +2745,32 @@ def xg_based_probability(home_team, away_team):
     }
 
 
+def sport_keys_with_pending_bets(within_minutes):
+    """Sport keys that have a TRACKED PENDING bet kicking off in the next N minutes.
+
+    The closing capture used to re-fetch every football/tennis league that had any
+    game about to start — 96 cron ticks a day, 1 credit per league per tick, whether
+    or not a single one of those games was backed. The only games whose closing line
+    we actually need are the ones we have money on, so target those instead: the
+    cost stops scaling with the fixture list and starts scaling with the bet log
+    (~1 credit per bet), which is what makes spending credits here affordable.
+    """
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT DISTINCT e.sport_key FROM bets b "
+            "JOIN odds_events e ON e.event_id = b.event_id "
+            "WHERE b.status = 'pending' AND b.event_id IS NOT NULL "
+            "AND e.commence_time > datetime('now') "
+            f"AND e.commence_time < datetime('now', '+{int(within_minutes)} minutes')"
+        ).fetchall()
+        conn.close()
+        return [r["sport_key"] for r in rows if r["sport_key"]]
+    except Exception as e:
+        print(f"sport_keys_with_pending_bets error: {e}", flush=True)
+        return []
+
+
 def get_line_movement(event_id):
     """
     Returns line movement data. Uses best available reference per snapshot:
