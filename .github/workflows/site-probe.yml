@@ -14,49 +14,50 @@ jobs:
       - name: Fetch the page and the served assets
         run: |
           B=https://beetingapp-1.onrender.com
+
           echo "===== GET / ====="
-          curl -sS -o page.html -D headers.txt -m 120 -w 'STATUS=%{http_code} BYTES=%{size_download} TIME=%{time_total}s\n' "$B/" || true
+          curl -sS -o page.html -D headers.txt -m 120 \
+               -w 'STATUS=%{http_code} BYTES=%{size_download} TIME=%{time_total}s\n' "$B/" || true
           grep -iE '^HTTP|^content-type|^content-length' headers.txt || true
-          echo
-          echo "--- does the page reference the bundle, and with which cache-buster? ---"
+
+          echo "--- script tag + cache-buster ---"
           grep -oE '/static/js/app\.js\?v=[0-9]+' page.html | head -1 || echo "NO SCRIPT TAG FOUND"
           echo "--- first bytes of the page ---"
-          head -c 400 page.html; echo
+          head -c 300 page.html; echo
 
-          echo
+          echo ""
           echo "===== GET the served app.js ====="
           ASSET=$(grep -oE '/static/js/app\.js\?v=[0-9]+' page.html | head -1)
-          curl -sS -o app.js -m 120 -w 'STATUS=%{http_code} BYTES=%{size_download}\n' "$B${ASSET:-/static/js/app.js}" || true
+          curl -sS -o app.js -m 120 -w 'STATUS=%{http_code} BYTES=%{size_download}\n' \
+               "$B${ASSET:-/static/js/app.js}" || true
 
-          echo
+          echo ""
           echo "===== does the served JS parse? ====="
-          node --check app.js && echo "PARSE OK" || echo "PARSE FAILED — the page would be blank"
+          node --check app.js && echo "PARSE OK" || echo "PARSE FAILED - the page would be blank"
 
-          echo
-          echo "===== is the NEW code deployed? (markers from this work) ====="
+          echo ""
+          echo "===== is the NEW code deployed? ====="
           for marker in pinCoversMarket clv_pct_unverified clearBetFormFields; do
-            if grep -q "$marker" app.js; then echo "  [OK ] $marker presente"; else echo "  [NAO] $marker AUSENTE"; fi
+            if grep -q "$marker" app.js; then
+              echo "  [OK ] $marker presente"
+            else
+              echo "  [NAO] $marker AUSENTE"
+            fi
           done
 
-          echo
+          echo ""
           echo "===== API endpoints ====="
-          for p in /healthz /api/stats /api/bets?limit=1 /api/value-bets; do
+          for p in "/healthz" "/api/stats" "/api/bets?limit=1" "/api/value-bets"; do
             echo -n "  $p -> "
-            curl -sS -o /dev/null -m 120 -w 'HTTP %{http_code} (%{time_total}s, %{size_download} bytes)\n' "$B$p" || echo FAIL
+            curl -sS -o /dev/null -m 120 \
+                 -w 'HTTP %{http_code} (%{time_total}s, %{size_download} bytes)\n' "$B$p" || echo FAIL
           done
 
-          echo
-          echo "===== new CLV contract live? ====="
-          curl -sS -m 120 "$B/api/bets?limit=1" | python3 -c '
-import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception as e:
-    print("  resposta nao e JSON:", e); raise SystemExit
-b = d[0] if d else {}
-for f in ("clv_quality","clv_lead_min","clv_pct_unverified","odds_source","ref_agreement"):
-    print(f"  [{'OK ' if f in b else 'NAO'}] {f}")
-' || true
-          echo
-          echo "===== quota ====="
-          curl -sS -m 120 "$B/api/diag/quota" || true
+      - uses: actions/checkout@v4
+      - name: Is the honest-CLV contract live?
+        run: |
+          curl -sS -m 120 "https://beetingapp-1.onrender.com/api/bets?limit=1" -o one.json || true
+          python3 scripts/check_contract.py one.json
+
+      - name: Quota
+        run: curl -sS -m 120 "https://beetingapp-1.onrender.com/api/diag/quota" || true
