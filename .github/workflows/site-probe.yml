@@ -1,0 +1,62 @@
+name: site-probe
+
+# Is the live site actually broken, or is it the viewer's browser/network?
+# Fetches the real page and the real served JS, checks the JS parses, and looks
+# for markers of the deployed version. Read-only, no API credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch the page and the served assets
+        run: |
+          B=https://beetingapp-1.onrender.com
+          echo "===== GET / ====="
+          curl -sS -o page.html -D headers.txt -m 120 -w 'STATUS=%{http_code} BYTES=%{size_download} TIME=%{time_total}s\n' "$B/" || true
+          grep -iE '^HTTP|^content-type|^content-length' headers.txt || true
+          echo
+          echo "--- does the page reference the bundle, and with which cache-buster? ---"
+          grep -oE '/static/js/app\.js\?v=[0-9]+' page.html | head -1 || echo "NO SCRIPT TAG FOUND"
+          echo "--- first bytes of the page ---"
+          head -c 400 page.html; echo
+
+          echo
+          echo "===== GET the served app.js ====="
+          ASSET=$(grep -oE '/static/js/app\.js\?v=[0-9]+' page.html | head -1)
+          curl -sS -o app.js -m 120 -w 'STATUS=%{http_code} BYTES=%{size_download}\n' "$B${ASSET:-/static/js/app.js}" || true
+
+          echo
+          echo "===== does the served JS parse? ====="
+          node --check app.js && echo "PARSE OK" || echo "PARSE FAILED — the page would be blank"
+
+          echo
+          echo "===== is the NEW code deployed? (markers from this work) ====="
+          for marker in pinCoversMarket clv_pct_unverified clearBetFormFields; do
+            if grep -q "$marker" app.js; then echo "  [OK ] $marker presente"; else echo "  [NAO] $marker AUSENTE"; fi
+          done
+
+          echo
+          echo "===== API endpoints ====="
+          for p in /healthz /api/stats /api/bets?limit=1 /api/value-bets; do
+            echo -n "  $p -> "
+            curl -sS -o /dev/null -m 120 -w 'HTTP %{http_code} (%{time_total}s, %{size_download} bytes)\n' "$B$p" || echo FAIL
+          done
+
+          echo
+          echo "===== new CLV contract live? ====="
+          curl -sS -m 120 "$B/api/bets?limit=1" | python3 -c '
+import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    print("  resposta nao e JSON:", e); raise SystemExit
+b = d[0] if d else {}
+for f in ("clv_quality","clv_lead_min","clv_pct_unverified","odds_source","ref_agreement"):
+    print(f"  [{'OK ' if f in b else 'NAO'}] {f}")
+' || true
+          echo
+          echo "===== quota ====="
+          curl -sS -m 120 "$B/api/diag/quota" || true
