@@ -47,8 +47,15 @@ def check(name, cond, detail=""):
         failures += 1
 
 
-def run_closing(window=45):
-    """Run a closing pass with the network stubbed; return the leagues fetched."""
+def run_closing(window=45, fresh=True):
+    """Run a closing pass with the network stubbed; return the leagues fetched.
+
+    fresh=True clears the per-sport throttle clock first, so a scenario is not
+    silently skipped just because an earlier scenario in this file already
+    fetched the same league.
+    """
+    if fresh:
+        odds._LAST_IMMINENT_FETCH.clear()
     calls.clear()
     odds.refresh_imminent_odds(status_callback=lambda m: None, within_minutes=window)
     return list(calls)
@@ -100,16 +107,36 @@ def main():
     conn.close()
     check("zero credits when nothing is backed", run_closing() == [], "spent credits anyway")
 
-    # ── 3. The throttle must not delay a tracked close ───────────────────────
-    print("\n3. The per-sport throttle no longer delays a tracked close")
+    # ── 3. The throttle is bounded, so the close lands near kickoff ──────────
+    #
+    # The guard now calls the capture every ~4 min while it holds the app awake
+    # through kickoff, so SOME throttle is needed or each ping buys a credit for
+    # the same league. What matters is that it is short enough that the last
+    # fetch still lands near kickoff — the old tennis throttle (60 min) was not.
+    print("\n3. The closing throttle is bounded, not the 60-min routine one")
     conn = db.get_connection()
     conn.execute("UPDATE bets SET status='pending' WHERE id=?", (bet_id,))
     conn.commit()
     conn.close()
-    first, second = run_closing(), run_closing()
-    check("two consecutive passes both capture (tennis throttle was 60min)",
-          len(first) == 1 and len(second) == 1,
-          f"first={first} second={second} — throttle still blocking")
+
+    check("closing throttle is at most 10 min",
+          odds.CLOSING_THROTTLE_MIN <= 10, f"got {odds.CLOSING_THROTTLE_MIN}min")
+    check("...and far below the routine tennis throttle",
+          odds.CLOSING_THROTTLE_MIN < odds.IMMINENT_CFG["tennis"]["throttle_min"],
+          f"closing={odds.CLOSING_THROTTLE_MIN} tennis={odds.IMMINENT_CFG['tennis']['throttle_min']}")
+
+    first = run_closing()
+    repeat = run_closing(fresh=False)        # immediately again — must be throttled
+    check("an immediate repeat is throttled (no wasted credit)",
+          len(first) == 1 and repeat == [],
+          f"first={first} repeat={repeat}")
+
+    # Wind the throttle clock back past the window: the next pass must capture.
+    for key in list(odds._LAST_IMMINENT_FETCH):
+        odds._LAST_IMMINENT_FETCH[key] -= timedelta(minutes=odds.CLOSING_THROTTLE_MIN + 1)
+    later = run_closing(fresh=False)
+    check("once the throttle elapses it captures again (so a close lands near KO)",
+          later == ["tennis_atp_us_open"], f"got {later}")
 
     # ── 4. Quota floors ──────────────────────────────────────────────────────
     print("\n4. A low balance stops routine refreshes before the closing capture")

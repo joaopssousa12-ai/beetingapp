@@ -98,6 +98,12 @@ CLOSING_MIN_QUOTA = int(os.environ.get("CLOSING_MIN_QUOTA", "5"))
 # scales with how much you bet (~1 credit/bet) instead of with the fixture list.
 # Set to "0" to go back to refreshing every league with an imminent game.
 CLOSING_TRACKED_ONLY = os.environ.get("CLOSING_TRACKED_ONLY", "1") != "0"
+# The closing-guard now calls /api/closing/run on every ping (~every 4 min) while
+# it holds the app awake through kickoff. Without a throttle each of those pings
+# would buy a fresh credit for the same league. 8 minutes means ~3 fetches across
+# a 40-minute guard window — the last of them within ~8 min of kickoff, which is
+# a genuine close — for ~3 credits per backed game.
+CLOSING_THROTTLE_MIN = int(os.environ.get("CLOSING_THROTTLE_MIN", "8"))
 
 # SCOPE (free-tier conservation): auto-collection — full sweep + imminent + closing —
 # is limited to FOOTBALL and TENNIS only. All other sports (basketball, cricket, MMA,
@@ -555,7 +561,9 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
         # buys nothing and costs accuracy: it was pushing tennis closes up to an
         # hour late, or skipping them altogether. Football in closing mode was
         # already unthrottled for the same reason.
-        if within_minutes is not None and (CLOSING_TRACKED_ONLY or cls == "football"):
+        if within_minutes is not None and CLOSING_TRACKED_ONLY:
+            throttle = CLOSING_THROTTLE_MIN
+        elif within_minutes is not None and cls == "football":
             throttle = 0
         else:
             throttle = IMMINENT_CFG[cls]["throttle_min"]

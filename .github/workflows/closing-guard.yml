@@ -84,17 +84,27 @@ jobs:
           for ko, name in sorted(imminent):
               print(f"Guarding: {name} — kickoff {ko} UTC")
 
-          # Ping every 4 min (Render spin-down threshold is 15 min idle) until 5 min
-          # past the last kickoff, so the in-app */15 closing job fires inside its
-          # 20-min pre-KO window and writes the true closing snapshot.
+          # Every 4 min until 5 min past the last kickoff: wake the app AND drive the
+          # capture ourselves.
+          #
+          # Pinging alone was not enough. Bet #62 was guarded exactly like this — the
+          # guard held the app up from 15:57 through a 16:30 kickoff — and the match
+          # still ended with ONE snapshot, taken 10.9h earlier, because the in-app
+          # */15 cron never produced one in that window. So we stop depending on the
+          # internal scheduler and call the capture endpoint directly. It is throttled
+          # per sport (CLOSING_THROTTLE_MIN) and only fetches leagues holding a tracked
+          # pending bet, so repeated calls cost ~3 credits for the whole window.
           last_ko = max(ko for ko, _ in imminent)
           deadline = min(last_ko + timedelta(minutes=5), now + timedelta(minutes=90))
           while datetime.utcnow() < deadline:
               try:
                   get("/healthz")
-                  print(f"{datetime.utcnow():%H:%M:%S} ping ok", flush=True)
+                  r = post("/api/closing/run?within=45")
+                  print(f"{datetime.utcnow():%H:%M:%S} capture: stored={r.get('events_stored')} "
+                        f"filled={r.get('closes_filled')} {('; '.join(r.get('messages') or []))[:160]}",
+                        flush=True)
               except Exception as e:
-                  print(f"{datetime.utcnow():%H:%M:%S} ping failed: {e}", flush=True)
+                  print(f"{datetime.utcnow():%H:%M:%S} capture failed: {e}", flush=True)
               time.sleep(240)
 
           # Kickoff passed — capture the close from the snapshots just written.

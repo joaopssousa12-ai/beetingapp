@@ -49,6 +49,13 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 collection_status = {"running": False, "messages": [], "last_run": None}
+# Live state of the */15 closing-line capture. In-memory, so it resets on every
+# cold start — which is itself the signal: on Render's free tier the process is
+# recycled constantly, and a counter that is always 0 or 1 means the job has had
+# no chance to run near any kickoff. Read via /api/diag/closing.
+closing_state = {"ticks": 0, "last_tick_at": None, "last_ok_at": None,
+                 "last_result": "never ran in this process", "last_filled": 0,
+                 "last_refresh_msgs": [], "started_at": None}
 scheduler = AsyncIOScheduler()
 
 @app.on_event("startup")
@@ -96,6 +103,8 @@ async def startup():
         # was unbounded; captured closes live on the bets rows, so CLV is safe).
         scheduler.add_job(lambda: asyncio.create_task(run_history_purge()), "cron", hour=4, minute=10)
         scheduler.start()
+        from datetime import datetime as _dt0
+        closing_state["started_at"] = _dt0.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         print("Scheduler started.", flush=True)
     except Exception as e:
         print(f"SCHEDULER ERROR: {e}", flush=True)
@@ -655,23 +664,43 @@ async def run_closing_capture():
          as pin_close_odds. Real CLV = (your_odds / pin_close - 1), shown in My Bets
          and /api/backtest/clv. The user only registers the bet + result; this does
          the rest."""
+    # Every tick is recorded, including the ones that do nothing. Without this the
+    # job is invisible: the audit of bet #62 found a single odds_history snapshot
+    # for the whole match (taken 10.9h before kickoff) and there was no way to tell
+    # whether this job had never fired, had fired and found no target, or had
+    # errored. /api/diag/closing reads this back.
+    from datetime import datetime as _dt
+    stamp = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    closing_state["ticks"] = closing_state.get("ticks", 0) + 1
+    closing_state["last_tick_at"] = stamp
+
     if collection_status.get("running"):
+        closing_state["last_result"] = "skipped: a collection was already running"
+        print(f"CLOSING_CAPTURE {stamp}: skipped (collection running).", flush=True)
         return
     loop = asyncio.get_event_loop()
     try:
         from collectors.odds import refresh_imminent_odds
-        # 1) Snapshot the near-close line for games starting in the next ~20 min.
+        # 1) Snapshot the near-close line for games starting in the next ~45 min.
         # 45-min window on a */15 cron ≈ 3 snapshot attempts per tracked game, so a
         # single missed tick (Render asleep, a slow cold start) no longer costs us
         # the close. Affordable because closing mode now fetches only leagues with
         # a tracked pending bet: ~3 credits per bet, not per league per tick.
-        await loop.run_in_executor(None, lambda: refresh_imminent_odds(within_minutes=45))
+        msgs = []
+        await loop.run_in_executor(
+            None, lambda: refresh_imminent_odds(status_callback=msgs.append, within_minutes=45))
         # 2) Backfill pin_close_odds for any bet whose game has now kicked off.
         n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
-        if n and n > 0:
-            print(f"CLOSING_CAPTURE: filled pin_close_odds for {n} bet(s).", flush=True)
+        closing_state["last_refresh_msgs"] = msgs[-6:]
+        closing_state["last_filled"] = n or 0
+        closing_state["last_result"] = f"ok: {n or 0} close(s) filled"
+        closing_state["last_ok_at"] = stamp
+        print(f"CLOSING_CAPTURE {stamp}: filled {n or 0} | " + " | ".join(msgs[-3:]), flush=True)
     except Exception as e:
         import traceback
+        closing_state["last_result"] = f"ERROR: {type(e).__name__}: {e}"
+        closing_state["last_error_at"] = stamp
+        closing_state["last_traceback"] = traceback.format_exc()[-800:]
         print(f"CLOSING_CAPTURE ERROR: {e}\n{traceback.format_exc()[-400:]}", flush=True)
 
 
@@ -776,6 +805,138 @@ async def api_diag_quota():
             "betfair": "see /api/diag/betfair (free; needs BETFAIR_CERT/KEY)",
         },
     })
+
+@app.post("/api/closing/run")
+@app.get("/api/closing/run")
+async def api_closing_run(within: int = 45):
+    """Run the closing-line capture NOW, synchronously, and report what happened.
+
+    The */15 in-app scheduler can only fire while the process is alive, and on
+    Render's free tier it is asleep most of the time: the audit of bet #62 found
+    exactly ONE snapshot for the whole match, taken 10.9h before kickoff. This
+    endpoint lets the GitHub Actions closing-guard — which demonstrably runs and
+    already holds the app awake through kickoff — drive the capture itself
+    instead of hoping an internal cron tick lands in the same window.
+
+    Credits: closing mode fetches only leagues holding a tracked pending bet and
+    is throttled per sport, so repeated calls during one guard window cost a few
+    credits at most, and zero when nothing is backed.
+    """
+    from collectors.odds import refresh_imminent_odds
+    from datetime import datetime as _dt
+    within = max(5, min(int(within or 45), 180))
+    loop = asyncio.get_event_loop()
+    msgs = []
+    try:
+        stored = await loop.run_in_executor(
+            None, lambda: refresh_imminent_odds(status_callback=msgs.append,
+                                                within_minutes=within))
+        filled = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
+        stamp = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        closing_state["ticks"] = closing_state.get("ticks", 0) + 1
+        closing_state["last_tick_at"] = stamp
+        closing_state["last_ok_at"] = stamp
+        closing_state["last_filled"] = filled or 0
+        closing_state["last_refresh_msgs"] = msgs[-6:]
+        closing_state["last_result"] = f"ok (manual/guard): {filled or 0} close(s) filled"
+        print(f"CLOSING_RUN {stamp} within={within}: stored={stored} filled={filled} | "
+              + " | ".join(msgs[-3:]), flush=True)
+        return JSONResponse({"ok": True, "within_minutes": within,
+                             "events_stored": stored, "closes_filled": filled or 0,
+                             "messages": msgs})
+    except Exception as e:
+        import traceback
+        print(f"CLOSING_RUN ERROR: {e}\n{traceback.format_exc()[-400:]}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}",
+                             "messages": msgs}, status_code=500)
+
+
+@app.get("/api/diag/closing")
+async def api_diag_closing():
+    """READ-ONLY: why is the closing line not being captured?
+
+    Shows, without spending a credit: how many times the */15 job has run in THIS
+    process (it resets on every cold start — a near-zero count is itself the
+    answer), what it last did, and a live dry-run of the targeting query for each
+    window, alongside every pending bet with its minutes-to-kickoff and whether
+    its event is still present in odds_events (the JOIN the targeting depends on).
+    """
+    from collectors.odds import (CLOSING_TRACKED_ONLY, CLOSING_MIN_QUOTA,
+                                 IMMINENT_MIN_QUOTA, _LAST_REMAINING)
+    from collectors.database import sport_keys_with_pending_bets, _parse_ts
+    from datetime import datetime as _dt
+
+    out = {
+        "now_utc": _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "process_uptime": {
+            "started_at": closing_state.get("started_at"),
+            "closing_job_ticks_this_process": closing_state.get("ticks", 0),
+        },
+        "closing_job": {k: v for k, v in closing_state.items() if k != "started_at"},
+        "config": {
+            "CLOSING_TRACKED_ONLY": CLOSING_TRACKED_ONLY,
+            "CLOSING_MIN_QUOTA": CLOSING_MIN_QUOTA,
+            "IMMINENT_MIN_QUOTA": IMMINENT_MIN_QUOTA,
+            "quota_last_remaining": _LAST_REMAINING.get("v"),
+        },
+    }
+
+    # Live dry-run of the targeting query at several windows — no API calls.
+    out["targeting_dry_run"] = {}
+    for w in (15, 45, 120, 360, 1440):
+        try:
+            out["targeting_dry_run"][f"{w}min"] = sport_keys_with_pending_bets(w)
+        except Exception as e:                       # noqa: BLE001 - diagnostics
+            out["targeting_dry_run"][f"{w}min"] = f"ERROR: {type(e).__name__}: {e}"
+
+    # Every pending bet: can the capture even see it?
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, home_team, away_team, commence_time, event_id "
+        "FROM bets WHERE status='pending' ORDER BY commence_time ASC"
+    ).fetchall()
+    pend = []
+    now = _dt.utcnow()
+    for r in rows:
+        d = dict(r)
+        ko = _parse_ts(d.get("commence_time"))
+        mins = round((ko - now).total_seconds() / 60) if ko else None
+        ev = None
+        if d.get("event_id"):
+            try:
+                hit = conn.execute(
+                    "SELECT sport_key, commence_time FROM odds_events WHERE event_id = ?",
+                    (d["event_id"],)).fetchone()
+                ev = dict(hit) if hit else None
+            except Exception as e:                   # noqa: BLE001 - diagnostics
+                ev = f"ERROR: {e}"
+        snaps = 0
+        if d.get("event_id"):
+            try:
+                snaps = conn.execute(
+                    "SELECT COUNT(*) AS n FROM odds_history WHERE event_id = ?",
+                    (d["event_id"],)).fetchone()["n"]
+            except Exception:
+                pass
+        pend.append({
+            "id": d["id"],
+            "match": f'{d.get("home_team")} v {d.get("away_team")}',
+            "kickoff": d.get("commence_time"),
+            "minutes_to_kickoff": mins,
+            "has_event_id": bool(d.get("event_id")),
+            "event_in_odds_events": ev,            # None = the JOIN cannot match
+            "snapshots_so_far": snaps,
+        })
+    conn.close()
+    out["pending_bets"] = pend
+    out["verdict"] = (
+        "A captura so' escreve um fecho se, num tick */15, existir uma aposta "
+        "PENDENTE cujo evento esteja em odds_events com kickoff dentro de 45min. "
+        "Se closing_job_ticks_this_process for ~0, o processo nao esteve vivo "
+        "perto de nenhum pontape de saida."
+    )
+    return JSONResponse(out)
+
 
 @app.get("/api/diag/report")
 async def api_diag_report():
