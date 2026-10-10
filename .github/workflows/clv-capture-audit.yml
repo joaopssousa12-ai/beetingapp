@@ -1,0 +1,32 @@
+name: clv-capture-audit
+
+# Why did a specific bet not get a real closing line? Dumps the full Pinnacle
+# snapshot timeline for its event, plus the collection log, so we can tell
+# "the near-kickoff refresh never ran" from "it ran but wrote nothing".
+# Read-only, no API credits.
+on:
+  workflow_dispatch:
+    inputs:
+      bet_ids:
+        description: "Bet ids, space separated"
+        required: false
+        default: "62 66 61 60"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: CLV capture audit
+        run: python3 scripts/clv_capture_audit.py ${{ github.event.inputs.bet_ids || '62 66 61 60' }}
+
+      - name: Collection log (did the app run near those kickoffs?)
+        run: |
+          curl -sS -m 120 "https://beetingapp-1.onrender.com/api/collection/log" \
+            -o log.json || true
+          python3 -c "import json;d=json.load(open('log.json'));[print(f\"  {r.get('ran_at')}  {r.get('source'):18s} {r.get('message')}\") for r in d[:25]]"
+
+      - name: Collection status
+        run: curl -sS -m 120 "https://beetingapp-1.onrender.com/api/collection/status" || true
