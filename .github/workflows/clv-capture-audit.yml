@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Closing-capture live state (/api/diag/closing)
+        run: |
+          curl -sS -m 150 "https://beetingapp-1.onrender.com/api/diag/closing" -o closing.json || true
+          python3 scripts/show_closing_diag.py closing.json
+
       - name: CLV capture audit
         run: python3 scripts/clv_capture_audit.py ${{ github.event.inputs.bet_ids || '62 66 61 60' }}
 
