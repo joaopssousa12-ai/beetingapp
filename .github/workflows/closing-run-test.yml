@@ -1,0 +1,40 @@
+name: closing-run-test
+
+# One-shot proof that /api/closing/run actually writes a near-kickoff snapshot.
+# Counts snapshots for each pending bet, runs the capture, counts again.
+# Costs ~1 credit per league holding a tracked pending bet inside the window.
+on:
+  workflow_dispatch:
+    inputs:
+      within:
+        description: "Window in minutes to target"
+        required: false
+        default: "240"
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Snapshot counts BEFORE
+        run: |
+          curl -sS -m 150 "https://beetingapp-1.onrender.com/api/diag/closing" -o before.json || true
+          python3 scripts/show_closing_diag.py before.json
+
+      - name: Run the capture
+        run: |
+          W="${{ github.event.inputs.within || '240' }}"
+          echo "POST /api/closing/run?within=$W"
+          curl -sS -m 180 -X POST \
+            "https://beetingapp-1.onrender.com/api/closing/run?within=$W" | python3 -m json.tool || true
+
+      - name: Snapshot counts AFTER
+        run: |
+          sleep 5
+          curl -sS -m 150 "https://beetingapp-1.onrender.com/api/diag/closing" -o after.json || true
+          python3 scripts/show_closing_diag.py after.json
+
+      - name: Did snapshot counts increase?
+        run: python3 scripts/compare_snapshots.py before.json after.json
