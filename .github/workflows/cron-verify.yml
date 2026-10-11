@@ -1,0 +1,36 @@
+name: cron-verify
+
+# Is the EXTERNAL cron (cron-job.org) actually driving the closing capture?
+# One reading proves nothing — this takes two, ~7 minutes apart, and checks the
+# tick counter moved on its own. Read-only here; the credits (if any) are spent
+# by the external cron, not by this workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      wait_seconds:
+        description: "Seconds between the two readings"
+        required: false
+        default: "420"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reading 1
+        run: |
+          curl -sS -m 150 "https://beetingapp-1.onrender.com/api/diag/closing" -o t1.json || true
+          python3 scripts/show_closing_diag.py t1.json
+
+      - name: Wait for the external cron to fire
+        run: sleep "${{ github.event.inputs.wait_seconds || '420' }}"
+
+      - name: Reading 2
+        run: |
+          curl -sS -m 150 "https://beetingapp-1.onrender.com/api/diag/closing" -o t2.json || true
+          python3 scripts/show_closing_diag.py t2.json
+
+      - name: Did the tick counter move on its own?
+        run: python3 scripts/verify_cron.py t1.json t2.json
