@@ -1,0 +1,21 @@
+name: line-drift
+
+# Calibration: how far does the Pinnacle fair price actually move over N hours?
+# That number decides how old the stored reference may be before a 2% edge is
+# inside the noise — i.e. whether the freshness thresholds in the green gate are
+# right. Read-only, no API credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Measure Pinnacle line drift
+        run: |
+          curl -sS -m 240 "https://beetingapp-1.onrender.com/api/diag/line-drift" \
+            -o drift.json || true
+          python3 scripts/show_line_drift.py drift.json
