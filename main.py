@@ -806,6 +806,102 @@ async def api_diag_quota():
         },
     })
 
+@app.get("/api/diag/line-drift")
+async def api_diag_line_drift():
+    """READ-ONLY: how far does the Pinnacle fair price move over N hours?
+
+    The value engine computes edge as (1xBet odd x devigged Pinnacle prob - 1),
+    using whichever Pinnacle price is stored in odds_events. That price is only
+    as fresh as the last collection, which runs once or twice a day. If Pinnacle
+    itself drifts more than a typical green edge (2-3%) over that interval, then
+    an edge measured against a stale reference is noise, not value — and that is
+    the most likely explanation for bets entered at a claimed +2.1% closing at
+    -13.2%.
+
+    This measures the drift directly from odds_history: for every pair of
+    consecutive Pinnacle snapshots of the same event, the relative move of the
+    DEVIGGED home price, bucketed by how many hours apart they were. Compare the
+    median move in a bucket against the edge you would act on.
+    """
+    from collectors.database import remove_vig_power, _parse_ts
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT event_id, captured_at, pin_home, pin_draw, pin_away "
+            "FROM odds_history "
+            "WHERE pin_home IS NOT NULL AND pin_away IS NOT NULL "
+            "ORDER BY event_id, captured_at ASC"
+        ).fetchall()
+    except Exception as e:                           # noqa: BLE001 - diagnostics
+        conn.close()
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+    conn.close()
+
+    # Group snapshots per event, in time order.
+    series = {}
+    for r in rows:
+        d = dict(r)
+        series.setdefault(d["event_id"], []).append(d)
+
+    def fair_home(snap):
+        dv = remove_vig_power(snap.get("pin_home"), snap.get("pin_draw"), snap.get("pin_away"))
+        if not dv or not dv.get("home"):
+            return None
+        return 100.0 / dv["home"]                    # fair decimal odds for home
+
+    buckets = {"0-1h": [], "1-3h": [], "3-6h": [], "6-12h": [], "12-24h": [], "24h+": []}
+
+    def bucket_for(hours):
+        if hours < 1: return "0-1h"
+        if hours < 3: return "1-3h"
+        if hours < 6: return "3-6h"
+        if hours < 12: return "6-12h"
+        if hours < 24: return "12-24h"
+        return "24h+"
+
+    pairs = 0
+    for snaps in series.values():
+        if len(snaps) < 2:
+            continue
+        for a, b in zip(snaps, snaps[1:]):
+            ta, tb = _parse_ts(a["captured_at"]), _parse_ts(b["captured_at"])
+            if not ta or not tb:
+                continue
+            hours = (tb - ta).total_seconds() / 3600.0
+            if hours <= 0:
+                continue
+            fa, fb = fair_home(a), fair_home(b)
+            if not fa or not fb:
+                continue
+            move_pct = abs(fb / fa - 1.0) * 100.0
+            buckets[bucket_for(hours)].append(move_pct)
+            pairs += 1
+
+    def summarise(vals):
+        if not vals:
+            return {"n": 0}
+        s = sorted(vals)
+        def pct(p):
+            return round(s[min(len(s) - 1, int(p * len(s)))], 2)
+        return {"n": len(s), "median_move_pct": pct(0.50),
+                "p75": pct(0.75), "p90": pct(0.90),
+                "share_above_2pct": round(sum(1 for v in s if v > 2) / len(s) * 100, 1),
+                "share_above_3pct": round(sum(1 for v in s if v > 3) / len(s) * 100, 1)}
+
+    out = {
+        "events_with_multiple_snapshots": sum(1 for v in series.values() if len(v) >= 2),
+        "snapshot_pairs_measured": pairs,
+        "drift_by_gap": {k: summarise(v) for k, v in buckets.items()},
+        "how_to_read": (
+            "median_move_pct e' quanto o preco JUSTO da Pinnacle se mexeu, em "
+            "percentagem, entre dois snapshots separados por aquele intervalo. "
+            "Se for maior do que o edge que aceitas como verde (2-3%), um edge "
+            "calculado contra uma referencia dessa idade esta' dentro do ruido."
+        ),
+    }
+    return JSONResponse(out)
+
+
 @app.post("/api/closing/run")
 @app.get("/api/closing/run")
 async def api_closing_run(within: int = 45):

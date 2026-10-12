@@ -517,6 +517,32 @@ const VB_SHORT_ODD = 1.40;       // below this, soften the stake (calibration-se
 const VB_HARD_CEILING = 8.0;     // above this odd, never shown as a pick (info only)
 function vbOddCeiling() { return Math.min(vbState.maxOdds ?? VB_HARD_CEILING, VB_HARD_CEILING); }
 
+// ── Reference freshness ─────────────────────────────────────────────────────
+// The edge is (1xBet odd x devigged Pinnacle prob - 1), using whichever Pinnacle
+// price is stored in odds_events — only as fresh as the last collection, which
+// runs once or twice a day. The page ALREADY warned "⛔ Odds Xh old" from 6h, but
+// the green gate ignored the age entirely, so a stale-reference pick was still
+// celebrated with a confident edge and a Kelly stake. That is the most likely
+// explanation for bets entered at a claimed +2.1% and +2.4% closing at -13.2%
+// and -10.0%: the "edge" was the market having moved since the snapshot, not value.
+//
+// Rather than one blunt cutoff, the floor scales with how much we can trust the
+// reference: a 2% edge is only meaningful against a line that has not had time to
+// drift past it.
+const VB_REF_FRESH_H = 2;        // within this, the stored reference is trustworthy
+const VB_REF_MAX_AGE_H = 6;      // beyond this, never green (matches the ⛔ badge)
+const VB_VALUE_FLOOR_AGING = 4;  // 2-6h old: demand a bigger edge than the drift
+
+// Age in hours of the stored odds for this event; null when unknown.
+// updated_at is stored UTC as "YYYY-MM-DD HH:MM".
+function vbRefAgeHours(b) {
+  if (!b || !b.updated_at) return null;
+  const t = new Date(String(b.updated_at).replace(' ', 'T') + 'Z');
+  if (isNaN(t)) return null;
+  const h = (Date.now() - t.getTime()) / 3600000;
+  return h < 0 ? 0 : h;
+}
+
 // ¼-Kelly fraction of bankroll for a given edge% and odd, with two safety rules:
 //  • odd < 1.40 (≈>71% favourite): HALVE the stake AND hard-cap at 1.5% of bankroll.
 //    A 1-2pp calibration error on a heavy favourite flips +EV to −EV, so the raw
@@ -566,9 +592,15 @@ function vbEval(b) {
   //    it, but it must not be celebrated as confirmed value.
   const weakRef = b.pin_low_liquidity === true;
   const unverifiable = !pinCoversMarket(b, bestPick);
-  const isValue = !!bestPick && bestPick.edge_pct >= VB_VALUE_FLOOR
+  //  - staleRef / agingRef: the edge is only as good as the age of the Pinnacle
+  //    price it was measured against (see VB_REF_* above).
+  const refAgeH = vbRefAgeHours(b);
+  const staleRef = refAgeH != null && refAgeH > VB_REF_MAX_AGE_H;
+  const agingRef = refAgeH != null && refAgeH > VB_REF_FRESH_H && !staleRef;
+  const edgeFloor = agingRef ? VB_VALUE_FLOOR_AGING : VB_VALUE_FLOOR;
+  const isValue = !!bestPick && bestPick.edge_pct >= edgeFloor
       && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD
-      && !sharpConflict && !weakRef && !unverifiable;
+      && !sharpConflict && !weakRef && !unverifiable && !staleRef;
   // Stars = the Pinnacle-earned base confidence (edge quality + liquidity + league).
   // Our xG/Elo model is a WEAKER cross-check than Pinnacle, so a model disagreement
   // is shown as an INFORMATIONAL orange badge ONLY — it does NOT change stars or
@@ -577,7 +609,9 @@ function vbEval(b) {
   let stars = bestPick ? (bestPick.confidence || 0) : 0;
   if (sharpConflict) stars = Math.min(stars, 2);
   if (weakRef || unverifiable) stars = Math.min(stars, 2);
-  return { realPicks, bestPick, isValue, stars, ceiling, refAgree, weakRef, unverifiable };
+  if (staleRef) stars = Math.min(stars, 2);
+  return { realPicks, bestPick, isValue, stars, ceiling, refAgree, weakRef, unverifiable,
+           staleRef, agingRef, refAgeH, edgeFloor };
 }
 
 // Does Pinnacle quote the market this pick belongs to? Without it there is no
@@ -1352,6 +1386,10 @@ function renderCard(b) {
           ? `Melhor preço está NOUTRA CASA — a 1xBet não cota esta seleção, por isso não tens CLV aqui. Informativo.`
           : b.ref_agreement === 'diverge_sharp'
           ? `Best available — the two sharp markets disagree, so we can't confirm value. Informational only.`
+          : ev.staleRef
+          ? `Referência com ${ev.refAgeH.toFixed(1)}h — o preço da Pinnacle usado para calcular este edge é velho de mais. O "valor" pode ser só o mercado ter mexido desde então. Atualiza as odds antes de apostar.`
+          : ev.agingRef
+          ? `Referência com ${ev.refAgeH.toFixed(1)}h — a esta idade só contamos como valor um edge acima de ${VB_VALUE_FLOOR_AGING}%, porque a linha já teve tempo de derivar. Este tem ${edge.toFixed(1)}%.`
           : ev.unverifiable
           ? `A Pinnacle não cota este mercado — esta aposta NUNCA terá CLV. O edge não é verificável, por isso não vai a verde.`
           : ev.weakRef

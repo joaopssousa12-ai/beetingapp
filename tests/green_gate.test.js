@@ -29,12 +29,19 @@ function extract(name) {
 
 // Constants vbEval closes over, mirrored from app.js.
 const VB_VALUE_FLOOR = 2, VB_ODD_FLOOR = 1.4, VB_GREEN_MAX_ODD = 4.0;
+const VB_REF_FRESH_H = 2, VB_REF_MAX_AGE_H = 6, VB_VALUE_FLOOR_AGING = 4;
 const vbState = { minEdge: 2 };
 function vbOddCeiling() { return 10; }
 // eslint-disable-next-line no-eval
 eval(extract('pinCoversMarket'));
 // eslint-disable-next-line no-eval
+eval(extract('vbRefAgeHours'));
+// eslint-disable-next-line no-eval
 eval(extract('vbEval'));
+
+// Helper: an updated_at string that is `h` hours old, in the stored UTC shape.
+const agedUpdatedAt = h =>
+  new Date(Date.now() - h * 3600000).toISOString().slice(0, 16).replace('T', ' ');
 
 let failures = 0;
 const check = (name, cond, detail) => {
@@ -49,6 +56,7 @@ const base = () => ({
   pin_home: 1.90, pin_away: 2.00,
   pin_low_liquidity: false,
   ref_agreement: 'agree',
+  updated_at: agedUpdatedAt(0.2),      // fresh reference unless a test says otherwise
   all_picks: [
     { market: 'Match Result', selection: 'A', book: '1xBet', book_odd: 1.95, edge_pct: 3.5, confidence: 4 },
   ],
@@ -99,6 +107,55 @@ console.log('\nGREEN GATE CONTRACT\n');
   const b = base(); b.ref_agreement = 'diverge_sharp';
   check('two sharps disagreeing still blocks green (pre-existing rule intact)',
     vbEval(b).isValue === false, 'diverge_sharp leaked through');
+}
+
+// ── Reference freshness ─────────────────────────────────────────────────────
+// Real case this guards: bets entered on a claimed +2.1% and +2.4% edge closed at
+// -13.2% and -10.0%. Both were priced against a Pinnacle line many hours old, so
+// the "edge" was the market having moved since the snapshot.
+console.log('\n  reference freshness');
+{
+  const b = base(); b.updated_at = agedUpdatedAt(10);
+  const ev = vbEval(b);
+  check('a 10h-old reference BLOCKS green outright',
+    ev.isValue === false && ev.staleRef === true,
+    `isValue=${ev.isValue} staleRef=${ev.staleRef}`);
+  check('...and caps the stars', ev.stars <= 2, `stars=${ev.stars}`);
+  check('...and reports the age so the card can say how old',
+    Math.round(ev.refAgeH) === 10, `refAgeH=${ev.refAgeH}`);
+}
+
+{
+  // 2-6h: trustworthy enough to show, but a 2% edge is inside the drift.
+  const b = base(); b.updated_at = agedUpdatedAt(4);
+  b.all_picks[0].edge_pct = 2.5;
+  const ev = vbEval(b);
+  check('a 4h-old reference needs more than 2.5% edge to go green',
+    ev.isValue === false && ev.agingRef === true,
+    `isValue=${ev.isValue} agingRef=${ev.agingRef}`);
+  check('...and the raised floor is reported',
+    ev.edgeFloor === VB_VALUE_FLOOR_AGING, `edgeFloor=${ev.edgeFloor}`);
+
+  b.all_picks[0].edge_pct = 5.0;
+  check('...but a 5% edge clears the raised floor',
+    vbEval(b).isValue === true, 'still blocked at 5% on a 4h-old reference');
+}
+
+{
+  const b = base(); b.updated_at = agedUpdatedAt(0.5);
+  b.all_picks[0].edge_pct = 2.5;
+  check('a fresh reference keeps the normal 2% floor',
+    vbEval(b).isValue === true, 'a 2.5% edge on fresh odds should be green');
+}
+
+{
+  // Never let a missing timestamp silently disable the rule — but do not punish
+  // it either: unknown age keeps the old behaviour rather than blocking everything.
+  const b = base(); delete b.updated_at;
+  const ev = vbEval(b);
+  check('unknown reference age does not crash and does not block',
+    ev.refAgeH === null && ev.isValue === true,
+    `refAgeH=${ev.refAgeH} isValue=${ev.isValue}`);
 }
 
 console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures} CHECK(S) FAILED`}\n`);
