@@ -37,7 +37,8 @@ jobs:
 
           echo ""
           echo "===== is the NEW code deployed? ====="
-          for marker in pinCoversMarket clv_pct_unverified clearBetFormFields; do
+          for marker in pinCoversMarket clv_pct_unverified clearBetFormFields \
+                        vbRefAgeHours VB_REF_MAX_AGE_H; do
             if grep -q "$marker" app.js; then
               echo "  [OK ] $marker presente"
             else
