@@ -29,7 +29,7 @@ function extract(name) {
 
 // Constants vbEval closes over, mirrored from app.js.
 const VB_VALUE_FLOOR = 2, VB_ODD_FLOOR = 1.4, VB_GREEN_MAX_ODD = 4.0;
-const VB_REF_FRESH_H = 2, VB_REF_MAX_AGE_H = 6, VB_VALUE_FLOOR_AGING = 4;
+const VB_REF_FRESH_H = 3, VB_REF_MAX_AGE_H = 6, VB_VALUE_FLOOR_AGING = 4;
 const vbState = { minEdge: 2 };
 function vbOddCeiling() { return 10; }
 // eslint-disable-next-line no-eval

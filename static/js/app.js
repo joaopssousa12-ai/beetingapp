@@ -529,9 +529,23 @@ function vbOddCeiling() { return Math.min(vbState.maxOdds ?? VB_HARD_CEILING, VB
 // Rather than one blunt cutoff, the floor scales with how much we can trust the
 // reference: a 2% edge is only meaningful against a line that has not had time to
 // drift past it.
-const VB_REF_FRESH_H = 2;        // within this, the stored reference is trustworthy
-const VB_REF_MAX_AGE_H = 6;      // beyond this, never green (matches the ⛔ badge)
-const VB_VALUE_FLOOR_AGING = 4;  // 2-6h old: demand a bigger edge than the drift
+//
+// CALIBRATED against 319 snapshot pairs from our own odds_history
+// (/api/diag/line-drift). What matters is not the median drift but how OFTEN the
+// drift swallows the whole edge:
+//      gap      median   moves >2%
+//      0-1h      0.00%      3.6%     (n=111)
+//      1-3h      0.00%      0.0%     (n=16)
+//      3-6h      0.49%     25.0%     (n=4 — too few to conclude)
+//      6-12h     1.67%     39.5%     (n=38)
+//     12-24h     2.43%     56.8%     (n=81)
+//      24h+      2.91%     66.7%     (n=69, p90 14.21%)
+// Under 3h the line is effectively static, so a 2% edge is real signal. Past 6h
+// the drift exceeds a 2% edge around half the time — that is not a value bet, and
+// the 24h+ p90 of 14.21% is the same order as the -13.2% close we actually took.
+const VB_REF_FRESH_H = 3;        // measured: 0% of 1-3h gaps drift past 2%
+const VB_REF_MAX_AGE_H = 6;      // past here drift beats the edge ~40%+ of the time
+const VB_VALUE_FLOOR_AGING = 4;  // 3-6h: provisional — only n=4 backs this band
 
 // Age in hours of the stored odds for this event; null when unknown.
 // updated_at is stored UTC as "YYYY-MM-DD HH:MM".

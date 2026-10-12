@@ -12,7 +12,7 @@ import sys
 # Mirrors static/js/app.js
 VB_VALUE_FLOOR = 2.0
 VB_VALUE_FLOOR_AGING = 4.0
-VB_REF_FRESH_H = 2
+VB_REF_FRESH_H = 3
 VB_REF_MAX_AGE_H = 6
 
 path = sys.argv[1] if len(sys.argv) > 1 else "drift.json"
@@ -56,27 +56,43 @@ print("\n  LEITURA (mediana = quanto o preco JUSTO da Pinnacle se mexeu nesse in
 print()
 
 
+# The criterion is NOT "is the median drift below the edge floor". The median
+# hides the tail, and the tail is what ruins a bet: a reference whose price moves
+# more than your whole edge 40% of the time is useless even if it usually sits
+# still. (Judging by the median was the same mistake as averaging stale CLVs.)
+# So we ask: how OFTEN does the drift swallow the edge we would act on?
+MAX_TOLERATED_SHARE = 20.0   # % of cases where drift may exceed the floor
+MIN_N = 10                   # below this, say so instead of concluding
+
+
 def verdict(key, floor, label):
     v = usable.get(key)
     if not v:
-        print(f"    {label:<28} sem dados")
+        print(f"    {label:<30} sem dados")
         return
-    med = v["median_move_pct"]
-    if med > floor:
-        print(f"    {label:<28} deriva mediana {med:.2f}% > piso {floor:.0f}%"
-              f"  -> PISO BAIXO DEMAIS")
+    share = v["share_above_2pct"] if floor <= 2 else v["share_above_3pct"]
+    note = f"deriva passa o piso em {share:.1f}% dos casos"
+    if v["n"] < MIN_N:
+        print(f"    {label:<30} {note}  -> apenas n={v['n']}, INSUFICIENTE")
+    elif share > MAX_TOLERATED_SHARE:
+        print(f"    {label:<30} {note}  -> PISO BAIXO DEMAIS")
     else:
-        print(f"    {label:<28} deriva mediana {med:.2f}% <= piso {floor:.0f}%"
-              f"  -> piso defensavel")
+        print(f"    {label:<30} {note}  -> piso defensavel (n={v['n']})")
 
 
-verdict("0-1h", VB_VALUE_FLOOR, f"fresca (<{VB_REF_FRESH_H}h), piso {VB_VALUE_FLOOR:.0f}%")
-verdict("1-3h", VB_VALUE_FLOOR, f"ainda dentro de {VB_REF_FRESH_H}h")
-verdict("3-6h", VB_VALUE_FLOOR_AGING, f"{VB_REF_FRESH_H}-{VB_REF_MAX_AGE_H}h, piso {VB_VALUE_FLOOR_AGING:.0f}%")
+verdict("0-1h", VB_VALUE_FLOOR, f"0-1h, piso {VB_VALUE_FLOOR:.0f}%")
+verdict("1-3h", VB_VALUE_FLOOR, f"1-3h, piso {VB_VALUE_FLOOR:.0f}%")
+verdict("3-6h", VB_VALUE_FLOOR_AGING, f"3-6h, piso {VB_VALUE_FLOOR_AGING:.0f}%")
 
-stale = usable.get("6-12h") or usable.get("12-24h")
-if stale:
-    print(f"\n    >{VB_REF_MAX_AGE_H}h: deriva mediana {stale['median_move_pct']:.2f}%,"
-          f" {stale['share_above_2pct']:.0f}% dos casos mexem mais de 2%")
-    print(f"    -> bloquear verde acima de {VB_REF_MAX_AGE_H}h esta' "
-          f"{'justificado' if stale['median_move_pct'] > VB_VALUE_FLOOR else 'possivelmente severo demais'}")
+print()
+for key in ("6-12h", "12-24h", "24h+"):
+    v = usable.get(key)
+    if not v:
+        continue
+    print(f"    >{VB_REF_MAX_AGE_H}h ({key}): mediana {v['median_move_pct']:.2f}%, mas"
+          f" {v['share_above_2pct']:.1f}% dos casos mexem mais de 2% (p90 {v['p90']:.2f}%)")
+stale = usable.get("6-12h")
+if stale and stale["n"] >= MIN_N:
+    ok = stale["share_above_2pct"] > MAX_TOLERATED_SHARE
+    print(f"\n    -> bloquear verde acima de {VB_REF_MAX_AGE_H}h: "
+          f"{'JUSTIFICADO' if ok else 'possivelmente severo demais'}")
