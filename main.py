@@ -827,7 +827,7 @@ async def api_diag_line_drift():
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT event_id, captured_at, pin_home, pin_draw, pin_away "
+            "SELECT event_id, captured_at, pin_home, pin_draw, pin_away, x1_home "
             "FROM odds_history "
             "WHERE pin_home IS NOT NULL AND pin_away IS NOT NULL "
             "ORDER BY event_id, captured_at ASC"
@@ -850,6 +850,13 @@ async def api_diag_line_drift():
         return 100.0 / dv["home"]                    # fair decimal odds for home
 
     buckets = {"0-1h": [], "1-3h": [], "3-6h": [], "6-12h": [], "12-24h": [], "24h+": []}
+    # The SAME measurement on the RAW 1xBet price — the price you would actually
+    # bet at. Pinnacle drift tells us whether the edge was real when computed;
+    # 1xBet drift tells us whether the price is still THERE when you go to place
+    # the bet. They are different questions and only the second one is about
+    # execution. A negative value means the price got WORSE (shorter) for us.
+    x1_buckets = {k: [] for k in buckets}
+    x1_signed = {k: [] for k in buckets}
 
     def bucket_for(hours):
         if hours < 1: return "0-1h"
@@ -870,12 +877,16 @@ async def api_diag_line_drift():
             hours = (tb - ta).total_seconds() / 3600.0
             if hours <= 0:
                 continue
+            key = bucket_for(hours)
             fa, fb = fair_home(a), fair_home(b)
-            if not fa or not fb:
-                continue
-            move_pct = abs(fb / fa - 1.0) * 100.0
-            buckets[bucket_for(hours)].append(move_pct)
-            pairs += 1
+            if fa and fb:
+                buckets[key].append(abs(fb / fa - 1.0) * 100.0)
+                pairs += 1
+            xa, xb = a.get("x1_home"), b.get("x1_home")
+            if xa and xb:
+                signed = (xb / xa - 1.0) * 100.0      # <0 = price shortened on us
+                x1_buckets[key].append(abs(signed))
+                x1_signed[key].append(signed)
 
     def summarise(vals):
         if not vals:
@@ -888,10 +899,31 @@ async def api_diag_line_drift():
                 "share_above_2pct": round(sum(1 for v in s if v > 2) / len(s) * 100, 1),
                 "share_above_3pct": round(sum(1 for v in s if v > 3) / len(s) * 100, 1)}
 
+    def summarise_x1(key):
+        vals, signed = x1_buckets[key], x1_signed[key]
+        if not vals:
+            return {"n": 0}
+        s = sorted(vals)
+        base = summarise(vals)
+        worse = [v for v in signed if v < 0]
+        base["share_unchanged"] = round(sum(1 for v in signed if abs(v) < 0.01)
+                                        / len(signed) * 100, 1)
+        base["share_moved_against_us"] = round(len(worse) / len(signed) * 100, 1)
+        base["median_when_against"] = (round(sorted(worse)[len(worse) // 2], 2)
+                                       if worse else 0.0)
+        return base
+
     out = {
         "events_with_multiple_snapshots": sum(1 for v in series.values() if len(v) >= 2),
         "snapshot_pairs_measured": pairs,
         "drift_by_gap": {k: summarise(v) for k, v in buckets.items()},
+        "x1_drift_by_gap": {k: summarise_x1(k) for k in buckets},
+        "x1_note": (
+            "Deriva do preco CRU da 1xBet — o preco a que realmente apostarias. "
+            "share_unchanged = % de casos em que o preco estava IGUAL no snapshot "
+            "seguinte; share_moved_against_us = % em que encurtou (ficou pior). "
+            "Responde a: quando eu for apostar, a odd ainda la' esta'?"
+        ),
         "how_to_read": (
             "median_move_pct e' quanto o preco JUSTO da Pinnacle se mexeu, em "
             "percentagem, entre dois snapshots separados por aquele intervalo. "

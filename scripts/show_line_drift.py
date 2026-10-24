@@ -52,6 +52,33 @@ if not usable:
     print("  evento na maior parte dos casos — vai encher a medida que o cron corre.")
     raise SystemExit(0)
 
+# ── The execution question ──────────────────────────────────────────────────
+# Pinnacle drift says whether the edge was real when it was computed. This says
+# something different and just as important: when you actually go to place the
+# bet, is the 1xBet price still there? Only this one is about execution.
+x1 = d.get("x1_drift_by_gap") or {}
+if any(v.get("n") for v in x1.values()):
+    print("\n  PRECO DA 1xBET — a odd ainda la' esta' quando vou apostar?")
+    print(f"  {'intervalo':<10} {'n':>6} {'igual':>8} {'piorou':>8} {'mediana':>9}"
+          f" {'se piorou':>10}")
+    print(f"  {'-' * 10} {'-' * 6} {'-' * 8} {'-' * 8} {'-' * 9} {'-' * 10}")
+    for k in order:
+        v = x1.get(k) or {}
+        if not v.get("n"):
+            print(f"  {k:<10} {'—':>6}")
+            continue
+        print(f"  {k:<10} {v['n']:>6} {v['share_unchanged']:>7.1f}%"
+              f" {v['share_moved_against_us']:>7.1f}% {v['median_move_pct']:>8.2f}%"
+              f" {v['median_when_against']:>9.2f}%")
+    fresh = [x1.get(k) or {} for k in ("0-1h", "1-3h")]
+    fresh = [v for v in fresh if v.get("n")]
+    if fresh:
+        n_tot = sum(v["n"] for v in fresh)
+        same = sum(v["share_unchanged"] * v["n"] for v in fresh) / n_tot
+        worse = sum(v["share_moved_against_us"] * v["n"] for v in fresh) / n_tot
+        print(f"\n    dentro de 3h: a odd da 1xBet estava IGUAL em {same:.1f}% dos casos,"
+              f" piorou em {worse:.1f}% (n={n_tot})")
+
 print("\n  LEITURA (mediana = quanto o preco JUSTO da Pinnacle se mexeu nesse intervalo)")
 print()
 
