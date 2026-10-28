@@ -320,7 +320,17 @@ async def api_daily_multiple():
 
 @app.get("/api/stats")
 async def api_stats():
-    return JSONResponse(get_stats())
+    # A database outage used to surface here as a bare HTTP 500 with no body, so
+    # the page just looked broken and nothing said why. Report the real cause.
+    try:
+        return JSONResponse(get_stats())
+    except Exception as e:                            # noqa: BLE001 - surfaced to UI
+        import traceback
+        print(f"API_STATS ERROR: {e}\n{traceback.format_exc()[-500:]}", flush=True)
+        return JSONResponse(
+            {"error": "database_unavailable", "detail": f"{type(e).__name__}: {str(e)[:200]}",
+             "hint": "Ver /api/diag/db para o erro completo."},
+            status_code=503)
 
 @app.get("/api/football/summary")
 async def api_football_summary():
@@ -805,6 +815,63 @@ async def api_diag_quota():
             "betfair": "see /api/diag/betfair (free; needs BETFAIR_CERT/KEY)",
         },
     })
+
+@app.get("/api/diag/db")
+async def api_diag_db():
+    """READ-ONLY: is the database reachable, and if not, WHY?
+
+    Added after an outage where every DB-backed endpoint (/api/bets, /api/stats,
+    /api/diag/report, /api/collection/log) returned a bare HTTP 500 while
+    /healthz and the cached /api/value-bets stayed green. The 500 carried no
+    information at all, so the cause had to be guessed. This returns the actual
+    exception text — which distinguishes a suspended/over-quota Neon project
+    from bad credentials from a network block.
+    """
+    from datetime import datetime as _dt
+    out = {"now_utc": _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+           "database_url_set": bool(os.environ.get("DATABASE_URL")),
+           "using_postgres": None, "ok": False}
+    try:
+        from collectors.database import USE_POSTGRES
+        out["using_postgres"] = USE_POSTGRES
+    except Exception:
+        pass
+
+    conn = None
+    try:
+        conn = get_connection()
+        out["connect"] = "ok"
+    except Exception as e:                            # noqa: BLE001 - diagnostics
+        out["connect"] = "FAILED"
+        out["error_type"] = type(e).__name__
+        out["error"] = str(e)[:500]
+        out["hint"] = (
+            "Erro na LIGACAO, antes de qualquer query. Num projeto Neon isto "
+            "costuma ser: projeto suspenso por inatividade ou por exceder o "
+            "plano gratuito, credenciais rodadas, ou o endpoint desativado. "
+            "Confirma o estado do projeto no painel da Neon."
+        )
+        return JSONResponse(out, status_code=503)
+
+    for label, sql in (("select_1", "SELECT 1"),
+                       ("count_bets", "SELECT COUNT(*) AS n FROM bets"),
+                       ("count_events", "SELECT COUNT(*) AS n FROM odds_events")):
+        try:
+            row = conn.execute(sql).fetchone()
+            out[label] = dict(row) if row is not None else None
+        except Exception as e:                        # noqa: BLE001 - diagnostics
+            out[label] = f"FAILED: {type(e).__name__}: {str(e)[:300]}"
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+    out["ok"] = out.get("select_1") is not None and not str(out.get("select_1")).startswith("FAILED")
+    return JSONResponse(out)
+
 
 @app.get("/api/diag/line-drift")
 async def api_diag_line_drift():
@@ -1350,7 +1417,19 @@ async def api_create_bet(request: Request):
 
 @app.get("/api/bets")
 async def api_list_bets(limit: int = 200):
-    return JSONResponse(get_bets(limit))
+    # Same reasoning as /api/stats: a bare 500 told us nothing during the outage
+    # that took My Bets down. 503 + the real exception is diagnosable, and the
+    # distinct status lets the UI say "base de dados indisponivel" instead of
+    # rendering an empty bet log, which would look like data loss.
+    try:
+        return JSONResponse(get_bets(limit))
+    except Exception as e:                            # noqa: BLE001 - surfaced to UI
+        import traceback
+        print(f"API_BETS ERROR: {e}\n{traceback.format_exc()[-500:]}", flush=True)
+        return JSONResponse(
+            {"error": "database_unavailable", "detail": f"{type(e).__name__}: {str(e)[:200]}",
+             "hint": "Ver /api/diag/db para o erro completo."},
+            status_code=503)
 
 @app.post("/api/bets/{bet_id}/settle")
 async def api_settle_bet(bet_id: int, request: Request):
