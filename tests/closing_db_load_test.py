@@ -127,6 +127,20 @@ def main():
           app_main._closing_skip_reason(45) is not None,
           "went to the DB when memory already had the answer")
 
+    print("\n7. A database that refused us is not hammered every 5 minutes")
+    app_main._next_ko_cache["checked_at"] = None
+    app_main._next_ko_cache["next_ko"] = None
+    app_main._next_ko_cache["db_error_at"] = datetime.utcnow()
+    check("right after a DB failure we back off instead of retrying",
+          app_main._closing_skip_reason(45) is not None,
+          "retried immediately — this is what spammed 500s for three days")
+    app_main._next_ko_cache["db_error_at"] = \
+        datetime.utcnow() - timedelta(minutes=app_main.DB_BACKOFF_MIN + 1)
+    check(f"after {app_main.DB_BACKOFF_MIN}min we try again",
+          app_main._closing_skip_reason(45) is None,
+          "stayed backed off — recovery would never be noticed")
+    app_main._next_ko_cache["db_error_at"] = None
+
     print(f"\n{'✅ ALL CHECKS PASSED' if failures == 0 else f'❌ {failures} CHECK(S) FAILED'}\n")
     return 1 if failures else 0
 

@@ -68,7 +68,13 @@ closing_state = {"ticks": 0, "last_tick_at": None, "last_ok_at": None,
 # allowance in about two weeks and took the database (and My Bets with it) down.
 # The keep-alive still runs every 5 minutes; it just stops paying for a database
 # connection when the next kickoff is hours away.
-_next_ko_cache = {"checked_at": None, "next_ko": None}
+_next_ko_cache = {"checked_at": None, "next_ko": None, "db_error_at": None}
+
+# How long to stop retrying after the database refused us. A capture is
+# impossible without a working database, so retrying every 5 minutes buys
+# nothing and only fills the log with 500s — which is exactly what the project
+# did for three days while it sat over its compute limit.
+DB_BACKOFF_MIN = int(os.environ.get("CLOSING_DB_BACKOFF_MIN", "10"))
 
 
 def _closing_skip_reason(within_minutes):
@@ -79,6 +85,12 @@ def _closing_skip_reason(within_minutes):
     kickoff is never missed. Correctness first — when in doubt, hit the DB.
     """
     from datetime import datetime as _dt
+    err = _next_ko_cache.get("db_error_at")
+    if err is not None:
+        err_age = (_dt.utcnow() - err).total_seconds() / 60.0
+        if 0 <= err_age < DB_BACKOFF_MIN:
+            return (f"base de dados indisponivel ha' {err_age:.0f}min — "
+                    f"nova tentativa dentro de {DB_BACKOFF_MIN - err_age:.0f}min")
     checked = _next_ko_cache["checked_at"]
     if checked is None:
         return None                                   # never looked: must look
@@ -759,6 +771,7 @@ async def run_closing_capture():
             _next_ko_cache["checked_at"] = _dt.utcnow()
         except Exception as e:                        # noqa: BLE001 - cache only
             print(f"CLOSING_CAPTURE cache refresh failed: {e}", flush=True)
+        _next_ko_cache["db_error_at"] = None           # the DB answered
         closing_state["db_touches"] = closing_state.get("db_touches", 0) + 1
         closing_state["last_refresh_msgs"] = msgs[-6:]
         closing_state["last_filled"] = n or 0
@@ -767,6 +780,7 @@ async def run_closing_capture():
         print(f"CLOSING_CAPTURE {stamp}: filled {n or 0} | " + " | ".join(msgs[-3:]), flush=True)
     except Exception as e:
         import traceback
+        _next_ko_cache["db_error_at"] = _dt.utcnow()
         closing_state["last_result"] = f"ERROR: {type(e).__name__}: {e}"
         closing_state["last_error_at"] = stamp
         closing_state["last_traceback"] = traceback.format_exc()[-800:]
@@ -1106,6 +1120,7 @@ async def api_closing_run(within: int = 45):
             _next_ko_cache["checked_at"] = _dt.utcnow()
         except Exception as e:                        # noqa: BLE001 - cache only
             print(f"CLOSING_RUN cache refresh failed: {e}", flush=True)
+        _next_ko_cache["db_error_at"] = None          # the DB answered: clear backoff
         stamp = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         closing_state["db_touches"] = closing_state.get("db_touches", 0) + 1
         closing_state["ticks"] = closing_state.get("ticks", 0) + 1
@@ -1121,8 +1136,13 @@ async def api_closing_run(within: int = 45):
                              "messages": msgs})
     except Exception as e:
         import traceback
+        # Back off instead of retrying every 5 min: without a database there is
+        # nothing to capture, so a tight retry loop only produces noise.
+        _next_ko_cache["db_error_at"] = _dt.utcnow()
+        closing_state["last_result"] = f"ERROR: {type(e).__name__}: {e}"
         print(f"CLOSING_RUN ERROR: {e}\n{traceback.format_exc()[-400:]}", flush=True)
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}",
+                             "retry_after_min": DB_BACKOFF_MIN,
                              "messages": msgs}, status_code=500)
 
 
