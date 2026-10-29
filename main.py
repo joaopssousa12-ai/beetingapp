@@ -55,7 +55,48 @@ collection_status = {"running": False, "messages": [], "last_run": None}
 # no chance to run near any kickoff. Read via /api/diag/closing.
 closing_state = {"ticks": 0, "last_tick_at": None, "last_ok_at": None,
                  "last_result": "never ran in this process", "last_filled": 0,
-                 "last_refresh_msgs": [], "started_at": None}
+                 "last_refresh_msgs": [], "started_at": None,
+                 "db_skips": 0, "db_touches": 0}
+
+# When the next tracked bet kicks off, remembered in memory so the closing
+# capture can answer "nothing to do" WITHOUT opening a database connection.
+#
+# This exists because of a real outage: the external cron calls /api/closing/run
+# every 5 minutes to keep Render awake, and every one of those calls queried
+# Postgres. Neon suspends compute after ~5 minutes idle, so a query every 5
+# minutes meant it never suspended — which burned the whole monthly free compute
+# allowance in about two weeks and took the database (and My Bets with it) down.
+# The keep-alive still runs every 5 minutes; it just stops paying for a database
+# connection when the next kickoff is hours away.
+_next_ko_cache = {"checked_at": None, "next_ko": None}
+
+
+def _closing_skip_reason(within_minutes):
+    """Can we answer without touching the DB? Returns a reason, or None to proceed.
+
+    The cache's lifetime scales with how far away the work is: hours away, an
+    hour-old answer is still right; close to the window, we re-check often so a
+    kickoff is never missed. Correctness first — when in doubt, hit the DB.
+    """
+    from datetime import datetime as _dt
+    checked = _next_ko_cache["checked_at"]
+    if checked is None:
+        return None                                   # never looked: must look
+    age_min = (_dt.utcnow() - checked).total_seconds() / 60.0
+    if age_min < 0:
+        return None
+    nk = _next_ko_cache["next_ko"]
+    if nk is None:                                    # no pending bet at all
+        return (f"sem apostas pendentes (verificado ha' {age_min:.0f}min)"
+                if age_min < 60 else None)
+    mins_to_ko = (nk - _dt.utcnow()).total_seconds() / 60.0
+    if mins_to_ko <= within_minutes:
+        return None                                   # inside the window: work
+    ttl = 60 if mins_to_ko > 180 else 15
+    if age_min < ttl:
+        return (f"proximo pontape daqui a {mins_to_ko:.0f}min "
+                f"(janela {within_minutes}min) — nada a fazer")
+    return None
 scheduler = AsyncIOScheduler()
 
 @app.on_event("startup")
@@ -688,9 +729,21 @@ async def run_closing_capture():
         closing_state["last_result"] = "skipped: a collection was already running"
         print(f"CLOSING_CAPTURE {stamp}: skipped (collection running).", flush=True)
         return
+
+    # Same database-sparing guard as /api/closing/run. A */15 tick that always
+    # queried Postgres kept the database awake a third of the day for nothing;
+    # when the next kickoff is hours off, the in-memory answer settles it.
+    skip = _closing_skip_reason(45)
+    if skip:
+        closing_state["db_skips"] = closing_state.get("db_skips", 0) + 1
+        closing_state["last_result"] = f"skip (sem BD): {skip}"
+        print(f"CLOSING_CAPTURE {stamp}: skipped without DB — {skip}", flush=True)
+        return
+
     loop = asyncio.get_event_loop()
     try:
         from collectors.odds import refresh_imminent_odds
+        from collectors.database import next_pending_kickoff
         # 1) Snapshot the near-close line for games starting in the next ~45 min.
         # 45-min window on a */15 cron ≈ 3 snapshot attempts per tracked game, so a
         # single missed tick (Render asleep, a slow cold start) no longer costs us
@@ -701,6 +754,12 @@ async def run_closing_capture():
             None, lambda: refresh_imminent_odds(status_callback=msgs.append, within_minutes=45))
         # 2) Backfill pin_close_odds for any bet whose game has now kicked off.
         n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
+        try:
+            _next_ko_cache["next_ko"] = await loop.run_in_executor(None, next_pending_kickoff)
+            _next_ko_cache["checked_at"] = _dt.utcnow()
+        except Exception as e:                        # noqa: BLE001 - cache only
+            print(f"CLOSING_CAPTURE cache refresh failed: {e}", flush=True)
+        closing_state["db_touches"] = closing_state.get("db_touches", 0) + 1
         closing_state["last_refresh_msgs"] = msgs[-6:]
         closing_state["last_filled"] = n or 0
         closing_state["last_result"] = f"ok: {n or 0} close(s) filled"
@@ -1018,16 +1077,37 @@ async def api_closing_run(within: int = 45):
     credits at most, and zero when nothing is backed.
     """
     from collectors.odds import refresh_imminent_odds
+    from collectors.database import next_pending_kickoff
     from datetime import datetime as _dt
     within = max(5, min(int(within or 45), 180))
     loop = asyncio.get_event_loop()
     msgs = []
+
+    # Cheapest possible answer first: no DB connection at all when the memory
+    # says the next kickoff is far away. This is the whole point of the cache.
+    skip = _closing_skip_reason(within)
+    if skip:
+        closing_state["db_skips"] = closing_state.get("db_skips", 0) + 1
+        closing_state["last_tick_at"] = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        closing_state["last_result"] = f"skip (sem BD): {skip}"
+        return JSONResponse({"ok": True, "within_minutes": within, "db_touched": False,
+                             "events_stored": 0, "closes_filled": 0,
+                             "messages": [f"Sem ligacao a' base de dados — {skip}"]})
+
     try:
         stored = await loop.run_in_executor(
             None, lambda: refresh_imminent_odds(status_callback=msgs.append,
                                                 within_minutes=within))
         filled = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
+        # Refresh the in-memory answer while we are already connected, so the
+        # next few cron calls can be served without touching the DB again.
+        try:
+            _next_ko_cache["next_ko"] = await loop.run_in_executor(None, next_pending_kickoff)
+            _next_ko_cache["checked_at"] = _dt.utcnow()
+        except Exception as e:                        # noqa: BLE001 - cache only
+            print(f"CLOSING_RUN cache refresh failed: {e}", flush=True)
         stamp = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        closing_state["db_touches"] = closing_state.get("db_touches", 0) + 1
         closing_state["ticks"] = closing_state.get("ticks", 0) + 1
         closing_state["last_tick_at"] = stamp
         closing_state["last_ok_at"] = stamp
@@ -1036,7 +1116,7 @@ async def api_closing_run(within: int = 45):
         closing_state["last_result"] = f"ok (manual/guard): {filled or 0} close(s) filled"
         print(f"CLOSING_RUN {stamp} within={within}: stored={stored} filled={filled} | "
               + " | ".join(msgs[-3:]), flush=True)
-        return JSONResponse({"ok": True, "within_minutes": within,
+        return JSONResponse({"ok": True, "within_minutes": within, "db_touched": True,
                              "events_stored": stored, "closes_filled": filled or 0,
                              "messages": msgs})
     except Exception as e:

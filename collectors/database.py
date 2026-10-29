@@ -2745,6 +2745,29 @@ def xg_based_probability(home_team, away_team):
     }
 
 
+def next_pending_kickoff():
+    """Earliest FUTURE kickoff among tracked pending bets, or None.
+
+    One cheap row. The closing capture calls this to learn when it next has
+    anything to do, then caches the answer in memory — so the 5-minute cron that
+    keeps Render awake stops opening a database connection 288 times a day when
+    the next kickoff is hours away. That traffic is what exhausted the Neon free
+    compute allowance: a query every 5 minutes never lets the compute suspend.
+    """
+    try:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT MIN(commence_time) AS ko FROM bets "
+            "WHERE status = 'pending' AND commence_time IS NOT NULL "
+            "AND commence_time > datetime('now')"
+        ).fetchone()
+        conn.close()
+        return _parse_ts(dict(row).get("ko")) if row else None
+    except Exception as e:
+        print(f"next_pending_kickoff error: {e}", flush=True)
+        return None
+
+
 def sport_keys_with_pending_bets(within_minutes):
     """Sport keys that have a TRACKED PENDING bet kicking off in the next N minutes.
 
