@@ -2753,19 +2753,26 @@ def next_pending_kickoff():
     keeps Render awake stops opening a database connection 288 times a day when
     the next kickoff is hours away. That traffic is what exhausted the Neon free
     compute allowance: a query every 5 minutes never lets the compute suspend.
+
+    RAISES on a database failure. Returning None here would be far worse than it
+    looks: None means "nothing pending", the caller caches that for up to an hour
+    and answers every cron call from memory — so one transient error would blind
+    the capture through a whole afternoon of kickoffs. The caller leaves the cache
+    untouched when this raises, and falls back to asking the database.
     """
+    conn = get_connection()
     try:
-        conn = get_connection()
         row = conn.execute(
             "SELECT MIN(commence_time) AS ko FROM bets "
             "WHERE status = 'pending' AND commence_time IS NOT NULL "
             "AND commence_time > datetime('now')"
         ).fetchone()
-        conn.close()
-        return _parse_ts(dict(row).get("ko")) if row else None
-    except Exception as e:
-        print(f"next_pending_kickoff error: {e}", flush=True)
-        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:                             # noqa: BLE001 - already failing
+            pass
+    return _parse_ts(dict(row).get("ko")) if row else None
 
 
 def sport_keys_with_pending_bets(within_minutes):
@@ -2777,9 +2784,16 @@ def sport_keys_with_pending_bets(within_minutes):
     we actually need are the ones we have money on, so target those instead: the
     cost stops scaling with the fixture list and starts scaling with the bet log
     (~1 credit per bet), which is what makes spending credits here affordable.
+
+    RAISES on a database failure — it does NOT return []. An empty list is a real
+    answer ("nothing is backed right now") and the caller acts on it by skipping
+    the fetch and reporting "0 credits spent". Swallowing the exception made those
+    two states identical, so an unreachable database produced a tick that looked
+    perfectly healthy while silently missing the close. That is the same defect
+    that made the CLV fiction: a failure must never read as a measurement.
     """
+    conn = get_connection()
     try:
-        conn = get_connection()
         rows = conn.execute(
             "SELECT DISTINCT e.sport_key FROM bets b "
             "JOIN odds_events e ON e.event_id = b.event_id "
@@ -2787,11 +2801,12 @@ def sport_keys_with_pending_bets(within_minutes):
             "AND e.commence_time > datetime('now') "
             f"AND e.commence_time < datetime('now', '+{int(within_minutes)} minutes')"
         ).fetchall()
-        conn.close()
-        return [r["sport_key"] for r in rows if r["sport_key"]]
-    except Exception as e:
-        print(f"sport_keys_with_pending_bets error: {e}", flush=True)
-        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:                             # noqa: BLE001 - already failing
+            pass
+    return [r["sport_key"] for r in rows if r["sport_key"]]
 
 
 def get_line_movement(event_id):

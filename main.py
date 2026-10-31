@@ -769,9 +769,9 @@ async def run_closing_capture():
         try:
             _next_ko_cache["next_ko"] = await loop.run_in_executor(None, next_pending_kickoff)
             _next_ko_cache["checked_at"] = _dt.utcnow()
-        except Exception as e:                        # noqa: BLE001 - cache only
+            _next_ko_cache["db_error_at"] = None       # the DB answered
+        except Exception as e:                         # noqa: BLE001 - cache only
             print(f"CLOSING_CAPTURE cache refresh failed: {e}", flush=True)
-        _next_ko_cache["db_error_at"] = None           # the DB answered
         closing_state["db_touches"] = closing_state.get("db_touches", 0) + 1
         closing_state["last_refresh_msgs"] = msgs[-6:]
         closing_state["last_filled"] = n or 0
@@ -1118,9 +1118,12 @@ async def api_closing_run(within: int = 45):
         try:
             _next_ko_cache["next_ko"] = await loop.run_in_executor(None, next_pending_kickoff)
             _next_ko_cache["checked_at"] = _dt.utcnow()
+            _next_ko_cache["db_error_at"] = None      # the DB answered: clear backoff
         except Exception as e:                        # noqa: BLE001 - cache only
+            # Leave the cache untouched. Caching a failure as "nothing pending"
+            # would blind the capture for an hour; a stale entry just means the
+            # next call asks the database again, which is the safe direction.
             print(f"CLOSING_RUN cache refresh failed: {e}", flush=True)
-        _next_ko_cache["db_error_at"] = None          # the DB answered: clear backoff
         stamp = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         closing_state["db_touches"] = closing_state.get("db_touches", 0) + 1
         closing_state["ticks"] = closing_state.get("ticks", 0) + 1
@@ -1185,11 +1188,21 @@ async def api_diag_closing():
             out["targeting_dry_run"][f"{w}min"] = f"ERROR: {type(e).__name__}: {e}"
 
     # Every pending bet: can the capture even see it?
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, home_team, away_team, commence_time, event_id "
-        "FROM bets WHERE status='pending' ORDER BY commence_time ASC"
-    ).fetchall()
+    # A diagnostic endpoint that dies when the thing it diagnoses is broken is
+    # worthless — an unguarded connection here returned a plain-text 500, so the
+    # audit workflow could only report "resposta nao e' JSON" during the outage
+    # and told us nothing about the cause.
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT id, home_team, away_team, commence_time, event_id "
+            "FROM bets WHERE status='pending' ORDER BY commence_time ASC"
+        ).fetchall()
+    except Exception as e:                           # noqa: BLE001 - diagnostics
+        out["pending_bets"] = f"ERROR: {type(e).__name__}: {str(e)[:300]}"
+        out["verdict"] = ("base de dados indisponivel — nao foi possivel ler as apostas "
+                          "pendentes. Ver /api/diag/db.")
+        return JSONResponse(out, status_code=200)
     pend = []
     now = _dt.utcnow()
     for r in rows:

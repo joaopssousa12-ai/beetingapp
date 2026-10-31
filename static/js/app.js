@@ -1792,18 +1792,26 @@ function calcManualEdge(input) {
   // Core calculations
   const trueProbFraction = prob / 100;
   const edge = (odd * trueProbFraction - 1) * 100;
-  const kellyFull = edge > 0 ? (edge / 100) / (odd - 1) : 0;
-  const kellyQuarter = kellyFull * 0.25;
+  const kellyQuarter = edge > 0 ? (edge / 100) / (odd - 1) * 0.25 : 0;
+  // The card's "safe" sizing applies a short-odd limiter (½-size, capped at 1.5%
+  // of bankroll below odd 1.40). This tooltip used to quote the UNLIMITED ¼-Kelly,
+  // so a hand-typed odd of 1.20 with a 3% edge advertised 3.75% of bankroll while
+  // the app's own rule allowed 1.5% — 2.5x over, with nothing saying so. Same
+  // hidden-divergence bug as the €15-card/€77-prefill one, in a third place.
+  const kellySafe = vbKellyFraction(edge, odd);
+  const kellyTxt = (kellySafe > 0 && kellySafe < kellyQuarter - 1e-9)
+    ? `${(kellySafe * 100).toFixed(1)}% do bankroll (seguro · ¼-Kelly cheia ${(kellyQuarter * 100).toFixed(1)}%)`
+    : `${(kellyQuarter * 100).toFixed(1)}% do bankroll`;
   const sign = edge > 0 ? '+' : '';
 
   // Show edge on the input span
   span.textContent = `${sign}${edge.toFixed(1)}%`;
   if (edge >= 5) {
     span.className = 'vb-manual-edge strong';
-    span.title = `Strong value! ¼ Kelly: ${(kellyQuarter*100).toFixed(1)}% of bankroll`;
+    span.title = `Valor forte! ¼ Kelly: ${kellyTxt}`;
   } else if (edge >= 2) {
     span.className = 'vb-manual-edge good';
-    span.title = `Good value. ¼ Kelly: ${(kellyQuarter*100).toFixed(1)}% of bankroll`;
+    span.title = `Valor. ¼ Kelly: ${kellyTxt}`;
   } else if (edge >= 0) {
     span.className = 'vb-manual-edge flat';
     span.title = 'Marginal — no significant edge';

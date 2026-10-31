@@ -116,5 +116,36 @@ for (const c of cases) {
   }
 }
 
+// ── 3. The hand-typed odd is a THIRD sizing path and must obey the same rule ──
+// Found 2026-10-31: the manual-odd tooltip computed its own ¼-Kelly inline and
+// never applied the short-odd limiter, so at odd 1.20 with a 3% edge it
+// advertised 3.75% of bankroll while the app's own rule allowed 1.5%. Exactly
+// the hidden divergence this contract exists to forbid, in a place the contract
+// was not yet looking.
+console.log('\n3. The manual-odd tooltip obeys the short-odd limiter too');
+
+const manualBlock = (() => {
+  const i = appSrc.indexOf('const trueProbFraction = prob / 100;');
+  if (i === -1) throw new Error('FATAL: manual-odd edge block not found in app.js');
+  return appSrc.slice(i, i + 1600);
+})();
+
+check('it reuses vbKellyFraction instead of rolling its own sizing',
+  /vbKellyFraction\(/.test(manualBlock),
+  'the manual tooltip still computes Kelly inline — it will drift from the card');
+
+check('it surfaces BOTH numbers when the limiter bites',
+  /seguro/.test(manualBlock) && /cheia/.test(manualBlock),
+  'the tooltip shows a single number, hiding the divergence');
+
+// And the arithmetic the tooltip now quotes must match the card exactly.
+[{ edge: 3, odd: 1.20 }, { edge: 6, odd: 1.35 }].forEach(({ edge, odd }) => {
+  const safe = vbKellyFraction(edge, odd);
+  const naive = (edge / 100) / (odd - 1) * 0.25;
+  check(`odd ${odd}: safe (€${eur(safe)}) is below the naive ¼-Kelly (€${eur(naive)})`,
+    safe < naive && safe <= 0.015 + 1e-9,
+    `safe=${safe} naive=${naive} — cap is 1.5% of bankroll below odd ${VB_SHORT_ODD}`);
+});
+
 console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures} CHECK(S) FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);
