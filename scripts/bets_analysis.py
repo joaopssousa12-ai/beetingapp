@@ -266,31 +266,39 @@ def main():
     # We analyse the full set (to see how bad the capture is) but report the two
     # populations apart, because mixing them is exactly what produced the false
     # "97.4% positive CLV" headline.
-    for b in settled:
-        if b.get("clv_pct") is None and b.get("clv_pct_unverified") is not None:
-            b["_clv_any"] = b["clv_pct_unverified"]
-            b["_clv_counts"] = False
-        elif b.get("clv_pct") is not None:
-            b["_clv_any"] = b["clv_pct"]
-            b["_clv_counts"] = True
+    # CLV does NOT depend on the result — it compares the price you took with the
+    # closing price, and both are known before the whistle. Restricting this to
+    # settled bets threw away perfectly good measurements and, worse, printed "—"
+    # for a pending bet, which reads identically to "withheld because the close is
+    # stale". On 2026-11-01 that cost an hour: bet #92 had a close captured 4m49s
+    # before kickoff with a valid +5.93% CLV, and the ledger showed "—", so I
+    # reported that the capture had failed. It had not. CLV is the fast indicator
+    # precisely because it arrives before the result does.
+    clv_pool = [b for b in bets
+                if b.get("clv_pct") is not None or b.get("clv_pct_unverified") is not None]
+    for b in clv_pool:
+        if b.get("clv_pct") is not None:
+            b["_clv_any"], b["_clv_counts"] = b["clv_pct"], True
         else:
-            b["_clv_any"] = None
-            b["_clv_counts"] = False
+            b["_clv_any"], b["_clv_counts"] = b["clv_pct_unverified"], False
 
-    countable = [b for b in settled if b.get("_clv_counts")]
-    unverified = [b for b in settled if b.get("_clv_any") is not None and not b.get("_clv_counts")]
-    print(f"  CLV contavel (fecho perto do jogo)  {len(countable)}")
+    countable = [b for b in clv_pool if b["_clv_counts"]]
+    unverified = [b for b in clv_pool if not b["_clv_counts"]]
+    n_pend = sum(1 for b in countable if b.get("status") == "pending")
+    print(f"  CLV contavel (fecho perto do jogo)  {len(countable)}"
+          + (f"  (dos quais {n_pend} ainda a decorrer)" if n_pend else ""))
     print(f"  CLV descartado (fecho tarde demais) {len(unverified)}")
     if countable:
         cv = sorted(b["clv_pct"] for b in countable)
         print(f"  --> CLV medio APENAS dos contaveis  {sum(cv) / len(cv):+.2f}%"
               f"  (positivos {sum(1 for v in cv if v > 0)}/{len(cv)})")
+        print("      (inclui apostas pendentes — o CLV nao depende do resultado)")
     else:
         print("  --> nenhum CLV contavel: a captura do fecho nao esta' a funcionar")
 
     # Everything below runs on the FULL set, unverified included, and is labelled
     # as such — it diagnoses the capture, it does not prove the edge.
-    clv = [dict(b, clv_pct=b["_clv_any"]) for b in settled if b.get("_clv_any") is not None]
+    clv = [dict(b, clv_pct=b["_clv_any"]) for b in clv_pool]
     if clv:
         print("\n  (as estatisticas seguintes incluem os fechos nao verificados —")
         print("   servem para diagnosticar a captura, NAO para provar o edge)")

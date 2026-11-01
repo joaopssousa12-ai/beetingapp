@@ -141,6 +141,57 @@ def main():
           hand["odds_source"] is None and hand["ref_agreement"] is None,
           f"got {hand['odds_source']}/{hand['ref_agreement']}")
 
+    # ── 4. CLV arrives at kickoff, not at settlement ─────────────────────────
+    # CLV's whole value is being the FAST indicator: it compares the price you
+    # took with the closing price, and both are known before the whistle. The old
+    # rule required status='settled', so a live bet with a perfect close showed a
+    # dash — indistinguishable from "withheld because the close is stale". That
+    # happened for real on 2026-11-01 (bet #92: close captured 4m49s before
+    # kickoff, valid +5.93% CLV, displayed as "—") and led to reporting that the
+    # capture had failed when it had worked.
+    print("\n4. A started-but-unsettled bet still gets its CLV")
+    started = (datetime.utcnow() - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    live_id = db.add_bet({
+        "event_id": "ev-live", "sport_name": "Test", "home_team": "A", "away_team": "B",
+        "commence_time": started, "market": "h2h", "selection": "A",
+        "bookmaker": "1xBet", "odds": 2.00, "stake": 10.0, "edge_pct": 4.0})
+    conn = db.get_connection()
+    conn.execute(
+        "UPDATE bets SET pin_close_odds=1.88, pin_close_fair_odds=1.90, "
+        "pin_close_captured_at=? WHERE id=?",
+        ((db._parse_ts(started) - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S"),
+         live_id))
+    conn.commit()
+    conn.close()
+
+    live = [b for b in db.get_bets(300) if b["id"] == live_id][0]
+    check("the bet is still pending", live["status"] == "pending",
+          f"status={live['status']}")
+    check("but its CLV is published (close was 5min before kickoff)",
+          live["clv_pct"] is not None,
+          "clv_pct withheld on a live bet — this is the bug that hid bet #92")
+    check("quality reads 'good'", live["clv_quality"] == "good",
+          f"got {live['clv_quality']}")
+
+    # A bet whose match has NOT started must still be withheld: the stored close
+    # cannot be a close for a game that has not happened.
+    future = (datetime.utcnow() + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fut_id = db.add_bet({
+        "event_id": "ev-future", "market": "h2h", "selection": "A",
+        "commence_time": future, "odds": 2.0, "stake": 10.0})
+    conn = db.get_connection()
+    conn.execute("UPDATE bets SET pin_close_fair_odds=1.90 WHERE id=?", (fut_id,))
+    conn.commit()
+    conn.close()
+    fut = [b for b in db.get_bets(300) if b["id"] == fut_id][0]
+    check("a match that has NOT started publishes no CLV",
+          fut["clv_pct"] is None,
+          "published a 'close' for a game that has not kicked off")
+
+    s = db.get_bet_stats()
+    check("the aggregate counts the live bet too",
+          s["clv_sample"] >= 3, f"clv_sample={s['clv_sample']}")
+
     print(f"\n{'✅ ALL CHECKS PASSED' if failures == 0 else f'❌ {failures} CHECK(S) FAILED'}\n")
     return 1 if failures else 0
 

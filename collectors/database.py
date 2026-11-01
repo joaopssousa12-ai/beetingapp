@@ -2050,6 +2050,7 @@ def delete_bet(bet_id):
 
 def get_bets(limit=200):
     """Return all bets, newest first, with CLV calculated where available."""
+    from datetime import datetime
     conn = get_connection()
     rows = conn.execute("""
         SELECT * FROM bets ORDER BY placed_at DESC LIMIT ?
@@ -2064,10 +2065,19 @@ def get_bets(limit=200):
         # raw close a bet could look +CLV while sitting inside the bookmaker's
         # margin (~2-4pp inflation) — no-vig is the honest ruler: >0 means real
         # value at the close.
-        # Realized CLV only once the bet is SETTLED — i.e. the match has actually
-        # happened. Before that, a captured "close" can be premature (esp. tennis,
-        # whose scheduled time != actual start), so we report it as pending (None)
-        # rather than a definitive-looking number.
+        # CLV is published once the match has STARTED, settled or not. It compares
+        # the price you took with the closing price, and both are known at kickoff
+        # — waiting for the result threw away the one property that makes CLV
+        # useful: it arrives fast. On 2026-11-01 bet #92 had a close captured 4m49s
+        # before kickoff and a valid +5.93% CLV, and My Bets showed a dash, which
+        # looks exactly like "withheld because the close is stale".
+        #
+        # The old rule required status='settled'. Its stated reason was that a
+        # scheduled start time can be wrong (tennis especially), making a "close"
+        # premature — but settling does not correct commence_time, so that risk is
+        # identical before and after. What the kickoff check genuinely protects
+        # against is a match that never happened at the stored time (postponed), so
+        # that is what we check, directly, instead of using settlement as a proxy.
         #
         # VALIDITY GATE: a close captured long before kickoff is not a close. We
         # compute how many minutes before kickoff the snapshot was taken and only
@@ -2085,7 +2095,9 @@ def get_bets(limit=200):
         d["clv_quality"] = quality
 
         raw = None
-        if d.get("status") == "settled" and d.get("odds") and d.get("pin_close_fair_odds"):
+        kicked_off = bool(ko) and ko <= datetime.utcnow()
+        if (d.get("status") == "settled" or kicked_off) \
+                and d.get("odds") and d.get("pin_close_fair_odds"):
             raw = round((d["odds"] / d["pin_close_fair_odds"] - 1) * 100, 2)
 
         if raw is not None and clv_counts(quality):
@@ -2117,9 +2129,11 @@ def get_bet_stats():
         FROM bets WHERE status='pending'
     """).fetchone()
 
-    # CLV stats — only SETTLED bets with a real captured close (consistent with the
-    # per-bet rule: no premature/pending closes in the aggregate CLV). No-vig:
-    # measured against the DEVIGGED close, same ruler as the per-bet clv_pct.
+    # CLV stats — every bet whose match has STARTED and has a real captured close,
+    # exactly the rule get_bets() uses per bet. Settlement is not required: CLV
+    # does not depend on the result, and excluding live bets only delayed the
+    # headline for no gain. No-vig: measured against the DEVIGGED close, same
+    # ruler as the per-bet clv_pct.
     #
     # Same validity gate as get_bets(): a close captured hours before kickoff is
     # not a close, so it must not enter the headline average. Averaging stale
@@ -2128,7 +2142,9 @@ def get_bet_stats():
     clv = conn.execute("""
         SELECT odds, pin_close_fair_odds, commence_time, pin_close_captured_at
         FROM bets
-        WHERE status='settled' AND pin_close_fair_odds IS NOT NULL AND odds IS NOT NULL
+        WHERE pin_close_fair_odds IS NOT NULL AND odds IS NOT NULL
+          AND (status = 'settled'
+               OR (commence_time IS NOT NULL AND commence_time <= datetime('now')))
     """).fetchall()
 
     clv_values, n_stale = [], 0
