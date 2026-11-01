@@ -116,12 +116,30 @@ def readiness(raw):
     h("0. PRONTIDAO — a aposta que eu registar HOJE vai ter CLV a serio?")
     sample = raw[0] if raw else {}
     deployed = "clv_quality" in sample and "clv_lead_min" in sample
-    print(f"  [{'OK ' if deployed else 'NAO'}] codigo novo em producao")
+    # Be precise about WHAT is deployed. This line used to read "codigo novo em
+    # producao", which tests only for the CLV-gate fields (shipped 17 Sep) and so
+    # printed a reassuring OK on 1 Nov while production was still running the
+    # 12 Oct build, four fixes behind. A readiness check that says "OK" for a
+    # version it did not look at is worse than no check at all.
+    print(f"  [{'OK ' if deployed else 'NAO'}] contrato do CLV (clv_quality/clv_lead_min) em producao")
     if not deployed:
         print("       /api/bets ainda nao devolve clv_quality/clv_lead_min.")
         print("       FALTA O MANUAL DEPLOY NO RENDER — sem isso nada mudou.")
 
     base = URL.split("/api/")[0]
+
+    # How long has the process been up? A deploy restarts it, so an uptime older
+    # than the last commit means the newest code is NOT live, whatever the field
+    # check above says.
+    try:
+        with urllib.request.urlopen(base + "/api/diag/closing", timeout=60) as r:
+            started = (json.load(r).get("process_uptime") or {}).get("started_at")
+        if started:
+            print(f"  [i  ] processo em producao arrancou {started}")
+            print("        (um deploy reinicia o processo — se esta data for anterior")
+            print("         ao ultimo commit, o codigo mais recente NAO esta' no ar)")
+    except Exception as e:                            # noqa: BLE001 - diagnostics
+        print(f"  [?  ] idade do deploy nao lida: {e}")
     quota = None
     try:
         with urllib.request.urlopen(base + "/api/diag/quota", timeout=60) as r:
