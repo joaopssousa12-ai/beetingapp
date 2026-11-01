@@ -46,12 +46,41 @@ for bet_id, row in sorted(a.items()):
 
 ticks_before = (before.get("process_uptime") or {}).get("closing_job_ticks_this_process")
 ticks_after = (after.get("process_uptime") or {}).get("closing_job_ticks_this_process")
+job = after.get("closing_job") or {}
 print(f"\n  ticks do job: {ticks_before} -> {ticks_after}")
-print(f"  ultimo resultado: {(after.get('closing_job') or {}).get('last_result')}")
+print(f"  ultimo resultado: {job.get('last_result')}")
+
+# ── Did the CAPTURE write it, or did something else? ────────────────────────
+# A count that went up is not proof on its own. On 2026-11-01 this script printed
+# "a captura ESCREVE" about a call whose own message said "0 credits spent" — it
+# had fetched nothing, and the new snapshot came from the collection that runs at
+# startup (the process had restarted two minutes earlier). Attributing an
+# observation to a cause that could not have produced it is the same mistake as
+# averaging stale closing lines, so the attribution is now checked.
+msgs = " ".join(str(m) for m in (job.get("last_refresh_msgs") or []))
+fetched_nothing = "0 credits spent" in msgs or "no TRACKED bet" in msgs
+
+started_before = (before.get("process_uptime") or {}).get("started_at")
+started_after = (after.get("process_uptime") or {}).get("started_at")
+restarted = bool(started_after) and started_before != started_after
 
 print()
-if grew:
-    print(f"  ✅ {grew} evento(s) ganharam um snapshot novo — a captura ESCREVE.")
+if grew and fetched_nothing:
+    print(f"  ⚠ {grew} evento(s) ganharam um snapshot novo, MAS esta chamada nao")
+    print("    buscou nada ('0 credits spent'), portanto NAO foi ela que escreveu.")
+    if restarted:
+        print(f"    O processo reiniciou entre as duas leituras (arranque {started_after}):")
+        print("    a escrita veio quase certamente da recolha do arranque.")
+    else:
+        print(f"    Causa provavel: a recolha de rotina, ou o arranque ({started_after}).")
+    print("    Isto NAO prova que a captura do fecho funciona — repetir com um jogo")
+    print("    dentro da janela, para a chamada ter mesmo algo para buscar.")
+elif grew:
+    print(f"  ✅ {grew} evento(s) ganharam um snapshot novo e esta chamada buscou")
+    print("     mesmo odds — a captura ESCREVE.")
+elif fetched_nothing:
+    print("  — nada a fazer: nenhum jogo apostado dentro da janela, 0 creditos gastos.")
+    print("    Nao e' uma falha; tambem nao e' prova de que a captura funciona.")
 else:
-    print("  ❌ nenhum snapshot novo. A captura correu mas nao escreveu nada —")
+    print("  ❌ a chamada buscou odds mas nenhum snapshot novo apareceu —")
     print("     ver 'ultimo resultado' e as mensagens acima para saber porque.")
