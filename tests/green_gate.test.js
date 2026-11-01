@@ -29,7 +29,7 @@ function extract(name) {
 
 // Constants vbEval closes over, mirrored from app.js.
 const VB_VALUE_FLOOR = 2, VB_ODD_FLOOR = 1.4, VB_GREEN_MAX_ODD = 4.0;
-const VB_REF_FRESH_H = 3, VB_REF_MAX_AGE_H = 6, VB_VALUE_FLOOR_AGING = 4;
+const VB_REF_FRESH_H = 3, VB_REF_MAX_AGE_H = 6, VB_VALUE_FLOOR_AGING = 6.5;
 const vbState = { minEdge: 2 };
 function vbOddCeiling() { return 10; }
 // eslint-disable-next-line no-eval
@@ -136,9 +136,16 @@ console.log('\n  reference freshness');
   check('...and the raised floor is reported',
     ev.edgeFloor === VB_VALUE_FLOOR_AGING, `edgeFloor=${ev.edgeFloor}`);
 
+  // The floor sits at this band's measured p90 drift (6.49%), so a 5% edge is
+  // NOT enough any more — drift swallows 5% in this band about a quarter of the
+  // time. Only an edge above the p90 survives.
   b.all_picks[0].edge_pct = 5.0;
-  check('...but a 5% edge clears the raised floor',
-    vbEval(b).isValue === true, 'still blocked at 5% on a 4h-old reference');
+  check('a 5% edge is NOT enough on a 4h-old reference (drift eats it ~25% of the time)',
+    vbEval(b).isValue === false, 'a 5% edge went green against a 6.5% floor');
+
+  b.all_picks[0].edge_pct = 7.0;
+  check('...but a 7% edge clears the raised floor',
+    vbEval(b).isValue === true, 'still blocked at 7% on a 4h-old reference');
 }
 
 {

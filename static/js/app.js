@@ -543,9 +543,24 @@ function vbOddCeiling() { return Math.min(vbState.maxOdds ?? VB_HARD_CEILING, VB
 // Under 3h the line is effectively static, so a 2% edge is real signal. Past 6h
 // the drift exceeds a 2% edge around half the time — that is not a value bet, and
 // the 24h+ p90 of 14.21% is the same order as the -13.2% close we actually took.
-const VB_REF_FRESH_H = 3;        // measured: 0% of 1-3h gaps drift past 2%
-const VB_REF_MAX_AGE_H = 6;      // past here drift beats the edge ~40%+ of the time
-const VB_VALUE_FLOOR_AGING = 4;  // 3-6h: provisional — only n=4 backs this band
+// Measured on 1,578 snapshot pairs (2026-11-01), replacing a 319-pair read whose
+// 1-3h and 3-6h bands had n=4 and n=4 — too thin to set a threshold on:
+//   0-1h   n=1057   3.3% of gaps drift past 2%
+//   1-3h   n=  66  15.2% past 2%        (was 0.0% at n=4 — the thin read flattered it)
+//   3-6h   n=  43  25.6% past 2%, 20.9% past 3%, p90 6.49%
+//   6-12h  n= 112  42.9% past 2%
+//   24h+   n= 170  66.5% past 2%, p90 13.87%
+const VB_REF_FRESH_H = 3;        // 15.2% past 2% here — inside the 20% tolerance
+const VB_REF_MAX_AGE_H = 6;      // past here drift beats the edge 43%+ of the time
+// 3-6h: a 4% floor was NOT enough — 20.9% of gaps in this band drift past 3%, so
+// a 4% edge survives as ~1% one time in five, which is inside the noise. Set at
+// this band's p90 (6.49%) so at most 10% of cases can swallow it; that is the
+// highest floor the measurement can justify without interpolating percentiles.
+// Consequence, stated plainly: only 1 of 70 logged bets had an edge this big, so
+// a 3-6h-old reference will almost never go green. That is the finding, not a
+// side effect — at the edge sizes this model produces, a reference that old
+// cannot be trusted. Raised from 4.
+const VB_VALUE_FLOOR_AGING = 6.5;
 
 // Age in hours of the stored odds for this event; null when unknown.
 // updated_at is stored UTC as "YYYY-MM-DD HH:MM".

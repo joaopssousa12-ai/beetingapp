@@ -11,7 +11,7 @@ import sys
 
 # Mirrors static/js/app.js
 VB_VALUE_FLOOR = 2.0
-VB_VALUE_FLOOR_AGING = 4.0
+VB_VALUE_FLOOR_AGING = 6.5
 VB_REF_FRESH_H = 3
 VB_REF_MAX_AGE_H = 6
 
@@ -93,15 +93,35 @@ MIN_N = 10                   # below this, say so instead of concluding
 
 
 def verdict(key, floor, label):
+    """Judge a floor by how OFTEN drift swallows it, naming the statistic used.
+
+    The endpoint only reports the exact share above 2% and 3%. For a higher floor
+    those columns OVERSTATE the risk — reading a 6% floor off the ">3%" column
+    said "PISO BAIXO DEMAIS" about a floor that column cannot speak to. Above 3%
+    we fall back to the percentiles, which bound the share directly: a floor at
+    or above p90 is exceeded at most 10% of the time, and above p75 at most 25%.
+    """
     v = usable.get(key)
     if not v:
         print(f"    {label:<30} sem dados")
         return
-    share = v["share_above_2pct"] if floor <= 2 else v["share_above_3pct"]
-    note = f"deriva passa o piso em {share:.1f}% dos casos"
     if v["n"] < MIN_N:
-        print(f"    {label:<30} {note}  -> apenas n={v['n']}, INSUFICIENTE")
-    elif share > MAX_TOLERATED_SHARE:
+        print(f"    {label:<30} apenas n={v['n']}, INSUFICIENTE para concluir")
+        return
+
+    if floor <= 2:
+        share, basis = v["share_above_2pct"], "coluna >2%"
+    elif floor <= 3:
+        share, basis = v["share_above_3pct"], "coluna >3%"
+    elif floor >= v["p90"]:
+        share, basis = 10.0, f"piso >= p90 ({v['p90']:.2f}%)"
+    elif floor >= v["p75"]:
+        share, basis = 25.0, f"piso >= p75 ({v['p75']:.2f}%) mas < p90 ({v['p90']:.2f}%)"
+    else:
+        share, basis = 50.0, f"piso abaixo do p75 ({v['p75']:.2f}%)"
+
+    note = f"deriva passa o piso em ~{share:.0f}% dos casos [{basis}]"
+    if share > MAX_TOLERATED_SHARE:
         print(f"    {label:<30} {note}  -> PISO BAIXO DEMAIS")
     else:
         print(f"    {label:<30} {note}  -> piso defensavel (n={v['n']})")
@@ -109,7 +129,7 @@ def verdict(key, floor, label):
 
 verdict("0-1h", VB_VALUE_FLOOR, f"0-1h, piso {VB_VALUE_FLOOR:.0f}%")
 verdict("1-3h", VB_VALUE_FLOOR, f"1-3h, piso {VB_VALUE_FLOOR:.0f}%")
-verdict("3-6h", VB_VALUE_FLOOR_AGING, f"3-6h, piso {VB_VALUE_FLOOR_AGING:.0f}%")
+verdict("3-6h", VB_VALUE_FLOOR_AGING, f"3-6h, piso {VB_VALUE_FLOOR_AGING:.1f}%")
 
 print()
 for key in ("6-12h", "12-24h", "24h+"):
