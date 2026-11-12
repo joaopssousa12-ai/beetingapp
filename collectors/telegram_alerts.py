@@ -43,11 +43,67 @@ def _is_green(edge, odd):
     return False
 
 
+# ── Reference quality — mirrors vbEval()/vbSignal() in static/js/app.js ──────
+# The price bands above say whether an edge is big enough. These say whether the
+# reference it was measured against can be trusted at all. The site applied them
+# to the card but Telegram did not, so an alert could sell as 🟢 a pick the page
+# itself refused: a 12-hour-old Pinnacle price, a 6%-margin line, a market
+# Pinnacle does not quote. Keep the three numbers in step with app.js.
+REF_FRESH_H = 3            # VB_REF_FRESH_H
+REF_MAX_AGE_H = 6          # VB_REF_MAX_AGE_H
+VALUE_FLOOR_AGING = 6.5    # VB_VALUE_FLOOR_AGING
+
+
+def _ref_age_hours(event):
+    """Hours since this event's odds were stored (updated_at is 'YYYY-MM-DD HH:MM' UTC)."""
+    raw = event.get("updated_at")
+    if not raw:
+        return None
+    try:
+        dt = datetime.strptime(str(raw).replace("T", " ")[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    return max(0.0, (datetime.utcnow() - dt).total_seconds() / 3600.0)
+
+
+def _pin_covers_market(event, pick):
+    """Does Pinnacle quote this pick's market? Without it no close can ever be
+    captured, so the edge is unverifiable."""
+    m = (pick.get("market") or "").lower()
+    if "over" in m or "under" in m:
+        return bool(event.get("pin_over25") and event.get("pin_under25"))
+    if "btts" in m or "both teams" in m:
+        return bool(event.get("pin_btts_yes") and event.get("pin_btts_no"))
+    if "handicap" in m:
+        return bool(event.get("pin_ah_home") and event.get("pin_ah_away"))
+    return bool(event.get("pin_home") and event.get("pin_away"))
+
+
+def reference_block_reason(event, pick):
+    """Why this pick must NOT be called green regardless of its edge, or None."""
+    if event.get("ref_agreement") == "diverge_sharp":
+        return "as duas referências sharp divergem"
+    if event.get("pin_low_liquidity") is True:
+        return "margem da Pinnacle acima de 4% (linha fraca)"
+    if not _pin_covers_market(event, pick):
+        return "a Pinnacle não cota este mercado (sem CLV possível)"
+    age = _ref_age_hours(event)
+    if age is not None:
+        if age > REF_MAX_AGE_H:
+            return f"referência com {age:.1f}h (limite {REF_MAX_AGE_H}h)"
+        if age > REF_FRESH_H and (pick.get("edge_pct") or 0) < VALUE_FLOOR_AGING:
+            return (f"referência com {age:.1f}h: precisa de edge >= {VALUE_FLOOR_AGING}% "
+                    f"(tem {pick.get('edge_pct') or 0:.1f}%)")
+    return None
+
+
 def _green_1xbet_picks(event):
-    """The event's 1xBet-priced picks that clear the green gate."""
+    """The event's 1xBet-priced picks that clear the green gate: big enough edge
+    in the right odds band AND measured against a reference worth trusting."""
     return [p for p in (event.get("all_picks") or [])
             if p.get("book") == USER_BOOK and p.get("book_odd")
-            and _is_green(p.get("edge_pct"), p.get("book_odd"))]
+            and _is_green(p.get("edge_pct"), p.get("book_odd"))
+            and reference_block_reason(event, p) is None]
 
 
 # Instant alerts only fire for games inside the REAL betting window — an alert is
