@@ -215,7 +215,12 @@ def main():
 
         # C8 — does the edge claimed at entry match the Pinnacle price stored then?
         entry_ratio = None
+        ref_age_h = None       # how old was the stored reference when the bet was logged?
         placed = ts(b.get("placed_at"))
+        if placed and pre:
+            before_any = [s for s in pre if ts(s["captured_at"]) <= placed + timedelta(minutes=3)]
+            if before_any:
+                ref_age_h = max(0.0, (placed - ts(before_any[-1]["captured_at"])).total_seconds() / 3600.0)
         if placed and b.get("edge_pct") is not None and pre:
             before = [s for s in pre if ts(s["captured_at"]) <= placed + timedelta(minutes=3)]
             if before:
@@ -230,7 +235,9 @@ def main():
                                        f"(racio {entry_ratio:.3f})"))
 
         rows.append({"b": b, "lead": lead, "countable": countable, "n_last60": n_last60,
-                     "max_jump": max_jump, "entry_ratio": entry_ratio,
+                     "max_jump": max_jump, "entry_ratio": entry_ratio, "ref_age_h": ref_age_h,
+                     "hours_before_ko": ((ko - placed).total_seconds() / 3600.0
+                                         if (ko and placed) else None),
                      "first_pre": pre[0] if pre else None, "last_pre": last_pre,
                      "n_pre": len(pre)})
 
@@ -367,8 +374,40 @@ def main():
     else:
         print("    sem snapshots de entrada no historico (purga aos 30 dias).")
 
-    # ── 5. verdict ───────────────────────────────────────────────────────────
-    h("5. VEREDICTO")
+    # ── 5. how fresh was the reference when each bet was logged? ─────────────
+    # The green gate refuses a reference older than 6h and asks 6.5% between 3h
+    # and 6h, because the Pinnacle line drifts. This is the direct test of that
+    # rule on the real bet log: does the CLV fall as the reference gets older?
+    h("5. IDADE DA REFERENCIA QUANDO A APOSTA FOI REGISTADA")
+    aged = [r for r in cnt if r.get("ref_age_h") is not None]
+    if aged:
+        ages = sorted(r["ref_age_h"] for r in aged)
+        print(f"  n={len(ages)}  mediana {ages[len(ages) // 2] * 60:.0f} min   "
+              f"max {ages[-1]:.1f} h   (so' apostas com fecho valido e snapshot de entrada no historico)")
+        for label, lo_h, hi_h in (("<= 10 min (refresh mesmo antes)", 0, 10 / 60), ("10 min - 1h", 10 / 60, 1),
+                                  ("1h - 3h", 1, 3), ("3h - 6h (hoje pede 6.5%)", 3, 6),
+                                  ("> 6h (hoje bloqueado)", 6, 1e9)):
+            describe(f"  {label}", [clv(r) for r in aged if lo_h <= r["ref_age_h"] < hi_h])
+        old_ref = sorted((r for r in aged if r["ref_age_h"] >= 3), key=lambda r: -r["ref_age_h"])
+        if old_ref:
+            print("\n  apostas registadas sobre uma referencia com 3h ou mais:")
+            for r in old_ref:
+                b = r["b"]
+                print(f"     #{b['id']:<4} {(b.get('home_team') or '')[:16]:<16} v {(b.get('away_team') or '')[:16]:<16} "
+                      f"ref {r['ref_age_h']:.1f}h  edge {b.get('edge_pct') or 0:+.1f}%  CLV {clv(r):+.1f}%")
+        else:
+            print("\n  nenhuma aposta contavel foi registada sobre uma referencia com 3h ou mais.")
+    else:
+        print("  sem snapshots de entrada no historico.")
+
+    print("\n  antecedencia da aposta em relacao ao pontape de saida:")
+    lead_bets = [r for r in cnt if r.get("hours_before_ko") is not None]
+    for label, lo_h, hi_h in (("< 3h antes do jogo", 0, 3), ("3h - 6h", 3, 6), ("6h - 12h", 6, 12),
+                              ("12h - 24h", 12, 24), ("> 24h", 24, 1e9)):
+        describe(f"  {label}", [clv(r) for r in lead_bets if lo_h <= r["hours_before_ko"] < hi_h])
+
+    # ── 6. verdict ───────────────────────────────────────────────────────────
+    h("6. VEREDICTO")
     n_recent = len(recent)
     n_recent_good = sum(1 for r in recent if r["lead"] is not None and 0 <= r["lead"] <= 30)
     print(f"  integridade : {'❌ ' + str(len(problems)) + ' violacao(oes) — ver seccao 1' if problems else '✅ 0 violacoes em ' + str(len(with_close)) + ' fechos'}")
