@@ -1,0 +1,34 @@
+name: prod-get
+
+# Read-only window into production (manual). The dev sandbox cannot reach
+# onrender.com, so any "what does prod say right now?" question goes through
+# here: GET a list of paths and print a compact, truncated view of each.
+# No writes, no Odds-API credits (unless a path that spends them is passed —
+# do not pass /api/odds/refresh or /api/collection/start here).
+on:
+  workflow_dispatch:
+    inputs:
+      paths:
+        description: "Space-separated GET paths"
+        required: true
+        default: "/api/stats /api/collection/status"
+      list_items:
+        description: "Items of a long list to print"
+        required: false
+        default: "6"
+      max_chars:
+        description: "Hard cap of characters per response"
+        required: false
+        default: "6000"
+
+jobs:
+  get:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: GET
+        env:
+          PROBE_LIST_ITEMS: ${{ github.event.inputs.list_items }}
+          PROBE_MAX_CHARS: ${{ github.event.inputs.max_chars }}
+        run: python3 scripts/prod_get.py ${{ github.event.inputs.paths }}
