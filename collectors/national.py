@@ -81,13 +81,24 @@ def insert_matches(rows, since_year=2010):
     inserted = 0
     cols = "match_id,date,home_team,away_team,home_goals,away_goals,result,tournament,city,country,neutral"
 
+    # UPSERT, not insert-or-ignore. The dataset lists tournament fixtures before
+    # they are played (score "NA"), so a match is first stored with no result. With
+    # "ON CONFLICT DO NOTHING" that row was never updated again: every one of the
+    # 104 World Cup 2026 matches sat in the table with a NULL score, months after
+    # the final, and none of them ever reached the national Elo.
     if USE_POSTGRES:
         import psycopg2.extras
-        sql = f"INSERT INTO national_matches ({cols}) VALUES %s ON CONFLICT DO NOTHING"
+        sql = (f"INSERT INTO national_matches ({cols}) VALUES %s "
+               "ON CONFLICT (match_id) DO UPDATE SET "
+               "home_goals = EXCLUDED.home_goals, away_goals = EXCLUDED.away_goals, "
+               "result = EXCLUDED.result, tournament = EXCLUDED.tournament")
         try:
+            # One row per match_id: Postgres refuses an upsert batch that would
+            # touch the same row twice ("cannot affect row a second time").
+            uniq = list({row[0]: row for row in cleaned}.values())
             raw_cur = conn._conn.cursor()
-            psycopg2.extras.execute_values(raw_cur, sql, cleaned, page_size=500)
-            inserted = len(cleaned)
+            psycopg2.extras.execute_values(raw_cur, sql, uniq, page_size=500)
+            inserted = len(uniq)
             conn._conn.commit()
         except Exception as e:
             print(f"National batch insert error: {e}", flush=True)
@@ -99,12 +110,15 @@ def insert_matches(rows, since_year=2010):
         for row in cleaned:
             try:
                 cur = conn.execute(
-                    f"INSERT OR IGNORE INTO national_matches ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    f"INSERT INTO national_matches ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(match_id) DO UPDATE SET "
+                    "home_goals = excluded.home_goals, away_goals = excluded.away_goals, "
+                    "result = excluded.result, tournament = excluded.tournament",
                     row
                 )
                 inserted += max(cur.rowcount, 0)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"National upsert error: {e}", flush=True)
         conn.commit()
 
     conn.close()

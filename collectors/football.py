@@ -16,7 +16,8 @@ OPENFOOTBALL_LEAGUES = {
     "fr.1":  "Ligue 1",
 }
 
-OPENFOOTBALL_SEASONS = ["2025-26", "2024-25", "2023-24", "2022-23", "2021-22", "2020-21"]
+# Seasons are computed (collectors/seasons.py). The literal list that used to
+# live here ended at 2025-26, so the 2026-27 season was never requested.
 OPENFOOTBALL_BASE = "https://raw.githubusercontent.com/openfootball/football.json/master/{season}/{league}.json"
 
 
@@ -79,14 +80,24 @@ def insert_rows(rows):
     col_names = ", ".join(cols)
     inserted = 0
 
+    # UPSERT, not insert-or-ignore: the season file lists fixtures months before
+    # they are played, so a match is first stored with no score. With "ON CONFLICT
+    # DO NOTHING" that empty row was never touched again — the result arrived in
+    # the source and was thrown away on every later run.
     if USE_POSTGRES:
         import psycopg2.extras
-        sql = f"INSERT INTO football_matches ({col_names}) VALUES %s ON CONFLICT DO NOTHING"
-        values = [tuple(d.get(c) for c in cols) for d in rows]
+        sql = (f"INSERT INTO football_matches ({col_names}) VALUES %s "
+               "ON CONFLICT (match_id) DO UPDATE SET "
+               "home_goals = EXCLUDED.home_goals, away_goals = EXCLUDED.away_goals, "
+               "result = EXCLUDED.result, date = EXCLUDED.date")
+        # One row per match_id: Postgres refuses an upsert batch that would touch
+        # the same row twice ("cannot affect row a second time").
+        uniq = {d["match_id"]: d for d in rows}
+        values = [tuple(d.get(c) for c in cols) for d in uniq.values()]
         try:
             raw_cur = conn._conn.cursor()
             psycopg2.extras.execute_values(raw_cur, sql, values, page_size=500)
-            inserted = len(rows)
+            inserted = len(values)
             conn._conn.commit()
         except Exception as e:
             print(f"Football batch insert error: {e}", flush=True)
@@ -99,19 +110,23 @@ def insert_rows(rows):
         for d in rows:
             try:
                 cur = conn.execute(
-                    f"INSERT OR IGNORE INTO football_matches ({col_names}) VALUES {placeholders}",
+                    f"INSERT INTO football_matches ({col_names}) VALUES {placeholders} "
+                    "ON CONFLICT(match_id) DO UPDATE SET "
+                    "home_goals = excluded.home_goals, away_goals = excluded.away_goals, "
+                    "result = excluded.result, date = excluded.date",
                     list(d.values())
                 )
                 inserted += max(cur.rowcount, 0)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Football upsert error: {e}", flush=True)
         conn.commit()
 
     conn.close()
     return inserted
 
 
-def collect_football(status_callback=None):
+def collect_football(status_callback=None, seasons=None):
+    from collectors.seasons import football_seasons
     total = 0
     errors = 0
     def cb(msg):
@@ -119,7 +134,7 @@ def collect_football(status_callback=None):
         if status_callback: status_callback(msg)
 
     cb("Collecting match results from openfootball (GitHub)...")
-    for season in OPENFOOTBALL_SEASONS:
+    for season in (seasons or football_seasons(6)):
         for code, name in OPENFOOTBALL_LEAGUES.items():
             try:
                 data = fetch_openfootball(season, code)

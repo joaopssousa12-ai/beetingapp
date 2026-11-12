@@ -29,11 +29,11 @@ DIVISIONS = {
     "G1": "Super League Greece", "SC0": "Scottish Premiership",
 }
 
-# Season codes football-data uses (e.g. 2324 = 2023/24)
-SEASONS = {
-    "2526": "2025-26", "2425": "2024-25", "2324": "2023-24",
-    "2223": "2022-23", "2122": "2021-22",
-}
+# Season codes football-data uses (e.g. 2324 = 2023/24) are computed from today's
+# date (collectors/seasons.py). The literal map that used to live here ended at
+# "2526", so nothing from 2026-27 was ever imported: in November the newest
+# result in the database was still 31 May.
+from collectors.seasons import footballdata_seasons
 
 
 def _f(row, *keys):
@@ -169,7 +169,7 @@ def collect_footballdata(status_callback=None, seasons=None, divisions=None):
         if status_callback:
             status_callback(msg)
 
-    seasons = seasons or SEASONS
+    seasons = seasons or footballdata_seasons(6)
     divisions = divisions or DIVISIONS
     total, errors, with_odds = 0, 0, 0
     cb("Collecting historical odds from football-data.co.uk...")

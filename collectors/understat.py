@@ -21,7 +21,8 @@ UNDERSTAT_LEAGUES = {
     "Ligue_1": "Ligue 1",
 }
 
-SEASONS = ["2024", "2025"]  # season starting year (e.g. 2025 = 2025-26)
+from collectors.seasons import understat_seasons
+SEASONS = understat_seasons(2)  # season starting year (e.g. 2026 = 2026-27), computed
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
