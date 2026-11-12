@@ -183,7 +183,7 @@ def add_odds_from_theoddsapi(cb):
     sports = ["soccer_fifa_world_cup", "soccer_fifa_club_world_cup",
               "soccer_uefa_champs_league", "soccer_epl", "soccer_spain_la_liga",
               "soccer_germany_bundesliga", "soccer_italy_serie_a",
-              "soccer_france_ligue_1", "soccer_portugal_primeira_liga"]
+              "soccer_france_ligue_one", "soccer_portugal_primeira_liga"]
     enriched = 0
     conn = get_connection()
 
@@ -274,11 +274,22 @@ def collect_odds_apifootball(status_callback=None):
     cb("Collecting football fixtures (openfootball — reliable, no key)...")
     total = collect_openfootball_fixtures(cb)
 
-    cb("Trying to add live odds (The Odds API)...")
-    try:
-        add_odds_from_theoddsapi(cb)
-    except Exception as e:
-        cb(f"  -> Odds enrichment skipped: {e}")
+    # The enrichment exists to put Pinnacle prices on the openfootball fixtures
+    # stored just above (a World Cup, where The Odds API event list lags). When
+    # that stored nothing there is nothing to enrich — yet it still fired an
+    # un-windowed /odds call at nine leagues on EVERY refresh, ~6 credits a time,
+    # only to rewrite prices that collect_odds() fetches again seconds later. Those
+    # credits never appeared in the "cost N" line of the refresh log either, so the
+    # balance fell faster than the log could explain (measured: 441 left where the
+    # logged costs said 447).
+    if total > 0:
+        cb("Trying to add live odds (The Odds API)...")
+        try:
+            add_odds_from_theoddsapi(cb)
+        except Exception as e:
+            cb(f"  -> Odds enrichment skipped: {e}")
+    else:
+        cb("  No openfootball fixtures to enrich — skipping the extra Odds-API calls.")
 
     log_collection("football-fixtures", "success", total, f"{total} fixtures")
     cb(f"✓ Football done: {total} fixtures stored.")

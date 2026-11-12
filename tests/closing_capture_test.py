@@ -107,21 +107,23 @@ def main():
     conn.close()
     check("zero credits when nothing is backed", run_closing() == [], "spent credits anyway")
 
-    # ── 3. The throttle is bounded, so the close lands near kickoff ──────────
+    # ── 3. Two-tier pacing: sparse far out, every call in the final minutes ──
     #
-    # The guard now calls the capture every ~4 min while it holds the app awake
-    # through kickoff, so SOME throttle is needed or each ping buys a credit for
-    # the same league. What matters is that it is short enough that the last
-    # fetch still lands near kickoff — the old tennis throttle (60 min) was not.
-    print("\n3. The closing throttle is bounded, not the 60-min routine one")
+    # The capture is called every ~5 min while a backed game is inside the window,
+    # so SOME throttle is needed or each call buys a credit for the same league.
+    # What matters is where the fetches land: the far ones are only fallbacks and
+    # can be sparse; the last ones decide the closing line and must all go through.
+    print("\n3. The closing throttle is two-tier: sparse far out, open near kickoff")
     conn = db.get_connection()
     conn.execute("UPDATE bets SET status='pending' WHERE id=?", (bet_id,))
     conn.commit()
     conn.close()
 
-    check("closing throttle is at most 10 min",
-          odds.CLOSING_THROTTLE_MIN <= 10, f"got {odds.CLOSING_THROTTLE_MIN}min")
-    check("...and far below the routine tennis throttle",
+    check("in the final stretch the throttle is at most 5 min (every cron call fetches)",
+          odds.CLOSING_FINAL_THROTTLE_MIN <= 5, f"got {odds.CLOSING_FINAL_THROTTLE_MIN}min")
+    check("the final stretch covers at least the last two 5-min cron calls",
+          odds.CLOSING_FINAL_MIN >= 10, f"got {odds.CLOSING_FINAL_MIN}min")
+    check("the far throttle is far below the routine tennis throttle",
           odds.CLOSING_THROTTLE_MIN < odds.IMMINENT_CFG["tennis"]["throttle_min"],
           f"closing={odds.CLOSING_THROTTLE_MIN} tennis={odds.IMMINENT_CFG['tennis']['throttle_min']}")
 
@@ -135,7 +137,7 @@ def main():
     for key in list(odds._LAST_IMMINENT_FETCH):
         odds._LAST_IMMINENT_FETCH[key] -= timedelta(minutes=odds.CLOSING_THROTTLE_MIN + 1)
     later = run_closing(fresh=False)
-    check("once the throttle elapses it captures again (so a close lands near KO)",
+    check("once the far throttle elapses it captures again",
           later == ["tennis_atp_us_open"], f"got {later}")
 
     # ── 4. Quota floors ──────────────────────────────────────────────────────
@@ -157,6 +159,52 @@ def main():
     odds._LAST_REMAINING["v"] = odds.CLOSING_MIN_QUOTA - 1
     check("below its own floor the closing capture finally stops too",
           run_closing() == [], "kept spending below the closing floor")
+
+    # ── 5. Where do the fetches actually land? Simulate the real callers ─────
+    #
+    # Time is simulated by moving the DATA, not the clock: before each call the
+    # kickoff is set to "now + m minutes" and the throttle clock is aged by the
+    # interval since the previous call. That is exactly what the capture sees in
+    # production, without patching datetime inside two modules.
+    print("\n5. Simulated run-in to a kickoff")
+    odds._LAST_REMAINING["v"] = 400
+
+    def simulate(minutes_before, step):
+        """Call the capture at each `minutes_before` mark; return the marks that fetched."""
+        odds._LAST_IMMINENT_FETCH.clear()
+        fetched_at = []
+        for m in minutes_before:
+            ko = datetime.utcnow() + timedelta(minutes=m, seconds=-11)   # cron lands ~11s late
+            c = db.get_connection()
+            c.execute("UPDATE bets SET commence_time=? WHERE id=?",
+                      (ko.strftime("%Y-%m-%dT%H:%M:%SZ"), bet_id))
+            c.execute("UPDATE odds_events SET commence_time=? WHERE event_id='e3'",
+                      (ko.strftime("%Y-%m-%dT%H:%M:%SZ"),))
+            c.commit()
+            c.close()
+            for key in list(odds._LAST_IMMINENT_FETCH):
+                odds._LAST_IMMINENT_FETCH[key] -= timedelta(minutes=step)
+            calls.clear()
+            odds.refresh_imminent_odds(status_callback=lambda _m: None, within_minutes=45)
+            if calls:
+                fetched_at.append(m)
+        return fetched_at
+
+    cron = simulate(range(60, -10, -5), step=5)           # external cron, every 5 min
+    print(f"     cron de 5 em 5 min  -> buscou a T-{cron}")
+    check("with the 5-min cron the LAST fetch is 5 min before kickoff",
+          bool(cron) and cron[-1] == 5, f"fetches at T-{cron}")
+    check("...and the one before it is also inside the final ten minutes (redundancy)",
+          len(cron) >= 2 and cron[-2] <= 10, f"fetches at T-{cron}")
+    check("...for at most 4 credits per backed kickoff (it was 5)",
+          len(cron) <= 4, f"{len(cron)} fetches at T-{cron}")
+    check("nothing is fetched before the window opens or after kickoff",
+          all(0 < m <= 45 for m in cron), f"fetches at T-{cron}")
+
+    internal = simulate(range(60, -20, -15), step=15)     # in-app scheduler alone
+    print(f"     so' o agendador interno (15 min) -> buscou a T-{internal}")
+    check("with ONLY the in-app scheduler the last fetch is still <= 15 min out",
+          bool(internal) and internal[-1] <= 15, f"fetches at T-{internal}")
 
     print(f"\n{'✅ ALL CHECKS PASSED' if failures == 0 else f'❌ {failures} CHECK(S) FAILED'}\n")
     return 1 if failures else 0

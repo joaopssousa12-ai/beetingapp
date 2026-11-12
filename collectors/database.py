@@ -87,8 +87,20 @@ def purge_out_of_scope_and_stale(max_age_hours=24):
             "WHERE sport_key NOT LIKE 'soccer%' AND sport_key NOT LIKE 'tennis%'"
         )
         cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        # Never purge an event that still has a pending bet on it. This purge runs
+        # at every process start — so on every deploy — and a bet logged on Friday
+        # for a Sunday game has a >24h-old event row by Sunday morning. Deleting it
+        # removed the game from the closing-capture targeting and from the page.
+        try:
+            protected = {r["event_id"] for r in conn.execute(
+                "SELECT DISTINCT event_id FROM bets "
+                "WHERE status = 'pending' AND event_id IS NOT NULL").fetchall()}
+        except Exception:
+            protected = set()
         stale = 0
         for r in conn.execute("SELECT event_id, updated_at FROM odds_events").fetchall():
+            if r["event_id"] in protected:
+                continue
             u = r["updated_at"]
             try:
                 dt = datetime.strptime(str(u)[:16], "%Y-%m-%d %H:%M") if u else None
@@ -749,6 +761,23 @@ def init_db():
         except Exception:
             pass  # already exists
 
+    # Migrate: the Odds-API sport key of the event the bet was placed on, copied
+    # onto the bet itself. The closing capture decides which league to fetch from
+    # this; it used to JOIN odds_events for it, so a bet whose event row had been
+    # purged (the 24h stale purge runs on every restart — i.e. on every deploy)
+    # simply dropped out of the targeting and its close was never captured.
+    try:
+        c.execute("ALTER TABLE bets ADD COLUMN sport_key TEXT")
+    except Exception:
+        pass  # already exists
+    try:
+        c.execute(
+            "UPDATE bets SET sport_key = (SELECT e.sport_key FROM odds_events e "
+            "WHERE e.event_id = bets.event_id) "
+            "WHERE sport_key IS NULL AND event_id IS NOT NULL AND status = 'pending'")
+    except Exception as e:
+        print(f"bets.sport_key backfill skipped: {e}", flush=True)
+
     # Migrate: normalize bets.commence_time to canonical ISO UTC
     # ('YYYY-MM-DDTHH:MM:SSZ'). Historical rows mixed 'YYYY-MM-DDTHH:MM' (no Z —
     # browsers parse that as LOCAL time, skewing kickoff displays) with other
@@ -926,6 +955,15 @@ def remove_vig(odds_home, odds_draw, odds_away):
     }
 
 
+# The implied probabilities of a complete market sum to ~1.00-1.10 (the excess is
+# the bookmaker's margin). Below this the market is missing an outcome.
+MIN_PLAUSIBLE_BOOK = 0.94
+# A closing line with a margin this fat is not a usable fair-price reference:
+# Pinnacle's own 1X2 margin is 2-4% (minor leagues ~6%). Past this the "close" is
+# a suspended or junk quote, so the CLV stays pending instead of being computed.
+CLOSE_MAX_VIG_PCT = 12.0
+
+
 def remove_vig_power(odds_home, odds_draw, odds_away):
     """
     Power (Shin) devig — more accurate than proportional for 3-way markets.
@@ -947,6 +985,14 @@ def remove_vig_power(odds_home, odds_draw, odds_away):
         imp.insert(1, 1.0 / odds_draw)  # keep home/draw/away order
 
     raw_vig = sum(imp)
+    if raw_vig < MIN_PLAUSIBLE_BOOK:
+        # The implied probabilities of a COMPLETE market always add up to about
+        # 100% or more. A total far below that means an outcome is missing — the
+        # classic case being a three-way football line that arrived without its
+        # draw. Normalising home+away to 100% would then hand back "fair" odds 25-40%
+        # too short, and a closing line built on that reports a CLV of +30% or more
+        # for a bet that had none. Refuse rather than fabricate.
+        return None
     if raw_vig <= 1.0:
         # No vig — already fair odds
         s = sum(imp)
@@ -1963,10 +2009,10 @@ def add_bet(bet_data):
     # Canonical timestamp: commence_time is stored as ISO UTC 'YYYY-MM-DDTHH:MM:SSZ'
     # regardless of what shape the client sent — one format ends the class of bugs
     # where mixed formats get string-compared (CLV close capture, auto-grade).
-    commence = bet_data.get("commence_time")
-    _ct = _parse_ts(commence)
-    if _ct:
-        commence = _ct.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # An unparseable or empty value is stored as NULL, never as '' — an empty
+    # string passes "IS NOT NULL" and then breaks every timestamp cast on it.
+    _ct = _parse_ts(bet_data.get("commence_time"))
+    commence = _ct.strftime("%Y-%m-%dT%H:%M:%SZ") if _ct else None
 
     # Provenance of the edge (see the bets migration). Constrained to the known
     # vocabulary so a malformed client can't poison the split later.
@@ -1977,15 +2023,35 @@ def add_bet(bet_data):
     ref_agreement = bet_data.get("ref_agreement")
     ref_agreement = ref_agreement if ref_agreement in _AGREEMENTS else None
 
-    cur.execute("""
+    # The league this bet belongs to, copied from the event while its row still
+    # exists. The closing capture targets by THIS column, so the bet stays
+    # capturable even if the event row is purged before kickoff. When the event
+    # also carries a kickoff time and the client sent none, use the event's.
+    event_id = bet_data.get("event_id") or None
+    sport_key = None
+    if event_id:
+        try:
+            ev = cur.execute(
+                "SELECT sport_key, commence_time FROM odds_events WHERE event_id = ?",
+                (event_id,)).fetchone()
+            if ev:
+                sport_key = ev["sport_key"]
+                if commence is None:
+                    _et = _parse_ts(ev["commence_time"])
+                    commence = _et.strftime("%Y-%m-%dT%H:%M:%SZ") if _et else None
+        except Exception as e:                        # noqa: BLE001 - optional enrichment
+            print(f"add_bet: event lookup failed: {e}", flush=True)
+
+    sql = """
         INSERT INTO bets (
             placed_at, event_id, sport_name, home_team, away_team, commence_time,
             market, selection, bookmaker, odds, stake,
-            pin_implied_prob, edge_pct, notes, odds_source, ref_agreement
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+            pin_implied_prob, edge_pct, notes, odds_source, ref_agreement, sport_key
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """
+    params = (
         bet_data.get("placed_at") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        bet_data.get("event_id"),
+        event_id,
         bet_data.get("sport_name"),
         bet_data.get("home_team"),
         bet_data.get("away_team"),
@@ -2000,11 +2066,67 @@ def add_bet(bet_data):
         bet_data.get("notes"),
         odds_source,
         ref_agreement,
-    ))
-    bet_id = cur.lastrowid
+        sport_key,
+    )
+    if USE_POSTGRES:
+        # psycopg2's lastrowid is the row OID (0/None on modern tables), so the
+        # API was answering {"ok": true, "id": null} in production.
+        cur.execute(sql.rstrip() + " RETURNING id", params)
+        bet_id = cur.fetchone()["id"]
+    else:
+        cur.execute(sql, params)
+        bet_id = cur.lastrowid
     conn.commit()
     conn.close()
     return bet_id
+
+
+def find_recent_duplicate_bet(bet_data, within_seconds=120):
+    """Id of an identical PENDING bet logged in the last `within_seconds`, or None.
+
+    Guards the double submit. The bet form had no in-flight lock, so a second
+    click (or a retry after a slow response) logged the same bet twice: in the
+    real log #93/#94 are the same game, selection, odd and stake, and ids 94,
+    104, 106 and 107 were all deleted by hand afterwards. A duplicate counts
+    twice in every statistic, including the CLV average.
+
+    "Identical" = same event (or same teams when there is no event), market,
+    selection, odd and stake. Two genuinely separate bets on one selection are
+    never placed within two minutes at the same odd and stake.
+    """
+    from datetime import datetime, timedelta
+    try:
+        odds = float(bet_data.get("odds") or 0)
+        stake = float(bet_data.get("stake") or 0)
+    except (TypeError, ValueError):
+        return None
+    cutoff = (datetime.utcnow() - timedelta(seconds=within_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    try:
+        # placed_at and the cutoff share 'YYYY-MM-DD HH:MM:SS', so the string
+        # comparison is exact on both SQLite and Postgres.
+        rows = conn.execute(
+            "SELECT id, event_id, home_team, away_team, market, selection, odds, stake "
+            "FROM bets WHERE status = 'pending' AND placed_at >= ? ORDER BY id DESC",
+            (cutoff,)).fetchall()
+    finally:
+        conn.close()
+    want_event = bet_data.get("event_id") or None
+    want_market = bet_data.get("market", "h2h")
+    want_sel = (bet_data.get("selection") or "").strip().lower()
+    for r in rows:
+        if (r["selection"] or "").strip().lower() != want_sel or r["market"] != want_market:
+            continue
+        if abs((r["odds"] or 0) - odds) > 1e-9 or abs((r["stake"] or 0) - stake) > 1e-9:
+            continue
+        if want_event:
+            if r["event_id"] != want_event:
+                continue
+        elif (r["event_id"] or (r["home_team"] or "") != (bet_data.get("home_team") or "")
+              or (r["away_team"] or "") != (bet_data.get("away_team") or "")):
+            continue
+        return r["id"]
+    return None
 
 
 def update_bet_result(bet_id, result):
@@ -2139,21 +2261,27 @@ def get_bet_stats():
     # not a close, so it must not enter the headline average. Averaging stale
     # closes was making the dashboard report a confident "avg CLV" that largely
     # just restated the entry edge.
+    # The "has it started" test is done in Python, not SQL: on Postgres the
+    # translation layer casts commence_time to TIMESTAMP, and a single malformed
+    # value in that column would abort the whole statement and take the stats
+    # endpoint down with it.
+    from datetime import datetime as _dt
     clv = conn.execute("""
-        SELECT odds, pin_close_fair_odds, commence_time, pin_close_captured_at
+        SELECT odds, pin_close_fair_odds, commence_time, pin_close_captured_at, status
         FROM bets
         WHERE pin_close_fair_odds IS NOT NULL AND odds IS NOT NULL
-          AND (status = 'settled'
-               OR (commence_time IS NOT NULL AND commence_time <= datetime('now')))
     """).fetchall()
 
+    _now = _dt.utcnow()
     clv_values, n_stale = [], 0
     for row in clv:
+        ko = _parse_ts(row["commence_time"])
+        if row["status"] != "settled" and not (ko and ko <= _now):
+            continue                      # match not started yet: no close exists
         try:
             value = (row["odds"] / row["pin_close_fair_odds"] - 1) * 100
         except Exception:
             continue
-        ko = _parse_ts(row["commence_time"])
         cap = _parse_ts(row["pin_close_captured_at"])
         lead = round((ko - cap).total_seconds() / 60.0) if (ko and cap) else None
         if clv_counts(clv_quality(lead)):
@@ -2269,18 +2397,23 @@ def _pin_price_for_bet(snapshot, market, sel, home_lower, away_lower):
     return None
 
 
-def _fair_close_prob(snapshot, market, sel, home_lower, away_lower):
+def _fair_close_prob(snapshot, market, sel, home_lower, away_lower, three_way=False):
     """Devigged (no-vig, power method) close probability for the bet's selection,
     from a full odds_history snapshot. Requires the counter-price(s) so the vig
     can actually be stripped — returns None when they're missing rather than
-    normalizing a one-sided market to 100%."""
+    normalizing a one-sided market to 100%.
+
+    three_way=True says this event is a 1X2 market (some snapshot of it carries a
+    draw price), so a snapshot WITHOUT the draw is incomplete and must not be
+    devigged as if it were a two-way line. A margin above CLOSE_MAX_VIG_PCT is
+    refused too: that is a suspended or junk quote, not a closing line."""
     if market in ("h2h", "match result", "1x2"):
         if not (snapshot["pin_home"] and snapshot["pin_away"]):
             return None
-        if sel in ("draw", "empate", "x") and not snapshot["pin_draw"]:
+        if (three_way or sel in ("draw", "empate", "x")) and not snapshot["pin_draw"]:
             return None
         fair = remove_vig_power(snapshot["pin_home"], snapshot["pin_draw"], snapshot["pin_away"])
-        if not fair:
+        if not fair or (fair.get("vig_pct") or 0) > CLOSE_MAX_VIG_PCT:
             return None
         if sel == home_lower or sel in ("home", "1"):
             p = fair["home"]
@@ -2294,14 +2427,14 @@ def _fair_close_prob(snapshot, market, sel, home_lower, away_lower):
         if not (snapshot["pin_over25"] and snapshot["pin_under25"]):
             return None
         fair = remove_vig_power(snapshot["pin_over25"], None, snapshot["pin_under25"])
-        if not fair:
+        if not fair or (fair.get("vig_pct") or 0) > CLOSE_MAX_VIG_PCT:
             return None
         p = fair["home"] if "over" in sel else fair["away"] if "under" in sel else None
     elif market in ("btts", "both teams to score"):
         if not (snapshot["pin_btts_yes"] and snapshot["pin_btts_no"]):
             return None
         fair = remove_vig_power(snapshot["pin_btts_yes"], None, snapshot["pin_btts_no"])
-        if not fair:
+        if not fair or (fair.get("vig_pct") or 0) > CLOSE_MAX_VIG_PCT:
             return None
         if "yes" in sel or "sim" in sel:
             p = fair["home"]
@@ -2312,6 +2445,40 @@ def _fair_close_prob(snapshot, market, sel, home_lower, away_lower):
     else:
         return None
     return (p / 100.0) if p else None
+
+
+# After kickoff the close is normally final. For this long we still re-derive it,
+# because the kickoff itself can move: The Odds API reschedules tennis matches
+# through the day and parse_and_store() copies the new time onto the bet. A
+# close captured at the ORIGINAL time is then early, and the later pre-match
+# snapshots that follow have to be allowed to replace it.
+CLOSE_RECHECK_HOURS = int(os.environ.get("CLOSE_RECHECK_HOURS", "6"))
+# A bet whose best pre-kickoff snapshot is older than this did not get a real
+# closing line. Telegram is told once, so a broken capture is noticed the same
+# day instead of weeks later in an audit (which is how it was found last time).
+CLOSE_ALERT_LEAD_MIN = int(os.environ.get("CLOSE_ALERT_LEAD_MIN", "30"))
+_close_alerted = set()          # bet ids already reported (this process)
+LAST_CAPTURE_REPORT = {"at": None, "late": []}
+
+
+def _alert_late_close(bet, lead_min):
+    """Best-effort Telegram warning for a missed/late closing capture. Never raises."""
+    try:
+        from collectors.telegram_alerts import _send
+        if lead_min is None:
+            what = "<b>nenhum snapshot</b> da Pinnacle antes do pontapé. Esta aposta fica sem CLV."
+        elif lead_min > CLV_MAX_LEAD_MIN:
+            what = (f"melhor snapshot a <b>{lead_min:.0f} min</b> do pontapé — "
+                    "demasiado cedo, o CLV desta aposta NÃO vai contar.")
+        else:
+            what = (f"melhor snapshot a <b>{lead_min:.0f} min</b> do pontapé — "
+                    "conta, mas não é um fecho a sério (o normal são ~5 min).")
+        _send("⚠️ <b>BetIQ — fecho não capturado a tempo</b>\n"
+              f"#{bet['id']} {bet['home_team']} v {bet['away_team']} — {bet['selection']}\n"
+              f"{what}\n"
+              "Vê se o cron-job.org está ativo e se há créditos da Odds API.")
+    except Exception as e:                            # noqa: BLE001 - never break capture
+        print(f"LATE_CLOSE_ALERT failed: {e}", flush=True)
 
 
 def capture_pinnacle_close_for_started_events(recapture=False):
@@ -2338,26 +2505,37 @@ def capture_pinnacle_close_for_started_events(recapture=False):
     inside Pinnacle's margin, which inflates CLV by ~2-4pp and is not real value.
     Normal mode also backfills fair odds for bets captured before this column
     existed (runs automatically after odds refresh / on My Bets load).
+
+    The close is IDEMPOTENT, not write-once: it is always "the latest pre-kickoff
+    snapshot that can be devigged". Bets whose kickoff was within the last
+    CLOSE_RECHECK_HOURS are re-derived on every call, so a later snapshot (after a
+    rescheduled kickoff) replaces an earlier one instead of being ignored.
     """
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timedelta as _td
     conn = get_connection()
-    where_close = "" if recapture else \
-        "AND (b.pin_close_odds IS NULL OR b.pin_close_fair_odds IS NULL)"
-    rows = conn.execute(f"""
+    # No time/close filter in SQL: the rows are few (one per logged bet) and every
+    # timestamp decision is made in Python, where the two stored formats cannot be
+    # string-compared by accident.
+    rows = conn.execute("""
         SELECT b.id, b.selection, b.market, b.home_team, b.away_team,
-               b.event_id, b.commence_time, b.pin_close_odds
+               b.event_id, b.commence_time, b.pin_close_odds,
+               b.pin_close_fair_odds, b.pin_close_captured_at
         FROM bets b
         WHERE b.event_id IS NOT NULL
           AND b.commence_time IS NOT NULL
-          {where_close}
     """).fetchall()
 
     now = _dt.utcnow()
     updated = 0
+    late = []
     for r in rows:
         kickoff = _parse_ts(r["commence_time"])
         if not kickoff or kickoff > now:
             continue  # not kicked off yet (or unparseable) — nothing to capture
+        missing = r["pin_close_odds"] is None or r["pin_close_fair_odds"] is None
+        recent = (now - kickoff) <= _td(hours=CLOSE_RECHECK_HOURS)
+        if not (recapture or missing or recent):
+            continue  # an old, complete close is final
 
         snapshots = conn.execute("""
             SELECT pin_home, pin_draw, pin_away,
@@ -2372,41 +2550,73 @@ def capture_pinnacle_close_for_started_events(recapture=False):
         market = (r["market"] or "h2h").lower()
         home_lower = (r["home_team"] or "").lower()
         away_lower = (r["away_team"] or "").lower()
+        # A 1X2 event shows a draw price in at least one snapshot; a snapshot of
+        # it WITHOUT the draw is incomplete and cannot be devigged honestly.
+        three_way = any(s["pin_draw"] for s in snapshots)
 
-        # Latest snapshot at/before kickoff that actually quotes our selection.
+        # Latest snapshot at/before kickoff that quotes our selection — preferring
+        # one that can actually be DEVIGGED (all legs present, sane margin), since
+        # only a fair close produces a CLV. A raw-only snapshot is the fallback.
         # NO fallback to post-kickoff snapshots or current odds_events: those are
         # live/near-now prices, which would fabricate a closing line (= CLV vs now,
         # not a real close). If there is no genuine PRE-kickoff snapshot, leave
         # pin_close NULL so the CLV stays pending — never a faked number.
-        best_ts, pin_close, close_at, close_snap = None, None, None, None
+        best_fair = None    # (ts, price, captured_at, fair_prob)
+        best_raw = None     # (ts, price, captured_at)
         for s in snapshots:
             ts = _parse_ts(s["captured_at"])
             if ts is None or ts > kickoff:
                 continue
             price = _pin_price_for_bet(s, market, sel, home_lower, away_lower)
-            if price and (best_ts is None or ts > best_ts):
-                best_ts, pin_close, close_at, close_snap = ts, price, s["captured_at"], s
+            if not price:
+                continue
+            if best_raw is None or ts > best_raw[0]:
+                best_raw = (ts, price, s["captured_at"])
+            fp = _fair_close_prob(s, market, sel, home_lower, away_lower, three_way=three_way)
+            if fp and (best_fair is None or ts > best_fair[0]):
+                best_fair = (ts, price, s["captured_at"], fp)
 
-        if pin_close:
-            fair_prob = _fair_close_prob(close_snap, market, sel, home_lower, away_lower)
-            fair_odds = round(1.0 / fair_prob, 3) if fair_prob else None
-            conn.execute("""
-                UPDATE bets SET pin_close_odds=?, pin_close_implied=?,
-                                pin_close_fair_odds=?, pin_close_captured_at=?
-                WHERE id=?
-            """, (pin_close, round(1.0 / pin_close * 100, 2), fair_odds, close_at, r["id"]))
-            if r["pin_close_odds"] != pin_close or recapture:
+        if best_fair or best_raw:
+            if best_fair:
+                close_ts, pin_close, close_at, fair_prob = best_fair
+                fair_odds = round(1.0 / fair_prob, 3)
+            else:
+                close_ts, pin_close, close_at = best_raw
+                fair_odds = None
+            same = (r["pin_close_odds"] == pin_close
+                    and r["pin_close_fair_odds"] == fair_odds
+                    and str(r["pin_close_captured_at"]) == str(close_at))
+            if not same:
+                conn.execute("""
+                    UPDATE bets SET pin_close_odds=?, pin_close_implied=?,
+                                    pin_close_fair_odds=?, pin_close_captured_at=?
+                    WHERE id=?
+                """, (pin_close, round(1.0 / pin_close * 100, 2), fair_odds, close_at, r["id"]))
                 updated += 1
-        elif recapture and r["pin_close_odds"] is not None:
-            conn.execute("""
-                UPDATE bets SET pin_close_odds=NULL, pin_close_implied=NULL,
-                                pin_close_fair_odds=NULL, pin_close_captured_at=NULL
-                WHERE id=?
-            """, (r["id"],))
-            updated += 1
+            elif recapture:
+                updated += 1
+            lead = (kickoff - close_ts).total_seconds() / 60.0
+        else:
+            lead = None
+            if recapture and r["pin_close_odds"] is not None:
+                conn.execute("""
+                    UPDATE bets SET pin_close_odds=NULL, pin_close_implied=NULL,
+                                    pin_close_fair_odds=NULL, pin_close_captured_at=NULL
+                    WHERE id=?
+                """, (r["id"],))
+                updated += 1
+
+        # Watchdog: the kickoff has passed and the best we have is not a real close.
+        if (lead is None or lead > CLOSE_ALERT_LEAD_MIN) and (now - kickoff) <= _td(hours=24):
+            late.append({"id": r["id"], "lead_min": None if lead is None else round(lead, 1)})
+            if r["id"] not in _close_alerted:
+                _close_alerted.add(r["id"])
+                _alert_late_close(dict(r), lead)
 
     conn.commit()
     conn.close()
+    LAST_CAPTURE_REPORT["at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+    LAST_CAPTURE_REPORT["late"] = late
     return updated
 
 
@@ -2761,68 +2971,99 @@ def xg_based_probability(home_team, away_team):
     }
 
 
-def next_pending_kickoff():
-    """Earliest FUTURE kickoff among tracked pending bets, or None.
+def pending_bet_kickoffs():
+    """[(bet_id, sport_key, kickoff)] for every PENDING bet tied to an event.
 
-    One cheap row. The closing capture calls this to learn when it next has
-    anything to do, then caches the answer in memory — so the 5-minute cron that
-    keeps Render awake stops opening a database connection 288 times a day when
-    the next kickoff is hours away. That traffic is what exhausted the Neon free
-    compute allowance: a query every 5 minutes never lets the compute suspend.
+    The single source of truth for "which backed games are still to be played",
+    shared by the closing-capture targeting and by the in-memory skip cache so
+    the two can never disagree about a kickoff.
 
-    RAISES on a database failure. Returning None here would be far worse than it
-    looks: None means "nothing pending", the caller caches that for up to an hour
-    and answers every cron call from memory — so one transient error would blind
-    the capture through a whole afternoon of kickoffs. The caller leaves the cache
-    untouched when this raises, and falls back to asking the database.
-    """
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT MIN(commence_time) AS ko FROM bets "
-            "WHERE status = 'pending' AND commence_time IS NOT NULL "
-            "AND commence_time > datetime('now')"
-        ).fetchone()
-    finally:
-        try:
-            conn.close()
-        except Exception:                             # noqa: BLE001 - already failing
-            pass
-    return _parse_ts(dict(row).get("ko")) if row else None
-
-
-def sport_keys_with_pending_bets(within_minutes):
-    """Sport keys that have a TRACKED PENDING bet kicking off in the next N minutes.
-
-    The closing capture used to re-fetch every football/tennis league that had any
-    game about to start — 96 cron ticks a day, 1 credit per league per tick, whether
-    or not a single one of those games was backed. The only games whose closing line
-    we actually need are the ones we have money on, so target those instead: the
-    cost stops scaling with the fixture list and starts scaling with the bet log
-    (~1 credit per bet), which is what makes spending credits here affordable.
+      * sport_key comes from the bet itself (copied there when it was logged);
+        the JOIN on odds_events is only a fallback for bets logged before that
+        column existed. A purged event row therefore no longer hides a bet.
+      * kickoff prefers the event's time (rewritten from the API on every fetch,
+        so it follows a rescheduled match) over the bet's own copy.
+      * every timestamp is compared in Python. commence_time is stored as
+        'YYYY-MM-DDTHH:MM:SSZ' and SQLite's datetime('now') as
+        'YYYY-MM-DD HH:MM:SS'; compared as strings, 'T' sorts after ' ', so a
+        kickoff earlier TODAY still read as "in the future".
 
     RAISES on a database failure — it does NOT return []. An empty list is a real
-    answer ("nothing is backed right now") and the caller acts on it by skipping
-    the fetch and reporting "0 credits spent". Swallowing the exception made those
-    two states identical, so an unreachable database produced a tick that looked
-    perfectly healthy while silently missing the close. That is the same defect
-    that made the CLV fiction: a failure must never read as a measurement.
+    answer ("nothing is backed right now") and callers act on it by skipping the
+    fetch. Swallowing the exception made those two states identical, so an
+    unreachable database produced a tick that looked perfectly healthy while
+    silently missing the close. A failure must never read as a measurement.
     """
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT DISTINCT e.sport_key FROM bets b "
-            "JOIN odds_events e ON e.event_id = b.event_id "
-            "WHERE b.status = 'pending' AND b.event_id IS NOT NULL "
-            "AND e.commence_time > datetime('now') "
-            f"AND e.commence_time < datetime('now', '+{int(within_minutes)} minutes')"
+            "SELECT b.id AS bet_id, b.sport_key AS bet_key, b.commence_time AS bet_ko, "
+            "e.sport_key AS ev_key, e.commence_time AS ev_ko "
+            "FROM bets b LEFT JOIN odds_events e ON e.event_id = b.event_id "
+            "WHERE b.status = 'pending' AND b.event_id IS NOT NULL"
         ).fetchall()
     finally:
         try:
             conn.close()
         except Exception:                             # noqa: BLE001 - already failing
             pass
-    return [r["sport_key"] for r in rows if r["sport_key"]]
+    out = []
+    for r in rows:
+        ko = _parse_ts(r["ev_ko"]) or _parse_ts(r["bet_ko"])
+        out.append((r["bet_id"], r["bet_key"] or r["ev_key"], ko))
+    return out
+
+
+def next_pending_kickoff():
+    """Earliest FUTURE kickoff among tracked pending bets, or None.
+
+    The closing capture calls this to learn when it next has anything to do,
+    then caches the answer in memory — so the 5-minute cron that keeps Render
+    awake stops opening a database connection 288 times a day when the next
+    kickoff is hours away. That traffic is what exhausted the Neon free compute
+    allowance: a query every 5 minutes never lets the compute suspend.
+
+    RAISES on a database failure (see pending_bet_kickoffs). Returning None here
+    would be far worse than it looks: None means "nothing pending", the caller
+    caches that for up to an hour and answers every cron call from memory — so
+    one transient error would blind the capture through a whole afternoon of
+    kickoffs. The caller leaves the cache untouched when this raises.
+    """
+    from datetime import datetime as _dt
+    now = _dt.utcnow()
+    future = [ko for _id, _key, ko in pending_bet_kickoffs() if ko and ko > now]
+    return min(future) if future else None
+
+
+def closing_targets(within_minutes):
+    """{sport_key: minutes to the NEAREST tracked kickoff} inside the window.
+
+    The closing capture used to re-fetch every football/tennis league that had any
+    game about to start — 96 cron ticks a day, 1 credit per league per tick, whether
+    or not a single one of those games was backed. The only games whose closing line
+    we actually need are the ones we have money on, so target those instead: the
+    cost stops scaling with the fixture list and starts scaling with the bet log.
+
+    The minutes-to-kickoff lets the caller pace its fetches: sparse while the game
+    is still far off, every tick in the final minutes where the close is decided.
+    RAISES on a database failure (see pending_bet_kickoffs).
+    """
+    from datetime import datetime as _dt
+    now = _dt.utcnow()
+    out = {}
+    for _id, key, ko in pending_bet_kickoffs():
+        if not key or not ko:
+            continue
+        mins = (ko - now).total_seconds() / 60.0
+        if 0 < mins < within_minutes and (key not in out or mins < out[key]):
+            out[key] = mins
+    return out
+
+
+def sport_keys_with_pending_bets(within_minutes):
+    """Sport keys that have a TRACKED PENDING bet kicking off in the next N minutes.
+    RAISES on a database failure — [] means only "nothing is backed"."""
+    return list(closing_targets(within_minutes).keys())
 
 
 def get_line_movement(event_id):

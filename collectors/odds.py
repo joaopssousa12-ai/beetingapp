@@ -98,12 +98,35 @@ CLOSING_MIN_QUOTA = int(os.environ.get("CLOSING_MIN_QUOTA", "5"))
 # scales with how much you bet (~1 credit/bet) instead of with the fixture list.
 # Set to "0" to go back to refreshing every league with an imminent game.
 CLOSING_TRACKED_ONLY = os.environ.get("CLOSING_TRACKED_ONLY", "1") != "0"
-# The closing-guard now calls /api/closing/run on every ping (~every 4 min) while
-# it holds the app awake through kickoff. Without a throttle each of those pings
-# would buy a fresh credit for the same league. 8 minutes means ~3 fetches across
-# a 40-minute guard window — the last of them within ~8 min of kickoff, which is
-# a genuine close — for ~3 credits per backed game.
-CLOSING_THROTTLE_MIN = int(os.environ.get("CLOSING_THROTTLE_MIN", "8"))
+# The capture is called every ~5 min (external cron) plus every 15 min (internal
+# scheduler). Each call that fetches costs 1 credit per backed league, so the
+# pacing is two-tier, set by how far the NEAREST backed kickoff of that league is:
+#
+#   far  (> CLOSING_FINAL_MIN from kickoff): at most one fetch per
+#        CLOSING_THROTTLE_MIN. These are only fallbacks in case the final ones
+#        fail, so they are sparse.
+#   near (<= CLOSING_FINAL_MIN): every call fetches (CLOSING_FINAL_THROTTLE_MIN
+#        only dedupes the cron and the scheduler landing together). This is where
+#        the closing line is decided, and where one failed request must not cost
+#        the close — the single 8-minute throttle used before let exactly that
+#        happen (bet #90: the last fetch was 14 minutes out).
+#
+# With a 5-minute cron and a 45-minute window that is T-45, T-25, T-10, T-5:
+# 4 credits per backed kickoff instead of 5, with two shots in the last ten
+# minutes instead of one.
+CLOSING_THROTTLE_MIN = int(os.environ.get("CLOSING_THROTTLE_MIN", "20"))
+CLOSING_FINAL_MIN = int(os.environ.get("CLOSING_FINAL_MIN", "12"))
+CLOSING_FINAL_THROTTLE_MIN = int(os.environ.get("CLOSING_FINAL_THROTTLE_MIN", "3"))
+# A manual refresh costs ~15-20 credits. Below this balance it is refused (unless
+# forced), so the month's last credits stay reserved for the closing capture of
+# bets already logged — the only spend that makes a bet verifiable. Without this
+# a couple of refreshes late in the month could take the balance to zero and
+# with it every remaining CLV.
+MANUAL_REFRESH_MIN_QUOTA = int(os.environ.get("MANUAL_REFRESH_MIN_QUOTA", "60"))
+
+
+class QuotaReserved(Exception):
+    """Raised when a manual refresh would eat into the closing-capture reserve."""
 
 # SCOPE (free-tier conservation): auto-collection — full sweep + imminent + closing —
 # is limited to FOOTBALL and TENNIS only. All other sports (basketball, cricket, MMA,
@@ -147,6 +170,13 @@ def get_active_sports():
     """
     try:
         r = requests.get(f"{BASE}/sports", params={"apiKey": API_KEY}, timeout=15)
+        # /sports is free but still reports the balance — so the reserve check in
+        # collect_odds() can run BEFORE the first paid call, even right after a
+        # restart when the last-seen balance has been forgotten.
+        try:
+            _LAST_REMAINING["v"] = int(r.headers.get("x-requests-remaining"))
+        except (ValueError, TypeError):
+            pass
         if r.status_code == 200:
             return {s["key"] for s in r.json() if s.get("active")}
         msg = f"ACTIVE_SPORTS_ERROR: HTTP {r.status_code} — {r.text[:200]}"
@@ -256,14 +286,47 @@ def fetch_odds(sport_key, markets=None, hours_ahead=None):
         return None, "?"
 
 
+def _pending_bet_kickoffs_by_event(conn):
+    """{event_id: stored commence_time} for pending bets — read once per store."""
+    try:
+        return {r["event_id"]: r["commence_time"] for r in conn.execute(
+            "SELECT event_id, commence_time FROM bets "
+            "WHERE status = 'pending' AND event_id IS NOT NULL").fetchall()}
+    except Exception as e:                            # noqa: BLE001 - sync is best-effort
+        print(f"parse_and_store: pending-bet lookup failed: {e}", flush=True)
+        return {}
+
+
 def parse_and_store(events, sport_key, sport_name):
+    from collectors.database import _parse_ts
     conn = get_connection()
     inserted = 0
+    pending_ko = _pending_bet_kickoffs_by_event(conn)
     for ev in events:
         event_id = ev.get("id")
         home = ev.get("home_team", "")
         away = ev.get("away_team", "")
         commence = ev.get("commence_time", "")
+
+        # A tracked bet keeps its own copy of the kickoff, taken when it was
+        # logged. The API moves kickoffs — tennis all day long, football when a
+        # match is rescheduled — and every decision about that bet's closing line
+        # (when to capture, which snapshot is "pre-kickoff", how close the close
+        # was) is made against the bet's copy. Keep it in step with the source.
+        if event_id in pending_ko:
+            _new = _parse_ts(commence)
+            if _new:
+                _canon = _new.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if _canon != str(pending_ko[event_id] or ""):
+                    try:
+                        conn.execute(
+                            "UPDATE bets SET commence_time = ? "
+                            "WHERE event_id = ? AND status = 'pending'", (_canon, event_id))
+                        print(f"KICKOFF_SYNC {event_id}: {pending_ko[event_id]} -> {_canon}",
+                              flush=True)
+                        pending_ko[event_id] = _canon
+                    except Exception as e:            # noqa: BLE001 - never block the store
+                        print(f"KICKOFF_SYNC failed for {event_id}: {e}", flush=True)
 
         # book_odds[bookmaker][market] = {outcome_name: price, ...}
         # For totals: {outcome_name + "|" + point: price}
@@ -490,6 +553,7 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
 
     # Build the in-scope (football/tennis) target list, per-sport window.
     targets = []
+    mins_to_ko = {}
     if within_minutes is not None:
         window_desc = f"{int(within_minutes)}min"
         # Closing mode: spend credits ONLY where they buy a verifiable bet — the
@@ -498,9 +562,9 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
         # ticks a day, for games we had no money on; that burn is what kept
         # emptying the quota and starving the captures that mattered.
         if CLOSING_TRACKED_ONLY:
-            from collectors.database import sport_keys_with_pending_bets
-            tracked = sport_keys_with_pending_bets(within_minutes)
-            targets = [k for k in tracked if _sport_class(k)]
+            from collectors.database import closing_targets
+            mins_to_ko = closing_targets(within_minutes)   # {league: min to nearest KO}
+            targets = [k for k in mins_to_ko if _sport_class(k)]
             if not targets:
                 cb(f"Closing refresh: no TRACKED bet kicking off in <{window_desc} "
                    f"— 0 credits spent.")
@@ -562,7 +626,10 @@ def refresh_imminent_odds(status_callback=None, within_minutes=None):
         # hour late, or skipping them altogether. Football in closing mode was
         # already unthrottled for the same reason.
         if within_minutes is not None and CLOSING_TRACKED_ONLY:
-            throttle = CLOSING_THROTTLE_MIN
+            _m = mins_to_ko.get(sk)
+            throttle = (CLOSING_FINAL_THROTTLE_MIN
+                        if (_m is not None and _m <= CLOSING_FINAL_MIN)
+                        else CLOSING_THROTTLE_MIN)
         elif within_minutes is not None and cls == "football":
             throttle = 0
         else:
@@ -754,7 +821,7 @@ def probe_all_books(sport_key=None):
             "commence_times": commence_times}
 
 
-def collect_odds(status_callback=None):
+def collect_odds(status_callback=None, force=False):
     def cb(msg):
         print(msg, flush=True)
         if status_callback:
@@ -768,6 +835,18 @@ def collect_odds(status_callback=None):
     cb("Checking active sports...")
     active = get_active_sports()
     cb(f"API reports {len(active)} active sports.")
+
+    # The free /sports call above just told us the balance. Stop here if this
+    # refresh would spend the credits kept back for the closing capture.
+    rem = _LAST_REMAINING.get("v")
+    if not force and rem is not None and rem < MANUAL_REFRESH_MIN_QUOTA:
+        msg = (f"⛔ Só restam {rem} créditos da Odds API este mês — ficam reservados para "
+               f"capturar o fecho das apostas já registadas (sem isso não há CLV). "
+               f"Refresh não executado (reserva: {MANUAL_REFRESH_MIN_QUOTA}).")
+        cb(msg)
+        log_collection("the-odds-api", "skipped", 0,
+                       f"Reserve: {rem} left < {MANUAL_REFRESH_MIN_QUOTA}")
+        raise QuotaReserved(msg)
 
     # Limpar eventos passados
     try:

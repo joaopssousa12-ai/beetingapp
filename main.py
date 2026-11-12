@@ -10,7 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from collectors.database import (
     init_db, get_connection, get_stats, get_football_summary, get_tennis_summary,
     get_recent_football, get_recent_tennis, get_collection_log, get_value_bets,
-    add_bet, update_bet_result, delete_bet, get_bets, get_bet_stats,
+    add_bet, find_recent_duplicate_bet, update_bet_result, delete_bet, get_bets, get_bet_stats,
     get_bankroll_evolution, capture_pinnacle_close_for_started_events,
     clv_audit, auto_grade_pending_bets,
     get_performance_breakdown, get_bankroll_advanced,
@@ -56,7 +56,38 @@ collection_status = {"running": False, "messages": [], "last_run": None}
 closing_state = {"ticks": 0, "last_tick_at": None, "last_ok_at": None,
                  "last_result": "never ran in this process", "last_filled": 0,
                  "last_refresh_msgs": [], "started_at": None,
-                 "db_skips": 0, "db_touches": 0}
+                 "db_skips": 0, "db_touches": 0,
+                 # Who is actually driving the capture. The internal scheduler was
+                 # silently dead for months and nothing showed it, because one
+                 # shared counter could not tell its ticks from the external cron's.
+                 "internal_ticks": 0, "external_calls": 0,
+                 "last_internal_tick_at": None, "last_external_call_at": None}
+
+# When the last manual/automatic odds refresh finished (in-memory). Lets the
+# refresh endpoint ask "are you sure?" before paying ~15-20 credits for prices
+# that are only a few minutes old.
+_last_odds_refresh = {"done_at": None}
+REFRESH_RECENT_MIN = int(os.environ.get("REFRESH_RECENT_MIN", "10"))
+
+# Credit-spending automation is OPT-IN. The scheduler jobs below never actually
+# ran (see startup), so the app's real budget has only ever been "manual
+# refreshes + closing captures" — and that already uses most of the free 500
+# credits a month. Switching the automatic odds sweeps on by default would
+# exhaust the balance mid-month and take the closing capture down with it.
+AUTO_IMMINENT_REFRESH = os.environ.get("AUTO_IMMINENT_REFRESH", "0") == "1"
+AUTO_NIGHTLY_ODDS = os.environ.get("AUTO_NIGHTLY_ODDS", "0") == "1"
+
+
+def _invalidate_next_ko_cache():
+    """Forget the cached "next tracked kickoff".
+
+    Must be called whenever the set of pending bets changes. The cache answers
+    "nothing to do" for up to an hour without looking at the database, so a bet
+    logged 40 minutes before kickoff used to stay invisible to the capture until
+    after the game had started — the whole closing window missed.
+    """
+    _next_ko_cache["checked_at"] = None
+    _next_ko_cache["next_ko"] = None
 
 # When the next tracked bet kicks off, remembered in memory so the closing
 # capture can answer "nothing to do" WITHOUT opening a database connection.
@@ -134,31 +165,46 @@ async def startup():
     except Exception as e:
         print(f"Startup purge skipped: {e}", flush=True)
     try:
-        scheduler.add_job(lambda: asyncio.create_task(run_full_collection()), "cron", hour=3, minute=0)
-        # The heavy full sweep runs ONCE a day (inside run_full_collection, now h2h-only
-        # = 1 credit/call) as the baseline that gives upcoming games a price — plus
-        # on-demand via /api/odds/refresh. We no longer run it every 12h: automatic
-        # freshness comes from the cheap imminent + closing jobs below, so we don't burn
-        # the 500/mo budget on repeated full sweeps.
-        # Near-kickoff refresh: re-fetches ONLY sports with a game in the next 6h (the
-        # 2-6h-before-kickoff betting window). h2h-only, per-sport throttled (30 min),
-        # quota-braked. Every 2h so a game is re-priced ~3× as it approaches kickoff;
-        # the */15 closing-capture handles the final pre-kickoff line.
-        scheduler.add_job(lambda: asyncio.create_task(run_imminent_refresh()), "cron", hour="*/2", minute=30)
-        # Closing-line capture: every 15 min, snapshot the Pinnacle line for games
-        # starting in the next ~20 min and backfill pin_close_odds on tracked bets
-        # whose match just kicked off. This makes the stored "close" a true
-        # ~15-min-pre-kickoff line, so My Bets shows REAL CLV (not a 3-6h-old line).
-        scheduler.add_job(lambda: asyncio.create_task(run_closing_capture()), "cron", minute="*/15")
-        # Daily digest: one Telegram message with the day's value bets (09:00 UTC).
-        scheduler.add_job(lambda: asyncio.create_task(run_daily_digest()), "cron", hour=9, minute=0)
+        # APScheduler's AsyncIOScheduler runs a COROUTINE FUNCTION on the event
+        # loop, but hands any other callable to a worker THREAD. Every job here
+        # used to be registered as `lambda: asyncio.create_task(job())` — a plain
+        # callable — so it ran in a thread, where asyncio.create_task() has no
+        # running loop and raises RuntimeError. All five jobs failed on every
+        # single firing, from the day they were written: no nightly collection, no
+        # 2-hourly refresh, no internal closing tick, no digest, no purge. The
+        # closing capture only works at all because an EXTERNAL cron calls
+        # /api/closing/run. Pass the coroutine functions themselves.
+        _job = dict(coalesce=True, max_instances=1, misfire_grace_time=600)
+
+        # Closing-line capture, every 15 min: the in-process backup for the
+        # external cron. Free unless a tracked bet is about to start, and then it
+        # shares the per-league throttle with the cron, so it adds no credits.
+        scheduler.add_job(run_closing_capture, "cron", minute="*/15", id="closing", **_job)
+        # Nightly model refresh (03:00 UTC): results, Elo, form — FREE sources only.
+        # No Odds-API call, so it costs no credits. Without it the ratings behind
+        # the prognosis page stay frozen at whatever the last manual full refresh
+        # loaded (found frozen at 31 May, in November).
+        scheduler.add_job(run_models_refresh, "cron", hour=3, minute=0, id="models", **_job)
         # Daily hygiene: drop odds_history snapshots older than 30 days (the table
         # was unbounded; captured closes live on the bets rows, so CLV is safe).
-        scheduler.add_job(lambda: asyncio.create_task(run_history_purge()), "cron", hour=4, minute=10)
+        scheduler.add_job(run_history_purge, "cron", hour=4, minute=10, id="history_purge", **_job)
+        # Daily digest: one Telegram message with the day's value bets (09:00 UTC).
+        # Only picks whose reference is fresh are listed, so with no recent odds
+        # refresh it simply stays silent.
+        scheduler.add_job(run_daily_digest, "cron", hour=9, minute=0, id="digest", **_job)
+        # ── credit-spending automation: opt-in via environment ──
+        if AUTO_IMMINENT_REFRESH:
+            # Re-fetch sports with a game in the next 6h, every 2h. ~1 credit per
+            # league per run: roughly 150-250 credits a month on top of the rest.
+            scheduler.add_job(run_imminent_refresh, "cron", hour="*/2", minute=30,
+                              id="imminent", **_job)
+        if AUTO_NIGHTLY_ODDS:
+            # One full odds sweep a night (~15-20 credits each, ~500 a month).
+            scheduler.add_job(run_odds_only, "cron", hour=3, minute=30, id="nightly_odds", **_job)
         scheduler.start()
         from datetime import datetime as _dt0
         closing_state["started_at"] = _dt0.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        print("Scheduler started.", flush=True)
+        print("Scheduler started: " + ", ".join(j.id for j in scheduler.get_jobs()), flush=True)
     except Exception as e:
         print(f"SCHEDULER ERROR: {e}", flush=True)
 
@@ -187,6 +233,121 @@ async def startup():
 async def shutdown():
     scheduler.shutdown()
 
+async def _collect_models(cb, nightly=False):
+    """Results + ratings from FREE sources (no Odds-API credits).
+
+    nightly=True limits the football import to the current and previous season
+    (the only files that still change) so the 03:00 job stays light; the manual
+    full refresh re-reads every season.
+    """
+    loop = asyncio.get_event_loop()
+    import traceback
+    from collectors.seasons import footballdata_seasons, football_seasons
+
+    cb("Historical data (results for the models and the backtest)...")
+    try:
+        fd_seasons = footballdata_seasons(2 if nightly else 6)
+        res_fd = await loop.run_in_executor(
+            None, lambda: collect_footballdata(status_callback=cb, seasons=fd_seasons))
+        cb(f"  Football results+odds: {res_fd.get('rows',0)} rows, {res_fd.get('with_odds',0)} with odds.")
+    except Exception as e:
+        cb(f"FOOTBALLDATA ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+    if not nightly:
+        # openfootball duplicates the top leagues under different team names and
+        # lags weeks behind; kept only in the manual full refresh.
+        try:
+            n_fb = await loop.run_in_executor(
+                None, lambda: collect_football(status_callback=cb, seasons=football_seasons(6)))
+            cb(f"  Football results (openfootball): {n_fb} rows.")
+        except Exception as e:
+            cb(f"FOOTBALL ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+    try:
+        _start = datetime.utcnow().year - 1 if nightly else 2015
+        n_tn = await loop.run_in_executor(
+            None, lambda: collect_tennis(start_year=_start, status_callback=cb))
+        cb(f"  Tennis results: {n_tn} rows.")
+    except Exception as e:
+        cb(f"TENNIS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+    if not nightly:
+        try:
+            from collectors.tennisdata import collect_tennisdata
+            res_td = await loop.run_in_executor(None, lambda: collect_tennisdata(status_callback=cb))
+            cb(f"  Tennis odds: {res_td.get('rows',0)} rows, {res_td.get('with_odds',0)} with odds.")
+        except Exception as e:
+            cb(f"TENNISDATA ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+    try:
+        n_nat = await loop.run_in_executor(None, lambda: collect_national(since_year=2010, status_callback=cb))
+        cb(f"  National teams: {n_nat} rows.")
+    except Exception as e:
+        cb(f"NATIONAL ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+    try:
+        n_us = await loop.run_in_executor(None, lambda: collect_understat(status_callback=cb))
+        cb(f"  Understat xG: {n_us} matches.")
+    except Exception as e:
+        cb(f"UNDERSTAT ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+
+    cb("Models (Elo, national xG) + CLV...")
+    try:
+        n_nxg = await loop.run_in_executor(None, lambda: compute_national_xg(status_callback=cb))
+        cb(f"  National xG: {n_nxg} teams indexed.")
+    except Exception as e:
+        cb(f"NATIONAL XG ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+    try:
+        await loop.run_in_executor(None, lambda: collect_elo(status_callback=cb))
+    except Exception as e:
+        cb(f"ELO ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+    try:
+        n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
+        if n > 0:
+            cb(f"✓ Captured Pinnacle closing line for {n} past bet(s).")
+    except Exception as e:
+        cb(f"CLV capture error: {repr(e)}")
+    try:
+        n_ag = await loop.run_in_executor(None, auto_grade_pending_bets)
+        if n_ag > 0:
+            _invalidate_next_ko_cache()
+            cb(f"✓ Auto-graded {n_ag} pending bet(s) from match results.")
+    except Exception as e:
+        cb(f"Auto-grade error: {repr(e)}")
+    # Models refreshed → re-warm value bets so confidence reflects them.
+    try:
+        invalidate_value_bets_cache()
+        await loop.run_in_executor(None, get_value_bets)
+    except Exception as e:
+        cb(f"Value-bets re-warm error: {repr(e)}")
+
+
+async def run_models_refresh():
+    """Nightly (03:00 UTC): refresh results + Elo from free sources. No credits."""
+    if collection_status.get("running"):
+        print("MODELS_REFRESH: skipped (a collection is already running).", flush=True)
+        return
+    collection_status["running"] = True
+    collection_status["messages"] = ["Nightly model refresh (free sources)..."]
+    collection_status["last_run"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+
+    def cb(msg):
+        print(msg, flush=True)
+        collection_status["messages"].append(str(msg))
+        if len(collection_status["messages"]) > 300:
+            collection_status["messages"] = collection_status["messages"][-300:]
+
+    try:
+        await _collect_models(cb, nightly=True)
+        cb("✓ Model refresh finished.")
+        try:
+            from collectors.database import log_collection
+            log_collection("models-refresh (nightly)", "success", 0, "results + Elo, free sources")
+        except Exception:
+            pass
+    except Exception as e:
+        import traceback
+        cb(f"MODELS_REFRESH ERROR: {repr(e)}")
+        cb(traceback.format_exc()[-800:])
+    finally:
+        collection_status["running"] = False
+
+
 async def run_full_collection():
     collection_status["running"] = True
     collection_status["messages"] = ["Starting data collection..."]
@@ -207,19 +368,22 @@ async def run_full_collection():
         # usable in ~1-2 min instead of waiting ~15 min behind data they don't
         # need. (The historical imports below only feed the backtest.)
         # ════════════════════════════════════════════════════════════
-        cb("Phase 1/3: Live odds → Value Bets...")
+        cb("Phase 1/2: Live odds → Value Bets...")
         try:
             n_od = await loop.run_in_executor(None, lambda: collect_odds_apifootball(status_callback=cb))
-            cb(f"  API-Football odds: {n_od} events.")
+            cb(f"  Football fixtures: {n_od} events.")
         except Exception as e:
             import traceback
             cb(f"API-FOOTBALL ODDS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         try:
             n_od2 = await loop.run_in_executor(None, lambda: collect_odds(status_callback=cb))
             cb(f"  The-Odds-API (incl. live tennis): {n_od2} events.")
+            _last_odds_refresh["done_at"] = datetime.utcnow()
         except Exception as e:
-            import traceback
-            cb(f"ODDS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
+            from collectors.odds import QuotaReserved
+            if not isinstance(e, QuotaReserved):     # the reserve already explained itself
+                import traceback
+                cb(f"ODDS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
         # OddsPapi DISABLED: its API 403-blocks the Render datacentre IP (Cloudflare),
         # so it can't be reached from prod. The Odds API now supplies both the sharp
         # (Pinnacle) and bettable (1xBet/onexbet) sides via parse_and_store.
@@ -238,76 +402,11 @@ async def run_full_collection():
             cb(f"Value-bets warm error: {repr(e)}")
 
         # ════════════════════════════════════════════════════════════
-        # PHASE 2 — HISTORICAL (backtest data only). Slow; runs AFTER value bets
-        # are already live, so it never blocks them. Off-season leagues simply
-        # return no data — that's expected, not an error.
+        # PHASE 2 — HISTORICAL + MODELS (free sources). Slow; runs AFTER value
+        # bets are already live, so it never blocks them.
         # ════════════════════════════════════════════════════════════
-        cb("Phase 2/3: Historical data (for the backtest only)...")
-        try:
-            n_fb = await loop.run_in_executor(None, lambda: collect_football(status_callback=cb))
-            cb(f"  Football results: {n_fb} rows.")
-        except Exception as e:
-            import traceback
-            cb(f"FOOTBALL ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-        try:
-            res_fd = await loop.run_in_executor(None, lambda: collect_footballdata(status_callback=cb))
-            cb(f"  Football odds: {res_fd.get('rows',0)} rows, {res_fd.get('with_odds',0)} with odds.")
-        except Exception as e:
-            import traceback
-            cb(f"FOOTBALLDATA ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-        try:
-            n_tn = await loop.run_in_executor(None, lambda: collect_tennis(start_year=2015, status_callback=cb))
-            cb(f"  Tennis results: {n_tn} rows.")
-        except Exception as e:
-            import traceback
-            cb(f"TENNIS ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-        try:
-            from collectors.tennisdata import collect_tennisdata
-            res_td = await loop.run_in_executor(None, lambda: collect_tennisdata(status_callback=cb))
-            cb(f"  Tennis odds: {res_td.get('rows',0)} rows, {res_td.get('with_odds',0)} with odds.")
-        except Exception as e:
-            import traceback
-            cb(f"TENNISDATA ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-        try:
-            n_nat = await loop.run_in_executor(None, lambda: collect_national(since_year=2010, status_callback=cb))
-            cb(f"  National teams: {n_nat} rows.")
-        except Exception as e:
-            import traceback
-            cb(f"NATIONAL ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-        try:
-            n_us = await loop.run_in_executor(None, lambda: collect_understat(status_callback=cb))
-            cb(f"  Understat xG: {n_us} matches.")
-        except Exception as e:
-            import traceback
-            cb(f"UNDERSTAT ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-
-        # ════════════════════════════════════════════════════════════
-        # PHASE 3 — MODELS + CLV (computed from the freshly collected data)
-        # ════════════════════════════════════════════════════════════
-        cb("Phase 3/3: Models (Elo, national xG) + CLV...")
-        try:
-            n_nxg = await loop.run_in_executor(None, lambda: compute_national_xg(status_callback=cb))
-            cb(f"  National xG: {n_nxg} teams indexed.")
-        except Exception as e:
-            import traceback
-            cb(f"NATIONAL XG ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-        try:
-            await loop.run_in_executor(None, lambda: collect_elo(status_callback=cb))
-        except Exception as e:
-            import traceback
-            cb(f"ELO ERROR: {repr(e)}"); cb(traceback.format_exc()[-400:])
-        try:
-            n = await loop.run_in_executor(None, capture_pinnacle_close_for_started_events)
-            if n > 0:
-                cb(f"✓ Captured Pinnacle closing line for {n} past bet(s).")
-        except Exception as e:
-            cb(f"CLV capture error: {repr(e)}")
-        # Models refreshed → re-warm value bets so confidence reflects them.
-        try:
-            invalidate_value_bets_cache()
-            await loop.run_in_executor(None, get_value_bets)
-        except Exception as e:
-            cb(f"Value-bets re-warm error: {repr(e)}")
+        cb("Phase 2/2: Historical data + models...")
+        await _collect_models(cb, nightly=False)
 
         cb("✓ All collection finished.")
 
@@ -629,7 +728,7 @@ async def api_migrate_data():
             status_code=500
         )
 
-async def run_odds_only():
+async def run_odds_only(force=False):
     collection_status["running"] = True
     collection_status["messages"] = ["Refreshing live odds..."]
     collection_status["last_run"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
@@ -647,8 +746,17 @@ async def run_odds_only():
             cb(f"API-FOOTBALL ERROR: {repr(e)}")
             cb(traceback.format_exc()[-400:])
         # The Odds API (covers tennis, MMA, etc.)
-        await loop.run_in_executor(None, lambda: collect_odds(status_callback=cb))
-        
+        try:
+            await loop.run_in_executor(
+                None, lambda: collect_odds(status_callback=cb, force=force))
+            _last_odds_refresh["done_at"] = datetime.utcnow()
+        except Exception as e:
+            from collectors.odds import QuotaReserved
+            if not isinstance(e, QuotaReserved):
+                raise
+            # The reserve message is already in the log; the free steps below
+            # (closing capture, auto-grade) still run.
+
         # REMOVED (credit waste): collect_odds_multiple_bookmakers + collect_tennis_odds
         # fetched odds with region 'us' + US-only books (draftkings/betmgm/…) and
         # markets h2h,spreads,totals, then THREW THE RESULT AWAY — the records were
@@ -674,6 +782,7 @@ async def run_odds_only():
         try:
             n_ag = await loop.run_in_executor(None, auto_grade_pending_bets)
             if n_ag > 0:
+                _invalidate_next_ko_cache()
                 cb(f"✓ Auto-graded {n_ag} pending bet(s) from match results.")
         except Exception as e:
             cb(f"Auto-grade error: {repr(e)}")
@@ -736,6 +845,8 @@ async def run_closing_capture():
     stamp = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     closing_state["ticks"] = closing_state.get("ticks", 0) + 1
     closing_state["last_tick_at"] = stamp
+    closing_state["internal_ticks"] = closing_state.get("internal_ticks", 0) + 1
+    closing_state["last_internal_tick_at"] = stamp
 
     if collection_status.get("running"):
         closing_state["last_result"] = "skipped: a collection was already running"
@@ -824,10 +935,33 @@ async def api_telegram_digest():
 
 @app.post("/api/odds/refresh")
 @app.get("/api/odds/refresh")
-async def api_refresh_odds():
+async def api_refresh_odds(force: bool = False):
+    """Start an odds refresh. Two situations make it answer needs_confirm instead
+    of starting (the UI asks the user, then calls again with force=1):
+      * recent  — the last refresh finished minutes ago; another one pays ~15-20
+                  credits for the same prices (it happened: two runs 2 min apart).
+      * reserve — the monthly balance is inside the closing-capture reserve."""
     if collection_status["running"]:
         return JSONResponse({"ok": False, "msg": "Already running."})
-    asyncio.create_task(run_odds_only())
+    if not force:
+        from collectors.odds import _LAST_REMAINING, MANUAL_REFRESH_MIN_QUOTA
+        rem = _LAST_REMAINING.get("v")
+        if rem is not None and rem < MANUAL_REFRESH_MIN_QUOTA:
+            return JSONResponse({
+                "ok": False, "needs_confirm": True, "reason": "reserve", "remaining": rem,
+                "msg": (f"Só restam {rem} créditos da Odds API este mês. Estão reservados "
+                        f"para capturar o fecho das apostas já registadas — sem isso não há "
+                        f"CLV. Um refresh gasta ~15-20.")})
+        done = _last_odds_refresh.get("done_at")
+        if done is not None:
+            age = (datetime.utcnow() - done).total_seconds() / 60.0
+            if 0 <= age < REFRESH_RECENT_MIN:
+                return JSONResponse({
+                    "ok": False, "needs_confirm": True, "reason": "recent",
+                    "age_min": round(age, 1),
+                    "msg": (f"As odds foram atualizadas há {age:.0f} min. Atualizar outra "
+                            f"vez gasta ~15-20 créditos pelas mesmas odds.")})
+    asyncio.create_task(run_odds_only(force=force))
     return JSONResponse({"ok": True, "msg": "Odds refresh started."})
 
 @app.post("/api/telegram/test")
@@ -1079,12 +1213,12 @@ async def api_diag_line_drift():
 async def api_closing_run(within: int = 45):
     """Run the closing-line capture NOW, synchronously, and report what happened.
 
-    The */15 in-app scheduler can only fire while the process is alive, and on
-    Render's free tier it is asleep most of the time: the audit of bet #62 found
-    exactly ONE snapshot for the whole match, taken 10.9h before kickoff. This
-    endpoint lets the GitHub Actions closing-guard — which demonstrably runs and
-    already holds the app awake through kickoff — drive the capture itself
-    instead of hoping an internal cron tick lands in the same window.
+    This is what an EXTERNAL cron calls every ~5 minutes, and it is the primary
+    driver of the capture. (The audit of bet #62 found exactly ONE snapshot for
+    the whole match, taken 10.9h before kickoff. That was first blamed on Render
+    sleeping; the actual cause, found later, was that the in-app scheduler never
+    executed a single job — see startup(). The in-app */15 tick now works and is
+    the backup for this endpoint, not the other way round.)
 
     Credits: closing mode fetches only leagues holding a tracked pending bet and
     is throttled per sport, so repeated calls during one guard window cost a few
@@ -1096,6 +1230,8 @@ async def api_closing_run(within: int = 45):
     within = max(5, min(int(within or 45), 180))
     loop = asyncio.get_event_loop()
     msgs = []
+    closing_state["external_calls"] = closing_state.get("external_calls", 0) + 1
+    closing_state["last_external_call_at"] = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     # Cheapest possible answer first: no DB connection at all when the memory
     # says the next kickoff is far away. This is the whole point of the cache.
@@ -1164,12 +1300,32 @@ async def api_diag_closing():
     from collectors.database import sport_keys_with_pending_bets, _parse_ts
     from datetime import datetime as _dt
 
+    # Is the in-app scheduler alive, and when does each job fire next? It was
+    # dead for months without anything here saying so.
+    try:
+        sched = {"running": bool(scheduler.running),
+                 "jobs": [{"id": j.id,
+                           "next_run_utc": (j.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+                                            if j.next_run_time else None)}
+                          for j in scheduler.get_jobs()]}
+    except Exception as e:                           # noqa: BLE001 - diagnostics
+        sched = {"error": f"{type(e).__name__}: {e}"}
+    from collectors.database import LAST_CAPTURE_REPORT
+
     out = {
         "now_utc": _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "process_uptime": {
             "started_at": closing_state.get("started_at"),
             "closing_job_ticks_this_process": closing_state.get("ticks", 0),
         },
+        "scheduler": sched,
+        "drivers": {
+            "internal_ticks": closing_state.get("internal_ticks", 0),
+            "last_internal_tick_at": closing_state.get("last_internal_tick_at"),
+            "external_calls": closing_state.get("external_calls", 0),
+            "last_external_call_at": closing_state.get("last_external_call_at"),
+        },
+        "late_closes_last_24h": LAST_CAPTURE_REPORT.get("late") or [],
         "closing_job": {k: v for k, v in closing_state.items() if k != "started_at"},
         "config": {
             "CLOSING_TRACKED_ONLY": CLOSING_TRACKED_ONLY,
@@ -1195,7 +1351,7 @@ async def api_diag_closing():
     try:
         conn = get_connection()
         rows = conn.execute(
-            "SELECT id, home_team, away_team, commence_time, event_id "
+            "SELECT id, home_team, away_team, commence_time, event_id, sport_key "
             "FROM bets WHERE status='pending' ORDER BY commence_time ASC"
         ).fetchall()
     except Exception as e:                           # noqa: BLE001 - diagnostics
@@ -1232,16 +1388,21 @@ async def api_diag_closing():
             "kickoff": d.get("commence_time"),
             "minutes_to_kickoff": mins,
             "has_event_id": bool(d.get("event_id")),
-            "event_in_odds_events": ev,            # None = the JOIN cannot match
+            "event_in_odds_events": ev,            # informative: no longer required
+            # The league the capture will fetch for this bet. It comes from the bet
+            # itself; the event row is only a fallback for bets logged before the
+            # column existed. None in BOTH places = the capture cannot target it.
+            "sport_key": d.get("sport_key") or (ev.get("sport_key") if isinstance(ev, dict) else None),
             "snapshots_so_far": snaps,
         })
     conn.close()
     out["pending_bets"] = pend
     out["verdict"] = (
-        "A captura so' escreve um fecho se, num tick */15, existir uma aposta "
-        "PENDENTE cujo evento esteja em odds_events com kickoff dentro de 45min. "
-        "Se closing_job_ticks_this_process for ~0, o processo nao esteve vivo "
-        "perto de nenhum pontape de saida."
+        "A captura escreve um fecho quando existe uma aposta PENDENTE com liga "
+        "conhecida (sport_key) e pontape de saida dentro da janela. Conduzem-na o "
+        "cron externo (/api/closing/run, de 5 em 5 min) e o agendador interno "
+        "(*/15) — ver 'drivers'. Se ambos estiverem a zero perto de um pontape, "
+        "nada correu."
     )
     return JSONResponse(out)
 
@@ -1525,7 +1686,22 @@ async def api_delete_manual_odd(request: Request):
 @app.post("/api/bets")
 async def api_create_bet(request: Request):
     data = await request.json()
-    bet_id = add_bet(data)
+    try:
+        # A second click (or a retry after a slow response) used to log the same
+        # bet twice. Answer the repeat with the bet that already exists.
+        dup = find_recent_duplicate_bet(data)
+        if dup is not None:
+            return JSONResponse({"ok": True, "id": dup, "duplicate": True})
+        bet_id = add_bet(data)
+    except Exception as e:                            # noqa: BLE001 - surfaced to UI
+        import traceback
+        print(f"API_CREATE_BET ERROR: {e}\n{traceback.format_exc()[-500:]}", flush=True)
+        return JSONResponse(
+            {"ok": False, "error": "bet_not_saved",
+             "detail": f"{type(e).__name__}: {str(e)[:200]}"}, status_code=503)
+    # The pending set changed: the closing capture must look at the database
+    # again instead of trusting an "nothing to do" answer cached before this bet.
+    _invalidate_next_ko_cache()
     return JSONResponse({"ok": True, "id": bet_id})
 
 @app.get("/api/bets")
@@ -1551,11 +1727,13 @@ async def api_settle_bet(bet_id: int, request: Request):
     if result not in ("won", "lost", "push"):
         return JSONResponse({"ok": False, "msg": "Invalid result"}, status_code=400)
     ok = update_bet_result(bet_id, result)
+    _invalidate_next_ko_cache()
     return JSONResponse({"ok": ok})
 
 @app.delete("/api/bets/{bet_id}")
 async def api_delete_bet(bet_id: int):
     delete_bet(bet_id)
+    _invalidate_next_ko_cache()
     return JSONResponse({"ok": True})
 
 @app.post("/api/clv/capture")
