@@ -1,0 +1,18 @@
+name: clv-full-audit
+
+# Is the CLV trustworthy? Re-derives every bet's close from its raw Pinnacle
+# snapshot timeline and checks the invariants a correct CLV must satisfy
+# (pre-kickoff, last snapshot available, coherent devig, no in-play jumps),
+# then reports whether the valid CLVs are positive with a confidence interval.
+# Read-only, no Odds-API credits. Manual trigger.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full CLV audit
+        run: python3 scripts/clv_full_audit.py
