@@ -1,0 +1,18 @@
+name: sources-check
+
+# Which historical data sources still answer, and how fresh is each? The
+# prognosis model is only as current as the results it is fed, so this probes
+# every source the collectors read (football-data.co.uk, openfootball,
+# JeffSackmann, tennis-data.co.uk, martj42, understat) and prints the date of
+# the newest finished match in each. Read-only; no BetIQ endpoint, no credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe the sources
+        run: python3 scripts/sources_check.py
