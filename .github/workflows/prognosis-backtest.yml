@@ -1,0 +1,18 @@
+name: prognosis-backtest
+
+# Measures, walk-forward on several seasons of real results, whether the method
+# behind the prognosis page and the Múltipla do Dia (50% market + 50% Elo) is
+# better or worse than the market alone and than Elo alone, and how honest the
+# confidence it prints is. Read-only: downloads football-data.co.uk CSVs, calls
+# no BetIQ endpoint, spends no credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Backtest
+        run: python3 scripts/prognosis_backtest.py
