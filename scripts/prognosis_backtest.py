@@ -141,7 +141,7 @@ def pois(k, lam):
 def poisson_probs(lam_h, lam_a):
     lam_h, lam_a = max(0.2, min(4.5, lam_h)), max(0.2, min(4.5, lam_a))
     ph, pa = [pois(k, lam_h) for k in range(9)], [pois(k, lam_a) for k in range(9)]
-    home = draw = away = over = 0.0
+    home = draw = away = over = btts = 0.0
     for i in range(9):
         for j in range(9):
             p = ph[i] * pa[j]
@@ -153,7 +153,9 @@ def poisson_probs(lam_h, lam_a):
                 away += p
             if i + j >= 3:
                 over += p
-    return [home, draw, away], over
+            if i >= 1 and j >= 1:
+                btts += p
+    return [home, draw, away], over, btts
 
 
 OUT = ("home", "draw", "away")
@@ -214,7 +216,8 @@ def main():
     tiers = defaultdict(lambda: [0, 0])
     legs_app, legs_mkt = [], []          # dicts for the accumulator study
     ou_model, ou_mkt = [0, 0], [0, 0]
-    ou_cal = []
+    ou_cal, btts_cal = [], []
+    tiers_mkt = defaultdict(lambda: [0, 0])
     by_day = defaultdict(list)
 
     for m in ms:
@@ -223,11 +226,11 @@ def main():
         warm = games[h] >= 20 and games[a] >= 20
         pe = elo_probs(rh, ra)
         pm_c, pm_o = devig_power(m["pin_close"]), devig_power(m["pin_open"])
-        pp = over_p = None
+        pp = over_p = btts_p = None
         if len(last8[h]) >= 5 and len(last8[a]) >= 5:
             gfh = sum(x[0] for x in last8[h]) / len(last8[h]); gah = sum(x[1] for x in last8[h]) / len(last8[h])
             gfa = sum(x[0] for x in last8[a]) / len(last8[a]); gaa = sum(x[1] for x in last8[a]) / len(last8[a])
-            pp, over_p = poisson_probs((gfh + gaa) / 2 * 1.10, (gfa + gah) / 2 * 0.95)
+            pp, over_p, btts_p = poisson_probs((gfh + gaa) / 2 * 1.10, (gfa + gah) / 2 * 0.95)
 
         if m["season"] in eval_seasons and warm:
             res = m["res"]
@@ -253,6 +256,9 @@ def main():
                 tier = ("Alta" if conf >= 70 and agree else "Media-alta" if conf >= 60 and agree
                         else "Media" if conf >= 50 else "Baixa")
                 tiers[tier][0] += 1; tiers[tier][1] += int(tb == ri)
+                cm = 100 * pm_c[tm]
+                tmk = "Alta" if cm >= 70 else "Media-alta" if cm >= 60 else "Media" if cm >= 50 else "Baixa"
+                tiers_mkt[tmk][0] += 1; tiers_mkt[tmk][1] += int(tm == ri)
                 # Múltipla legs — the app's rule and a market-only rule
                 p_agree = None if not pp else (max(range(3), key=lambda k: pp[k]) == tb)
                 odd_max = m["max"][tb] if m["max"][tb] else None
@@ -271,6 +277,8 @@ def main():
                 went_over = (m["hg"] + m["ag"]) >= 3
                 ou_model[0] += 1; ou_model[1] += int((over_p >= 0.5) == went_over)
                 ou_cal.append((100 * max(over_p, 1 - over_p), int((over_p >= 0.5) == went_over)))
+                both = m["hg"] >= 1 and m["ag"] >= 1
+                btts_cal.append((100 * max(btts_p, 1 - btts_p), int((btts_p >= 0.5) == both)))
                 if all(m["ou_pin"]):
                     io_, iu = 1 / m["ou_pin"][0], 1 / m["ou_pin"][1]
                     mk_over = io_ / (io_ + iu)
@@ -306,6 +314,12 @@ def main():
         if n:
             print(f"    {t:<11} n={n:<6} acertou {100 * hit / n:5.1f}%")
 
+    print("\n  os mesmos escaloes se o numero fosse so' o do mercado (>=70 / >=60 / >=50):")
+    for t in ("Alta", "Media-alta", "Media", "Baixa"):
+        n, hit = tiers_mkt[t]
+        if n:
+            print(f"    {t:<11} n={n:<6} acertou {100 * hit / n:5.1f}%")
+
     print("\n" + bar + "\n3. MULTIPLA DO DIA\n" + bar)
 
     def legs_report(name, legs):
@@ -318,8 +332,11 @@ def main():
         for key, lab in (("avg", "odd media do mercado"), ("max", "melhor odd do mercado")):
             sub = [l for l in legs if l.get(key)]
             if sub:
-                roi = sum((l[key] - 1) if l["hit"] else -1 for l in sub) / len(sub)
-                print(f"      aposta simples a 1u na {lab}: ROI {100 * roi:+.1f}%  (odd media {sum(l[key] for l in sub) / len(sub):.2f}, n={len(sub)})")
+                rets = [(l[key] - 1) if l["hit"] else -1 for l in sub]
+                roi = sum(rets) / len(rets)
+                se = (sum((x - roi) ** 2 for x in rets) / (len(rets) - 1)) ** 0.5 / len(rets) ** 0.5
+                print(f"      aposta simples a 1u na {lab}: ROI {100 * roi:+.1f}% (erro-padrao +-{100 * se:.1f})  "
+                      f"(odd media {sum(l[key] for l in sub) / len(sub):.2f}, n={len(sub)})")
     legs_report("regra da app (mistura >=65% e golos nao discordam)", legs_app)
     legs_report("regra so' mercado (>=65%)", legs_mkt)
     dc = [l for l in legs_app if l.get("dc_conf") is not None]
@@ -335,6 +352,7 @@ def main():
         said = 0.0
         ret_max = ret_avg = 0.0
         n_max = n_avg = 0
+        rets_avg = []
         for legs in days:
             top = sorted(legs, key=lambda l: -l["conf"])[:size]
             n += 1
@@ -353,10 +371,13 @@ def main():
                         n_max += 1; ret_max += (o - 1) if allhit else -1
                     else:
                         n_avg += 1; ret_avg += (o - 1) if allhit else -1
+                        rets_avg.append((o - 1) if allhit else -1)
         line = (f"    {size} pernas: {n} dias | prob. dita de acertar tudo {100 * said / n:.1f}% | "
                 f"acertou tudo {100 * won / n:.1f}%")
         if n_avg:
-            line += f" | ROI odd media {100 * ret_avg / n_avg:+.1f}%"
+            mu = ret_avg / n_avg
+            se = ((sum((x - mu) ** 2 for x in rets_avg) / max(1, n_avg - 1)) ** 0.5 / n_avg ** 0.5) if n_avg > 1 else 0
+            line += f" | ROI odd media {100 * mu:+.1f}% (+-{100 * se:.0f})"
         if n_max:
             line += f" | ROI melhor odd {100 * ret_max / n_max:+.1f}%"
         print(line)
@@ -370,7 +391,10 @@ def main():
         print(f"  modelo de golos (ultimos 8 jogos): acerta o lado {100 * ou_model[1] / ou_model[0]:.1f}%  (n={ou_model[0]})")
     if ou_mkt[0]:
         print(f"  mercado (Pinnacle O/U):            acerta o lado {100 * ou_mkt[1] / ou_mkt[0]:.1f}%  (n={ou_mkt[0]})")
-    calib_table("modelo de golos — confianca dita no lado escolhido", ou_cal)
+    calib_table("modelo de golos — O/U 2.5: confianca dita no lado escolhido", ou_cal)
+    calib_table("modelo de golos — Ambas marcam (BTTS): confianca dita no lado escolhido", btts_cal)
+    if btts_cal:
+        print(f"\n  BTTS: acerta o lado {100 * sum(h for _, h in btts_cal) / len(btts_cal):.1f}%  (n={len(btts_cal)})")
 
     summary = {
         "n": M["market_close"].n,
