@@ -1,0 +1,17 @@
+name: team-names
+
+# Prints the team names each data source really uses (football-data.co.uk for
+# results, The Odds API for fixtures) so the name resolver behind the prognosis
+# page can be built and tested against real vocabularies instead of guesses.
+# Read-only; no credits.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect team names
+        run: python3 scripts/team_names_probe.py
