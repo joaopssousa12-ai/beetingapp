@@ -104,8 +104,14 @@ def seed():
         conn.execute("INSERT OR REPLACE INTO national_matches (match_id, date, home_team, away_team, "
                      "home_goals, away_goals, tournament, neutral) VALUES (?,?,?,?,?,?,?,0)",
                      (f"n{i}", day(20 + 30 * i), "Portugal", "United States", 2, 1, "Friendly"))
+    for i in range(12):                          # tennis: results that stopped ~300 days ago
+        conn.execute("INSERT INTO tennis_matches (tourney_date, tourney_name, surface, winner_name, loser_name, score) "
+                     "VALUES (?,?,?,?,?,?)",
+                     ((NOW - timedelta(days=300 + 7 * i)).strftime("%Y%m%d"), "X Open", "Hard",
+                      "Alexander Zverev", "Alexander Bublik" if i % 2 else "Jessica Nobody", "6-4 6-4"))
     conn.commit()
     conn.close()
+    db._tennis_names["by_norm"] = None
     tn.invalidate()
     db._session_elo = None
     elo_mod.compute_football_elo()
@@ -201,6 +207,15 @@ def main():
     o = db.get_match_prognosis("Manchester United", "West Ham United", "Premier League", ko, pin_odds=PIN,
                                ref_updated_at=old_ref)
     check("a 9h-old line is said to be 9h old", any("9h" in t for t in o["notes"]), str(o["notes"]))
+
+    t = db.get_match_prognosis("Alexander Zverev", "Alexander Bublik", "ATP Tour", ko, pin_odds=(1.5, None, 2.6))
+    tf = (t.get("tennis_form") or {})
+    check("tennis form is the player's own (searching '%Alexander%' mixed Zverev with Bublik)",
+          tf.get("home") and tf["home"]["losses"] == 0 and tf["home"]["wins"] == 8
+          and tf.get("away") and tf["away"]["wins"] == 0, str(tf))
+    check("tennis results that stopped ~300 days ago are flagged",
+          (t.get("data") or {}).get("stale") is True and any("ténis" in x for x in t["notes"]),
+          f"data={t.get('data')} notes={t['notes']}")
 
     print("\n6. The goals model is shown as what it has been worth")
     raw, cal = p["poisson"]["raw"], p["poisson"]

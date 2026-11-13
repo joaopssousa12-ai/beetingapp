@@ -3549,6 +3549,8 @@ GOALS_BTTS_SHRINK = 0.40
 # fixture's kickoff) is being read from stale data: a normal season never leaves
 # more than ~3 weeks between a team's matches outside the summer break.
 PROGNOSIS_STALE_DAYS_CLUB = int(os.environ.get("PROGNOSIS_STALE_DAYS_CLUB", "35"))
+# A tour player with no match for two months is injured, retired — or our data stopped.
+PROGNOSIS_STALE_DAYS_TENNIS = int(os.environ.get("PROGNOSIS_STALE_DAYS_TENNIS", "60"))
 # National teams play in windows months apart.
 PROGNOSIS_STALE_DAYS_NATIONAL = int(os.environ.get("PROGNOSIS_STALE_DAYS_NATIONAL", "200"))
 
@@ -3915,6 +3917,8 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
             ds = [str(m.get("date") or "")[:10] for m in matches if m.get("date")]
             return max(ds) if ds else None
         lh, la = _last(hm), _last(am)
+        if is_tennis:
+            raise StopIteration                        # tennis sets its own block below
         out["data"] = {"home_name": canon_h, "away_name": canon_a,
                        "home_last_result": lh, "away_last_result": la, "stale": False}
         ref = _parse_ts(commence_time) or _dt.utcnow()
@@ -3931,6 +3935,8 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
             out["notes"].append(
                 f"Atenção: o último resultado que temos é de {oldest[8:10]}/{oldest[5:7]}/{oldest[:4]} "
                 f"(há {max(ages)} dias). Forma, golos e Elo podem estar desatualizados.")
+    except StopIteration:
+        pass
     except Exception as e:                             # noqa: BLE001
         print(f"WARN prognosis freshness: {e}", flush=True)
 
@@ -3946,8 +3952,28 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
                 out["tennis_form"] = {"home": tf_h, "away": tf_a}
             if th2h:
                 out["tennis_h2h"] = th2h
-        except Exception:
-            pass
+            # Tennis results come from sources that have stopped publishing; say
+            # how old the newest match we hold for these players is.
+            from datetime import datetime as _dt
+            def _d(v):
+                digits = re.sub(r"[^0-9]", "", str(v or ""))[:8]
+                try:
+                    return _dt.strptime(digits, "%Y%m%d")
+                except ValueError:
+                    return None
+            lasts = [x for x in (_d((tf_h or {}).get("last_date")), _d((tf_a or {}).get("last_date"))) if x]
+            if lasts:
+                age = (_dt.utcnow() - min(lasts)).days
+                out["data"] = {"home_name": home_team, "away_name": away_team,
+                               "home_last_result": (_d((tf_h or {}).get("last_date")) or min(lasts)).strftime("%Y-%m-%d"),
+                               "away_last_result": (_d((tf_a or {}).get("last_date")) or min(lasts)).strftime("%Y-%m-%d"),
+                               "stale": age > PROGNOSIS_STALE_DAYS_TENNIS}
+                if age > PROGNOSIS_STALE_DAYS_TENNIS:
+                    out["notes"].append(
+                        f"Atenção: os resultados de ténis que temos destes jogadores acabam há {age} dias "
+                        f"— forma e Elo de ténis estão desatualizados.")
+        except Exception as e:                         # noqa: BLE001
+            print(f"WARN tennis prognosis: {e}", flush=True)
 
     # ---- Headline probabilities: the MARKET when there is a line, else Elo ----
     # Measured, not assumed (scripts/prognosis_backtest.py — walk-forward on the
