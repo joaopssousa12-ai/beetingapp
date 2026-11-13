@@ -296,7 +296,8 @@ let vbState = {
   whenFilter: 'all',
   mode: 'value',   // open decluttered: only games with an actionable pick (#7)
   bankroll: 0,
-  minEdge: 3,    // default 3% — blocks Qatar at +0.2%
+  minEdge: 2,    // = VB_VALUE_FLOOR. Was 3 while the green floor had already been
+                 // lowered to 2, so a fresh browser hid every 2-3% green by default.
   maxOdds: 8.0,  // hard ceiling: picks up to 8.0 show as "best available"; >8 = info only
   minConf: 0,
   collapsed: new Set(),
@@ -585,8 +586,89 @@ function vbKellyFraction(edge, odd) {
   return f;
 }
 
+// The PRICE rule, judged on the odd the user can actually bet (their book):
+//   green  : odd 1.4-4.0 & edge >= floor,  or  odd 1.3-1.4 & edge >= 3%
+//   yellow : odd 1.3-1.4 & edge between the floor and 3%
+//   red    : everything else (edge below the floor, odd >4.0, odd <1.3, noise >15%)
+// Thresholds from the backtest-lab study (24.6k matches, 2021-26): 1.4-1.8 at
+// edge 2-3% returned +13.3% [5.9,20.7] best-price / +6.2% single-book, and the
+// close's calibration bias runs IN FAVOUR of favourites there (-1.17pp) → the
+// 2% floor extends down to 1.4. 1.3-1.4 is ~4× worse calibrated (MAE 3.13pp)
+// with a tiny, contradictory sample → keeps the stricter 3% floor.
+const VB_MIN_ODD = 1.3;            // below this the pick is never actionable
+const VB_SHORT_BAND_FLOOR = 3;     // edge% needed in the 1.3-1.4 band
+function vbPriceLight(edge, odd, floor) {
+  if (edge == null || odd == null) return 'red';
+  const f = Math.max(VB_VALUE_FLOOR, floor || 0);
+  if (edge < f || edge > 15 || odd > VB_GREEN_MAX_ODD) return 'red';
+  if (odd >= VB_ODD_FLOOR) return 'green';
+  if (odd >= VB_MIN_ODD) return edge >= Math.max(f, VB_SHORT_BAND_FLOOR) ? 'green' : 'yellow';
+  return 'red';
+}
+
+// Why a pick that passes the price rule still may NOT be celebrated: the line
+// its edge was measured against cannot be trusted (or can never be checked).
+//   stale        reference older than VB_REF_MAX_AGE_H
+//   aging        reference 3-6h old and the edge is under the raised floor
+//   unverifiable Pinnacle does not quote this market → no closing line, no CLV
+//   weak         Pinnacle's own margin is too wide to devig a small edge from
+//   conflict     two sharp markets disagree
+function vbRefBlock(ev, edge) {
+  if (ev.staleRef) return 'stale';
+  if (ev.agingRef && !(edge >= VB_VALUE_FLOOR_AGING)) return 'aging';
+  if (ev.unverifiable) return 'unverifiable';
+  if (ev.weakRef) return 'weak';
+  if (ev.refAgree === 'diverge_sharp') return 'conflict';
+  return null;
+}
+const VB_BLOCK_META = {
+  stale:        { short: 'atualiza as odds',   tip: 'A referência (Pinnacle) tem mais de 6h — o edge pode ser só o mercado ter mexido. Carrega em ↻ Refresh e volta a ver.' },
+  aging:        { short: 'atualiza as odds',   tip: 'A referência (Pinnacle) tem 3-6h — a esta idade só um edge acima de 6.5% conta. Carrega em ↻ Refresh e volta a ver.' },
+  unverifiable: { short: 'sem linha Pinnacle', tip: 'A Pinnacle não cota este mercado — a aposta nunca teria CLV, por isso o edge não é verificável.' },
+  weak:         { short: 'referência fraca',   tip: 'A margem da Pinnacle neste jogo é alta (mercado pouco líquido) — um edge pequeno contra esta linha está dentro do ruído. Volta a ver mais perto do jogo.' },
+  conflict:     { short: 'sharps divergem',    tip: 'As duas fontes sharp discordam — o valor justo é incerto.' },
+};
+
+// Why a pick that has SOME edge is not green — said exactly. The old text was one
+// generic line ("below the green value gate … Size with care") under a card whose
+// light said IGNORAR, whatever the actual reason.
+function vbBelowGateNote(p, mine) {
+  const floor = Math.max(VB_VALUE_FLOOR, vbState.minEdge || 0);
+  const pct = v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+  if (!mine || mine.edge_pct == null) return 'Sem preço da 1xBet para esta seleção. Informativo.';
+  const myEdge = mine.edge_pct, myOdd = mine.book_odd;
+  if (myOdd < VB_MIN_ODD) {
+    return `Odd ${myOdd.toFixed(2)} na 1xBet — abaixo de ${VB_MIN_ODD.toFixed(2)} não apostamos: num favorito tão curto, um erro de 1-2 pontos na probabilidade apaga o edge todo.`;
+  }
+  if (myOdd < VB_ODD_FLOOR && myEdge >= floor) {
+    return `Odd ${myOdd.toFixed(2)} (banda ${VB_MIN_ODD.toFixed(2)}–${VB_ODD_FLOOR.toFixed(2)}): aqui só vai a verde com edge de ${Math.max(floor, VB_SHORT_BAND_FLOOR)}% ou mais. Este tem ${pct(myEdge)} — vigia a linha.`;
+  }
+  if (p && p.book_odd > myOdd + 1e-9 && p.edge_pct >= floor) {
+    return `O melhor preço (${p.book_odd.toFixed(2)}, edge ${pct(p.edge_pct)}) está noutra casa. Na 1xBet a odd é ${myOdd.toFixed(2)} e o edge só ${pct(myEdge)} — abaixo do mínimo de ${floor}%. Não é aposta para ti.`;
+  }
+  return `Na 1xBet o edge é ${pct(myEdge)} — abaixo do mínimo de ${floor}% para ir a verde. Informativo.`;
+}
+
+// The stake the app is prepared to suggest for a pick, and why not when it isn't.
+// ONE function for the card, the table and the Track Bet prefill, so they cannot
+// disagree (a card saying "atualiza as odds" next to a prefilled €40 would).
+//   ok       ¼-Kelly on the 1xBet edge
+//   na       1xBet does not quote the selection
+//   zero     1xBet quotes it with no positive edge
+//   info     1xBet odd above the green cap (longshot) — informational
+//   blocked  the price is fine but the reference cannot be trusted (`blocked` = why)
+function vbStakePlan(b, ev, p) {
+  const mine = p ? _myBookPick(b, p) : null;
+  if (!mine) return { state: 'na', mine: null, blocked: null };
+  if (mine.edge_pct == null || mine.edge_pct <= 0) return { state: 'zero', mine, blocked: null };
+  if (mine.book_odd > VB_GREEN_MAX_ODD) return { state: 'info', mine, blocked: null };
+  const blocked = vbRefBlock(ev, mine.edge_pct);
+  if (blocked) return { state: 'blocked', mine, blocked };
+  return { state: 'ok', mine, blocked: null };
+}
+
 function vbEval(b) {
-  const minEdge = vbState.minEdge ?? 3;
+  const minEdge = vbState.minEdge ?? VB_VALUE_FLOOR;
   const ceiling = vbOddCeiling();
   // Best real odd per market+selection, within the ceiling. >ceiling = ignored.
   const byKey = {};
@@ -599,10 +681,32 @@ function vbEval(b) {
     else if (ex.book !== 'Best' && p.book_odd > ex.book_odd) byKey[key] = p;
   }
   const realPicks = Object.values(byKey);
-  const valuePicks = realPicks.filter(p => p.edge_pct != null && p.edge_pct >= minEdge && p.edge_pct <= 15);
-  const bestPick = valuePicks.length
-    ? valuePicks.reduce((a, p) => ((p.confidence||0)*100 + p.edge_pct) > ((a.confidence||0)*100 + a.edge_pct) ? p : a)
-    : null;
+  const credible = p => p.edge_pct != null && p.edge_pct >= minEdge && p.edge_pct <= 15;
+  const rank = p => (p.confidence || 0) * 100 + p.edge_pct;
+  const TIER = { green: 2, yellow: 1, red: 0 };
+
+  // WHICH selection is featured is decided at the user's own book. It used to be
+  // decided on the best price anywhere and only then mapped to 1xBet — so a
+  // better price at a book the user cannot use (Home +4% at another house, +0.5%
+  // at 1xBet) outranked a genuine 1xBet value on another selection (Away +2.6%),
+  // and the card went red with a real value bet hidden behind it.
+  const mineCands = realPicks
+    .map(p => ({ p, m: _myBookPick(b, p) }))
+    .filter(x => x.m && x.m.book_odd > 1 && x.m.book_odd <= ceiling && credible(x.m));
+  let bestPick = null;
+  if (mineCands.length) {
+    const key = x => TIER[vbPriceLight(x.m.edge_pct, x.m.book_odd, minEdge)] * 1e6 + rank(x.m);
+    bestPick = mineCands.reduce((a, x) => key(x) > key(a) ? x : a).p;
+  } else {
+    // No value at the user's book: fall back to the best price anywhere, shown as
+    // informational ("noutra casa") — it can never be green.
+    const valuePicks = realPicks.filter(credible);
+    bestPick = valuePicks.length ? valuePicks.reduce((a, p) => rank(p) > rank(a) ? p : a) : null;
+  }
+  const mine = bestPick ? _myBookPick(b, bestPick) : null;
+  const clv = (mine && mine.edge_pct != null) ? mine.edge_pct : null;   // edge at YOUR price
+  const odd = mine ? mine.book_odd : null;
+
   // Sharp consensus (A+B): the green "value" tier requires that the two sharp
   // references don't disagree. 'diverge' = Pinnacle & Betfair give materially
   // different fair probs → edge is uncertain → never celebrate as green.
@@ -627,20 +731,33 @@ function vbEval(b) {
   const staleRef = refAgeH != null && refAgeH > VB_REF_MAX_AGE_H;
   const agingRef = refAgeH != null && refAgeH > VB_REF_FRESH_H && !staleRef;
   const edgeFloor = agingRef ? VB_VALUE_FLOOR_AGING : VB_VALUE_FLOOR;
-  const isValue = !!bestPick && bestPick.edge_pct >= edgeFloor
-      && bestPick.book_odd >= VB_ODD_FLOOR && bestPick.book_odd <= VB_GREEN_MAX_ODD
-      && !sharpConflict && !weakRef && !unverifiable && !staleRef;
-  // Stars = the Pinnacle-earned base confidence (edge quality + liquidity + league).
-  // Our xG/Elo model is a WEAKER cross-check than Pinnacle, so a model disagreement
-  // is shown as an INFORMATIONAL orange badge ONLY — it does NOT change stars or
-  // stake. The only star override is two SHARP markets disagreeing (Betfair vs
-  // Pinnacle), which is rare and genuinely means the truth is uncertain → cap 2.
-  let stars = bestPick ? (bestPick.confidence || 0) : 0;
+
+  // ONE decision for the whole page. The traffic light used to apply the price
+  // rule alone, so a pick whose reference was 10 hours old still showed
+  // 🟢 APOSTAR with a Kelly stake while the same card's Best Pick box said the
+  // reference was too old to trust. Green now needs both: the price rule at the
+  // user's book AND a reference that can be trusted. A pick that passes the
+  // price rule but fails the reference check is 🟡, with the reason.
+  let light = vbPriceLight(clv, odd, minEdge);
+  let blocked = null;
+  if (light !== 'red') {
+    blocked = vbRefBlock({ staleRef, agingRef, unverifiable, weakRef, refAgree }, clv);
+    if (blocked) light = 'yellow';
+  }
+  const isValue = light === 'green';
+
+  // Stars = the Pinnacle-earned base confidence (edge quality + liquidity + league)
+  // of the price the user can bet. Our xG/Elo model is a WEAKER cross-check than
+  // Pinnacle, so a model disagreement is shown as an INFORMATIONAL orange badge
+  // ONLY — it does NOT change stars or stake. The only star override is two SHARP
+  // markets disagreeing (Betfair vs Pinnacle), which is rare and genuinely means
+  // the truth is uncertain → cap 2.
+  let stars = bestPick ? ((mine || bestPick).confidence || 0) : 0;
   if (sharpConflict) stars = Math.min(stars, 2);
   if (weakRef || unverifiable) stars = Math.min(stars, 2);
   if (staleRef) stars = Math.min(stars, 2);
-  return { realPicks, bestPick, isValue, stars, ceiling, refAgree, weakRef, unverifiable,
-           staleRef, agingRef, refAgeH, edgeFloor };
+  return { realPicks, bestPick, mine, clv, odd, light, blocked, isValue, stars, ceiling,
+           refAgree, weakRef, unverifiable, staleRef, agingRef, refAgeH, edgeFloor };
 }
 
 // Does Pinnacle quote the market this pick belongs to? Without it there is no
@@ -656,38 +773,32 @@ function pinCoversMarket(b, pick) {
 }
 
 // Est. CLV of a card = the edge at the price the USER can actually get (1xBet) for
-// the best pick, else the best-price edge. This is the #1 decision signal — used
-// to sort the page and as the dominant header chip. null = no actionable pick.
+// the best pick. This is the #1 decision signal — used to sort the page and as the
+// dominant header chip. null = no actionable pick (no 1xBet quote ⇒ no CLV, so the
+// card sinks in the CLV sort instead of ranking on an unbettable price).
 function vbClv(b) {
-  const ev = vbEval(b);
-  if (!ev.bestPick) return null;
-  const mine = _myBookPick(b, ev.bestPick);
-  // CLV only exists at the price YOU can bet (1xBet). No 1xBet quote ⇒ no CLV ⇒
-  // null, so the card sinks in the CLV sort instead of ranking on an unbettable price.
-  return (mine && mine.edge_pct != null) ? mine.edge_pct : null;
+  return vbEval(b).clv;
 }
 
-// #3 Traffic-light decision signal per card, judged on the price YOU can bet
-// (1xBet) for the best pick. CLV here = the 1xBet edge vs the sharp close.
-//   🟢 green  (APOSTAR) : odd 1.4-4.0 & CLV>=2%   OR   odd 1.3-1.4 & CLV>=3%
-//   🟡 yellow (VER)     : odd 1.3-1.4 & CLV 2-3%
-//   🔴 red   (IGNORAR)  : odd >4.0, OR CLV <2%, OR no bettable/negative 1xBet edge
-// Thresholds from the backtest-lab study (24.6k matches, 2021-26): 1.4-1.8 at
-// edge 2-3% returned +13.3% [5.9,20.7] best-price / +6.2% single-book, and the
-// close's calibration bias runs IN FAVOUR of favourites there (-1.17pp) → the
-// 2% floor extends down to 1.4. 1.3-1.4 is ~4× worse calibrated (MAE 3.13pp)
-// with a tiny, contradictory sample → keeps the stricter 3% floor.
+// #3 Traffic-light decision signal per card — see vbEval (the single decision).
+//   🟢 green  (APOSTAR) : price rule at 1xBet passes AND the reference is trustworthy
+//   🟡 yellow (VER)     : marginal price (odd 1.3-1.4, edge 2-3%)  OR  the price
+//                         passes but the reference does not (`blocked` says why)
+//   🔴 red   (IGNORAR)  : odd >4.0, edge below the floor, or no 1xBet quote
 function vbSignal(b) {
   const ev = vbEval(b);
-  if (!ev.bestPick) return { light: 'red', clv: null, odd: null };
-  const mine = _myBookPick(b, ev.bestPick);
-  const clv = (mine && mine.edge_pct != null) ? mine.edge_pct : null;
-  const odd = mine ? mine.book_odd : null;
-  if (clv == null || odd == null) return { light: 'red', clv, odd };
-  if (clv < 2 || odd > 4.0) return { light: 'red', clv, odd };
-  if (odd >= 1.4 && odd <= 4.0) return { light: 'green', clv, odd };            // CLV>=2 here
-  if (odd >= 1.3 && odd < 1.4) return { light: clv >= 3 ? 'green' : 'yellow', clv, odd };
-  return { light: 'red', clv, odd };                                            // odd <1.3 (too short)
+  return { light: ev.light, clv: ev.clv, odd: ev.odd, blocked: ev.blocked };
+}
+// Tooltip of the traffic-light chip. A yellow that is only yellow because of the
+// reference says so — "atualiza as odds" is an action, "value marginal" is not.
+function vbSignalTitle(sig) {
+  if (sig.light === 'green') return 'APOSTAR — bom value no preço da 1xBet, contra uma referência fresca';
+  if (sig.light === 'yellow') {
+    return sig.blocked
+      ? 'VER — o preço da 1xBet passa, mas: ' + VB_BLOCK_META[sig.blocked].tip
+      : 'VER — value marginal (odd 1.3-1.4), vigia a linha';
+  }
+  return 'IGNORAR — sem value suficiente na 1xBet';
 }
 const VB_LIGHT_RANK = { green: 0, yellow: 1, red: 2 };
 const VB_LIGHT_META = {
@@ -703,7 +814,7 @@ function renderTableView(data) {
   const wrap = document.getElementById('vb-cards');
   if (!data.length) { wrap.innerHTML = '<div class="vb-empty"><div class="vb-empty-title">No matches match your filters</div></div>'; return; }
   const _br = vbState.bankroll || 0;
-  const _qMinEdge = vbState.minEdge ?? 3;
+  const _qMinEdge = vbState.minEdge ?? VB_VALUE_FLOOR;
   const _qMaxOdds = vbState.maxOdds ?? 8.0;
   const header = `<div class="vb-table-header">
     <span class="vbt-edge">Edge</span>
@@ -733,10 +844,13 @@ function renderTableView(data) {
     // Kelly sized on the 1xBet price only (same rule as the cards): no 1xBet quote
     // or odd >4.0 ⇒ no stake. Short odds (<1.40) are softened by vbKellyFraction.
     let kellyStr = '—';
-    const _mineT = bv ? _myBookPick(b, bv) : null;
-    if (_mineT && _mineT.edge_pct > 0 && _mineT.book_odd <= VB_GREEN_MAX_ODD) {
+    const _planT = vbStakePlan(b, ev, bv);
+    const _mineT = _planT.mine;
+    if (_planT.state === 'ok') {
       const kQ = vbKellyFraction(_mineT.edge_pct, _mineT.book_odd);
       if (kQ > 0) kellyStr = _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
+    } else if (_planT.state === 'blocked') {
+      kellyStr = `<span title="${VB_BLOCK_META[_planT.blocked].tip}" style="color:#d97706">↻</span>`;
     }
     const conf = ev.stars;
     const timeStr = (() => {
@@ -919,6 +1033,7 @@ function clearBetFormFields() {
   if (f) {
     f.dataset.eventId = ''; f.dataset.pinImplied = '';
     f.dataset.oddsSource = ''; f.dataset.refAgreement = '';
+    f.dataset.prefillOdd = ''; f.dataset.prefillEdge = '';
   }
 }
 
@@ -1143,7 +1258,7 @@ function renderValueBets() {
   // "Mostrar ignorados" toggle off ⇒ drop 🔴 cards from the view entirely.
   if (vbState.hideReds) data = data.filter(b => vbSignal(b).light !== 'red');
 
-  const _qMinEdge = vbState.minEdge ?? 3;
+  const _qMinEdge = vbState.minEdge ?? VB_VALUE_FLOOR;
   const _qMaxOdds = vbState.maxOdds ?? 8.0;
   const valueCount = greenCount;   // 🟢 = actionable "bet" picks
 
@@ -1246,7 +1361,7 @@ function negativeRoiLeague(name) {
 }
 
 function renderCard(b) {
-  const _qMinEdge = vbState.minEdge ?? 3;
+  const _qMinEdge = vbState.minEdge ?? VB_VALUE_FLOOR;
   const _qMaxOdds = vbState.maxOdds ?? 8.0;
   const isExpanded = !vbState.collapsed.has(b.event_id);
   const hasAutoH2H = !!(b.x1_home || b.b365_home || b.best_home);
@@ -1387,17 +1502,12 @@ function renderCard(b) {
     //   • 1xBet quotes it but edge ≤ 0         → €0 (no value at 1xBet).
     //   • 1xBet odd > 4.0                      → informational only, no stake.
     //   • otherwise                            → ¼-Kelly on the 1xBet edge (short-odd softened).
-    const mine = _myBookPick(b, p);
-    let kelly = null, stakeState = 'ok';
-    if (!mine) {
-      stakeState = 'na';                                   // não cotado na 1xBet
-    } else if (mine.edge_pct == null || mine.edge_pct <= 0) {
-      stakeState = 'zero';                                 // 1xBet sem valor
-    } else if (mine.book_odd > VB_GREEN_MAX_ODD) {
-      stakeState = 'info';                                 // odd > 4.0 → informativo
-    } else {
-      kelly = _calcKelly(mine.edge_pct, mine.book_odd);    // ¼-Kelly on YOUR (1xBet) edge
-    }
+    //   • reference too old / weak / absent      → no stake: the app cannot vouch
+    //     for the edge, so it must not put a euro amount next to it.
+    const plan = vbStakePlan(b, ev, p);
+    const mine = plan.mine;
+    const stakeState = plan.state;
+    const kelly = stakeState === 'ok' ? _calcKelly(mine.edge_pct, mine.book_odd) : null;
     const fair = p.true_prob ? (100 / p.true_prob).toFixed(2) : null;
     // #4 If this exact pick (same selection) is already tracked in My Bets, swap the
     // Track button for a "Ver em My Bets" link. Persists across reloads because
@@ -1418,14 +1528,14 @@ function renderCard(b) {
           : ev.staleRef
           ? `Referência com ${ev.refAgeH.toFixed(1)}h — o preço da Pinnacle usado para calcular este edge é velho de mais. O "valor" pode ser só o mercado ter mexido desde então. Atualiza as odds antes de apostar.`
           : ev.agingRef
-          ? `Referência com ${ev.refAgeH.toFixed(1)}h — a esta idade só contamos como valor um edge acima de ${VB_VALUE_FLOOR_AGING}%, porque a linha já teve tempo de derivar. Este tem ${edge.toFixed(1)}%.`
+          ? `Referência com ${ev.refAgeH.toFixed(1)}h — a esta idade só contamos como valor um edge acima de ${VB_VALUE_FLOOR_AGING}%, porque a linha já teve tempo de derivar. Este tem ${(mine && mine.edge_pct != null ? mine.edge_pct : edge).toFixed(1)}% na 1xBet.`
           : ev.unverifiable
           ? `A Pinnacle não cota este mercado — esta aposta NUNCA terá CLV. O edge não é verificável, por isso não vai a verde.`
           : ev.weakRef
           ? `Referência fraca: a margem da Pinnacle neste jogo é ${b.pin_vig_pct != null ? b.pin_vig_pct + '%' : 'alta'} (acima de 4%), ou seja nem a Pinnacle sabe bem o preço. Um edge pequeno contra uma linha destas está dentro do ruído.`
           : stakeState === 'info'
-          ? `Best available — odd >4.0 (azarão, menos fiável). Informativo, sem stake sugerida.`
-          : `Best available — below the green value gate (edge ≥2% & odd 1.4–4.0). Size with care.`);
+          ? `Odd acima de 4.0 (azarão): o valor justo de um azarão é o menos fiável, por isso não vai a verde. Informativo, sem stake sugerida.`
+          : vbBelowGateNote(p, mine));
     return `<div class="${cls}">
       <div class="vb-pick-label">${trophyIcon}${label}<span class="vb-stars">${starsHtmlFor(ev.stars)}</span></div>
       <div class="vb-pick-selection">${p.selection}</div>
@@ -1441,8 +1551,11 @@ function renderCard(b) {
         </div>
         ${kelly ? `<div class="vb-hero-num-block"${kelly.pct ? ` title="Seguro (¼-Kelly com limitador de odd curta) = ${kelly.pct}% do bankroll${kelly.limited ? ` · ¼-Kelly cheia = ${kelly.pctFull}%` : ''}"` : ''}>
           <span class="vb-hero-big kelly-val">${kelly.text}</span>
-          <span class="vb-hero-lbl">${kelly.limited ? `Seguro · cheio ${kelly.fullText}` : (kelly.pct ? `Apostar · ${kelly.pct}%` : '¼ Kelly')}</span>
-        </div>` : (stakeState === 'na' ? `<div class="vb-hero-num-block">
+          <span class="vb-hero-lbl">${ev.light === 'red' ? `¼ Kelly · só informativo` : kelly.limited ? `Seguro · cheio ${kelly.fullText}` : (kelly.pct ? `Apostar · ${kelly.pct}%` : '¼ Kelly')}</span>
+        </div>` : (stakeState === 'blocked' ? `<div class="vb-hero-num-block" title="${VB_BLOCK_META[plan.blocked].tip}">
+          <span class="vb-hero-big" style="color:#d97706">—</span>
+          <span class="vb-hero-lbl">${VB_BLOCK_META[plan.blocked].short}</span>
+        </div>` : stakeState === 'na' ? `<div class="vb-hero-num-block">
           <span class="vb-hero-big" style="color:#dc2626">€0</span>
           <span class="vb-hero-lbl">n/d na 1xBet</span>
         </div>` : stakeState === 'zero' ? `<div class="vb-hero-num-block">
@@ -1561,7 +1674,7 @@ function renderCard(b) {
       <span class="m-odd">Book</span>
       <span class="m-novigo">Fair</span>
       <span class="m-edge">Edge</span>
-      <span class="m-kelly">Kelly</span>
+      <span class="m-kelly" title="Stake ¼-Kelly calculada no preço da 1xBet">Kelly 1xBet</span>
       <span class="m-conf">★</span>
     </div>`;
     const _br = vbState.bankroll || 0;
@@ -1580,12 +1693,19 @@ function renderCard(b) {
       const fairOdd = p.fair_odd
         ? p.fair_odd.toFixed(2)
         : (p.book_odd && p.edge_pct != null ? (p.book_odd / (1 + p.edge_pct / 100)).toFixed(2) : '—');
+      // Sized on the 1xBet price like everywhere else. This column used to size on
+      // the best price anywhere, i.e. a stake for a bet the user cannot place.
       let kellyStr = '—';
-      if (eligible && p.edge_pct > 0 && p.book_odd > 1) {
-        const kQ = ((p.edge_pct / 100) / (p.book_odd - 1)) * 0.25;
-        kellyStr = _br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`;
+      const _planRow = eligible ? vbStakePlan(b, ev, p) : { state: 'na' };
+      if (_planRow.state === 'ok') {
+        const kQ = vbKellyFraction(_planRow.mine.edge_pct, _planRow.mine.book_odd);
+        if (kQ > 0) kellyStr = `<span title="¼-Kelly no preço da 1xBet (${fmtOdd(_planRow.mine.book_odd)}, edge ${_planRow.mine.edge_pct.toFixed(1)}%)">`
+          + (_br > 0 ? `€${(_br * kQ).toFixed(0)}` : `${(kQ * 100).toFixed(1)}%`) + `</span>`;
       }
-      const starCount = (eligible && p.edge_pct >= VB_VALUE_FLOOR) ? (p.confidence || 0) : 0;
+      // Same cap as the Best Pick box: a reference that cannot be trusted cannot
+      // carry more than 2 stars here either.
+      const _capStars = (ev.staleRef || ev.weakRef || ev.refAgree === 'diverge_sharp' || !pinCoversMarket(b, p)) ? 2 : 5;
+      const starCount = (eligible && p.edge_pct >= VB_VALUE_FLOOR) ? Math.min(p.confidence || 0, _capStars) : 0;
       return `<div class="vb-market-row${eligible ? '' : ' is-muted'}">
         <span class="m-market">${p.market}</span>
         <span class="m-selection">${p.selection}</span>
@@ -1751,7 +1871,7 @@ function renderCard(b) {
   return `<div class="${cardCls}" data-id="${b.event_id}" data-agreement="${cardAgreement}">
     <div class="vb-card-head">
       <div class="vb-card-meta">
-        <span class="vb-signal ${VB_LIGHT_META[sig.light].cls}" title="${sig.light === 'green' ? 'APOSTAR — bom value no preço da 1xBet' : sig.light === 'yellow' ? 'VER — value marginal, vigia a linha' : 'IGNORAR — sem value suficiente na 1xBet'}">${VB_LIGHT_META[sig.light].dot} ${VB_LIGHT_META[sig.light].label}</span>
+        <span class="vb-signal ${VB_LIGHT_META[sig.light].cls}" title="${vbSignalTitle(sig)}">${VB_LIGHT_META[sig.light].dot} ${VB_LIGHT_META[sig.light].label}${sig.blocked ? ` · ${VB_BLOCK_META[sig.blocked].short}` : ''}</span>
         <span class="vb-sport">${b.sport_name || ''}</span>${tennisSurfaceBadge(b)}
         <div class="vb-head-right">
           ${clvChipHtml}${edgeChipHtml}
@@ -2011,7 +2131,8 @@ function quickAddBet(b) {
   // pick, real odds within the ceiling). Fall back to backend best_value only if
   // there is no eligible pick (shouldn't happen — Track only shows when there is).
   if (!b) return;
-  const pick = vbEval(b).bestPick || b.best_value;
+  const ev = vbEval(b);
+  const pick = ev.bestPick || b.best_value;
   if (!pick) return;
   // The user bets at 1xBet — record THEIR price + edge (so P&L and the realized CLV
   // are computed against what they actually got), falling back to the best-price pick
@@ -2041,6 +2162,16 @@ function quickAddBet(b) {
       'Queres registar na mesma?')) {
     return;
   }
+  // The edge about to be recorded was measured against the stored Pinnacle line.
+  // If that line is hours old the number is not an edge, it is a guess — and a bet
+  // logged on it tells us nothing about the model. Say so BEFORE it is logged.
+  const plan = vbStakePlan(b, ev, pick);
+  if (plan.state === 'blocked' && (plan.blocked === 'stale' || plan.blocked === 'aging')
+      && !confirm(`⚠️ As odds deste jogo têm ${ev.refAgeH != null ? ev.refAgeH.toFixed(1) + 'h' : 'várias horas'}.\n\n`
+        + `O edge que ia ficar registado (${mine.edge_pct != null ? mine.edge_pct.toFixed(1) : '?'}%) foi medido contra uma linha da Pinnacle antiga `
+        + `— pode já não existir.\n\nO melhor é cancelar, carregar em ↻ Refresh e voltar a ver.\n\nRegistar na mesma?`)) {
+    return;
+  }
   const useOdd  = mine.book_odd;
   const useBook = '1xBet';
   const useEdge = mine.edge_pct;
@@ -2061,8 +2192,11 @@ function quickAddBet(b) {
     document.getElementById('bet-bookmaker').value = useBook;
     const stakeField = document.getElementById('bet-stake');
     // FULL ¼-Kelly, NO limiter — user chose to size low-odd bets themselves.
-    const kellyQ = (useEdge > 0 && useOdd > 1)
-      ? (useEdge / 100) / (useOdd - 1) * 0.25 : (pick.kelly_pct || 0) / 100;
+    // Only when the card itself shows a stake (plan 'ok'). The fallback used to be
+    // the BEST-PRICE pick's Kelly, i.e. a stake sized on a price at another book,
+    // and the form was filled even where the card said "sem stake sugerida".
+    const kellyQ = (plan.state === 'ok' && useEdge > 0 && useOdd > 1)
+      ? (useEdge / 100) / (useOdd - 1) * 0.25 : 0;
     // ALWAYS overwrite. This used to be guarded by `!stakeField.value`, so the
     // first value that ever landed here stuck FOREVER: every later Track Bet
     // re-opened the form still showing the previous bet's stake (e.g. 2.80),
@@ -2081,6 +2215,12 @@ function quickAddBet(b) {
         stakeHint.innerHTML = safeQ > 0 && kellyQ > safeQ + 1e-9
           ? `¼-Kelly cheia: <strong>€${fullE}</strong> (${(kellyQ*100).toFixed(1)}%) · versão segura (odd curta): <strong>€${safeE}</strong> (${(safeQ*100).toFixed(1)}%). Ajusta à vontade.`
           : `¼-Kelly: <strong>€${fullE}</strong> (${(kellyQ*100).toFixed(1)}% do bankroll). Ajusta à vontade.`;
+      } else if (plan.state === 'blocked') {
+        stakeHint.textContent = 'Sem stake sugerida — ' + VB_BLOCK_META[plan.blocked].tip;
+      } else if (plan.state === 'info') {
+        stakeHint.textContent = 'Odd acima de 4.0 — informativo, a app não sugere stake.';
+      } else if (plan.state === 'zero') {
+        stakeHint.textContent = 'A 1xBet não tem edge positivo nesta seleção — a app não sugere stake.';
       } else {
         stakeHint.textContent = '';
       }
@@ -2101,6 +2241,11 @@ function quickAddBet(b) {
       // bet log could not tell them apart.
       f.dataset.oddsSource = b.odds_source || '';
       f.dataset.refAgreement = b.ref_agreement || '';
+      // The odd and edge this form was filled with. If the odd is edited before
+      // saving (the real 1xBet price had moved), submitBet re-derives the edge
+      // from these instead of storing the prefilled edge next to a different odd.
+      f.dataset.prefillOdd = (useOdd != null ? String(useOdd) : '');
+      f.dataset.prefillEdge = (useEdge != null ? String(useEdge) : '');
       let pinImp = null;
       if (pick.selection === b.home_team) pinImp = b.true_home_pct;
       else if (pick.selection === b.away_team) pinImp = b.true_away_pct;
@@ -2129,8 +2274,24 @@ async function refreshOdds() {
   box.style.display = 'block';
   log.innerHTML = '<div style="color:var(--text3)">Fetching live odds...</div>';
   try {
-    const resp = await fetch('/api/odds/refresh', { method: 'POST' });
-    const data = await resp.json();
+    let resp = await fetch('/api/odds/refresh', { method: 'POST' });
+    let data = await resp.json();
+    // The server holds back a refresh that would waste credits (odds fetched
+    // minutes ago) or eat the reserve kept for closing lines. It is the user's
+    // call — ask, and only then repeat the request with force=1.
+    if (!data.ok && data.needs_confirm) {
+      const ask = (data.msg || 'Atualizar as odds agora?') + '\n\n'
+        + (data.reason === 'reserve'
+            ? 'Atualizar na mesma? (podes ficar sem créditos para o fecho das apostas pendentes)'
+            : 'Atualizar na mesma?');
+      if (!confirm(ask)) {
+        log.innerHTML = `<div style="color:var(--amber)">${data.msg || 'Refresh cancelado.'}</div>`;
+        btn.disabled = false; btn.textContent = '↻ Refresh';
+        return;
+      }
+      resp = await fetch('/api/odds/refresh?force=1', { method: 'POST' });
+      data = await resp.json();
+    }
     if (!data.ok) { log.innerHTML = `<div style="color:var(--amber)">${data.msg}</div>`; btn.disabled=false; btn.textContent='↻ Refresh'; return; }
     if (oddsPoller) clearInterval(oddsPoller);
     let oddsPollCount = 0;
@@ -2440,6 +2601,17 @@ async function populateEventDropdown() {
       document.getElementById('bet-commence').value = iso;
     }
     document.getElementById('bet-selection').value = ev.home_team || '';
+    // A match chosen by hand is a different bet from whatever Track Bet prefilled.
+    // That pick's hidden edge and provenance stayed in the form and were saved
+    // against this one — an edge the new bet never had.
+    const _edge = document.getElementById('bet-edge-pct'); if (_edge) _edge.value = '';
+    const _hint = document.getElementById('bet-stake-hint'); if (_hint) _hint.textContent = '';
+    const _f = document.getElementById('bet-form');
+    if (_f) {
+      _f.dataset.eventId = ''; _f.dataset.pinImplied = '';
+      _f.dataset.oddsSource = ''; _f.dataset.refAgreement = '';
+      _f.dataset.prefillOdd = ''; _f.dataset.prefillEdge = '';
+    }
   };
 }
 
@@ -2448,7 +2620,30 @@ function toggleBetForm() {
   f.style.display = f.style.display === 'none' ? 'block' : 'none';
 }
 
+// What the edge is at the odd actually being saved. The form is prefilled with the
+// app's 1xBet odd and its edge; when the user corrects the odd (the price on the
+// real site had moved) the prefilled edge no longer describes the bet. Same fair
+// probability, different price:  1+edge' = (1+edge) x odd'/odd.
+function edgeAtSavedOdd(prefillOdd, prefillEdge, savedOdd) {
+  const o = parseFloat(prefillOdd), e = parseFloat(prefillEdge), n = parseFloat(savedOdd);
+  if (!(o > 1) || !(n > 1) || isNaN(e)) return null;
+  if (Math.abs(n - o) < 1e-9) return e;
+  return Math.round(((1 + e / 100) * n / o - 1) * 10000) / 100;
+}
+
+// Turn a failed save into words the user can act on. Never silent: a bet that the
+// user believes was logged and was not is a hole in the CLV record.
+function betSaveErrorText(status, result) {
+  const detail = result && (result.detail || result.msg || result.error);
+  if (status === 0) return 'Sem resposta do servidor (pode estar a acordar). A aposta NÃO foi guardada — tenta outra vez dentro de uns segundos.';
+  return `A aposta NÃO foi guardada (erro ${status}${detail ? ': ' + detail : ''}). Tenta outra vez.`;
+}
+
+let _betSubmitting = false;
 async function submitBet() {
+  // A slow response (the free server waking up takes many seconds) invites a
+  // second click, and every click used to POST another copy of the bet.
+  if (_betSubmitting) return;
   const sel = document.getElementById('bet-event-select');
   const betForm = document.getElementById('bet-form');
   // event_id from the dropdown if chosen, else from what Track Bet stashed on the form
@@ -2490,31 +2685,55 @@ async function submitBet() {
     alert('Please fill in at least Selection, Odds, and Stake.');
     return;
   }
-  const resp = await fetch('/api/bets', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(data)
-  });
-  const result = await resp.json();
-  if (result.ok) {
-    // Clear form
-    ['bet-sport','bet-home','bet-away','bet-commence','bet-selection','bet-odds','bet-stake','bet-notes','bet-edge-pct'].forEach(id => {
-      const el = document.getElementById(id); if (el) el.value = '';
-    });
-    document.getElementById('bet-event-select').value = '';
-    if (betForm) {
-      betForm.dataset.eventId = ''; betForm.dataset.pinImplied = '';
-      betForm.dataset.oddsSource = ''; betForm.dataset.refAgreement = '';
+  if (!(data.odds > 1) || !(data.stake > 0)) {
+    alert('A odd tem de ser maior que 1 e a stake maior que 0.');
+    return;
+  }
+  // Odd edited after the prefill → the stored edge must follow it.
+  if (betForm && betForm.dataset.prefillOdd) {
+    const e2 = edgeAtSavedOdd(betForm.dataset.prefillOdd, betForm.dataset.prefillEdge, data.odds);
+    if (e2 != null) data.edge_pct = e2;
+  }
+
+  const btn = document.getElementById('bet-save-btn');
+  const btnText = btn ? btn.textContent : '';
+  _betSubmitting = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'A guardar…'; }
+  try {
+    let resp, result = null;
+    try {
+      resp = await fetch('/api/bets', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+      });
+    } catch (e) {
+      alert('⚠️ ' + betSaveErrorText(0, null));
+      return;
     }
+    try { result = await resp.json(); } catch (e) { result = null; }
+    if (!resp.ok || !result || !result.ok) {
+      alert('⚠️ ' + betSaveErrorText(resp.status, result));
+      return;
+    }
+    // Clear form
+    clearBetFormFields();
+    document.getElementById('bet-event-select').value = '';
     // #4 Reflect the new bet on the value-bets cards right away (also DB-persistent:
     // a reload rebuilds trackedBetsMap from /api/bets, so the state survives reloads).
-    if (data.event_id) {
+    if (data.event_id && !result.duplicate) {
       (trackedBetsMap[data.event_id] = trackedBetsMap[data.event_id] || []).push(
         { event_id: data.event_id, selection: data.selection, market: data.market });
       if (typeof renderValueBets === 'function') renderValueBets();
     }
     toggleBetForm();
     loadMyBets();
+    if (result.duplicate) {
+      alert('Esta aposta já tinha sido registada há instantes — não foi criada uma segunda.');
+    }
+  } finally {
+    _betSubmitting = false;
+    if (btn) { btn.disabled = false; btn.textContent = btnText || 'Save bet'; }
   }
 }
 

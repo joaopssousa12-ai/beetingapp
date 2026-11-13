@@ -204,8 +204,8 @@
             <label class="vb-filter-label">Min edge</label>
             <select id="vb-minedge" class="vb-select vb-select-sm">
               <option value="0">Any</option>
-              <option value="2">2%</option>
-              <option value="3" selected>3% ✓</option>
+              <option value="2" selected>2% ✓</option>
+              <option value="3">3%</option>
               <option value="5">5%</option>
               <option value="8">8%</option>
             </select>
@@ -332,7 +332,7 @@
               <input type="hidden" id="bet-edge-pct">
             </div>
             <div style="display:flex;gap:0.75rem;margin-top:1rem">
-              <button class="btn-primary" onclick="submitBet()">Save bet</button>
+              <button class="btn-primary" id="bet-save-btn" onclick="submitBet()">Save bet</button>
               <button class="btn-secondary" onclick="toggleBetForm()">Cancel</button>
             </div>
           </div>

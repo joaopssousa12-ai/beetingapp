@@ -1050,6 +1050,10 @@ tbody tr.value-row td.strong { color: var(--text); }
 .vb-daily-summary {
   padding: 0.8rem 1.1rem; margin-bottom: 0.9rem; border-radius: var(--radius);
   font-size: 13px; line-height: 1.5;
+  /* It sits inside the cards grid: without this it is laid out as a CARD — one
+     column wide and as tall as the card beside it (a half-page empty green box
+     on any screen wide enough for two columns). */
+  grid-column: 1 / -1;
 }
 .vb-daily-summary.ds-good { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.25); border-left: 3px solid #16a34a; color: var(--text2); }
 .vb-daily-summary.ds-good strong { color: #16a34a; }
