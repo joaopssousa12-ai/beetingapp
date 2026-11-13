@@ -67,14 +67,16 @@ async function load() {
         </div>
         <div class="mp-leg-right">
           <span class="mp-tier ${tierClass(l.confidence)}">${tierLabel(l.confidence)} · ${l.confidence}%</span>
-          <div class="mp-odd">${l.odd ? '@ ' + l.odd.toFixed(2) : 'odd —'}</div>
+          <div class="mp-odd">${l.odd ? '@ ' + l.odd.toFixed(2) + (l.odd_book ? ` <span style="font-size:10px;opacity:.7">${l.odd_book}</span>` : '') : 'odd —'}</div>
         </div>
       </a>`).join('');
+    if (d.warning) html = `<div class="mp-empty" style="color:#b45309;text-align:left;margin-bottom:1rem">⚠ ${d.warning}</div>` + html;
 
     html += `<div class="mp-summary">
       <div class="mp-summary-row"><span>Pernas</span><strong>${d.legs.length}</strong></div>
       ${d.combined_odd ? `<div class="mp-summary-row"><span>Odd combinada</span><strong>${d.combined_odd.toFixed(2)}</strong></div>` : ''}
-      ${d.model_all_hit_pct != null ? `<div class="mp-summary-row"><span>Modelo acerta as ${d.legs.length}</span><strong>~${d.model_all_hit_pct}%</strong></div>` : ''}
+      ${d.model_all_hit_pct != null ? `<div class="mp-summary-row"><span>Probabilidade de acertar as ${d.legs.length}</span><strong>~${d.model_all_hit_pct}%</strong></div>` : ''}
+      ${d.expected_return_pct != null ? `<div class="mp-summary-row"><span>Retorno esperado a estas odds</span><strong style="color:${d.expected_return_pct >= 0 ? '#16a34a' : '#dc2626'}">${d.expected_return_pct >= 0 ? '+' : ''}${d.expected_return_pct}%</strong></div>` : ''}
       <div style="font-size:12px;color:var(--text3);margin-top:.6rem;line-height:1.5">${d.note || ''}</div>
     </div>`;
 

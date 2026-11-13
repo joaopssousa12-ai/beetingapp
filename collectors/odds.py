@@ -26,6 +26,10 @@ SPORT_GROUPS = {
     "soccer_netherlands_eredivisie": "Eredivisie",
     "soccer_conmebol_copa_america": "Copa América",
     "soccer_uefa_euro": "UEFA Euro",
+    # National-team football between tournaments. Without it the page is empty
+    # for every international break (two weeks with nothing to log). Costs a
+    # credit only on a refresh that finds one of its games inside the 48h window.
+    "soccer_uefa_nations_league": "UEFA Nations League",
     # Football — 2ªs divisões + ligas extra que o backtest cobre. Só são
     # pedidas à API quando estão em época (to_fetch filtra por 'active'), por
     # isso não gastam créditos fora de época. Nomes alinhados com o backtest.

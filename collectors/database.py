@@ -1368,12 +1368,13 @@ def get_value_bets():
         # ========== OVER/UNDER 2.5 ==========
         pov, pun = d.get("pin_over25"), d.get("pin_under25")
         if pov and pun:
-            inv_o = implied_prob(pov) or 0
-            inv_u = implied_prob(pun) or 0
-            margin = inv_o + inv_u
-            if margin > 0:
-                true_o = inv_o / margin
-                true_u = inv_u / margin
+            # Power devig, like 1X2 and like the closing line this bet's CLV will be
+            # measured against. It was proportional here only, so an O/U edge and
+            # its own CLV were computed with two different rulers.
+            _dv = remove_vig_power(pov, None, pun)
+            if _dv:
+                true_o = _dv["home"] / 100
+                true_u = _dv["away"] / 100
                 d["true_over25_pct"] = round(true_o * 100, 1)
                 d["true_under25_pct"] = round(true_u * 100, 1)
                 for sel, tp, x1, best, pin_o in [
@@ -1397,12 +1398,10 @@ def get_value_bets():
         # ========== BTTS ==========
         pby, pbn = d.get("pin_btts_yes"), d.get("pin_btts_no")
         if pby and pbn:
-            inv_y = implied_prob(pby) or 0
-            inv_n = implied_prob(pbn) or 0
-            margin = inv_y + inv_n
-            if margin > 0:
-                true_y = inv_y / margin
-                true_n = inv_n / margin
+            _dv = remove_vig_power(pby, None, pbn)     # same ruler as the close
+            if _dv:
+                true_y = _dv["home"] / 100
+                true_n = _dv["away"] / 100
                 d["true_btts_yes_pct"] = round(true_y * 100, 1)
                 d["true_btts_no_pct"] = round(true_n * 100, 1)
                 for sel, tp, x1, best, pin_o in [
@@ -1483,11 +1482,9 @@ def get_value_bets():
         # xg_sig unbound → UnboundLocalError crashes the WHOLE engine mid-loop (the
         # cache then never refreshes and the page freezes on stale data).
         xg_sig = None
-        sport_check = (d.get("sport_name") or "").lower()
-        is_national = ("world cup" in sport_check or "nations" in sport_check
-                       or "euro" in sport_check or "copa" in sport_check
-                       or "gold cup" in sport_check or "afcon" in sport_check
-                       or "asian cup" in sport_check)
+        from collectors.teamnames import competition_kind as _competition_kind
+        _kind = _competition_kind(d.get("sport_name"))
+        is_national = _kind == "national"
         if is_national:
             # Use national team xG proxy (Dixon-Coles on historical matches)
             from collectors.national_xg import predict_national_match
@@ -1576,12 +1573,17 @@ def get_value_bets():
         sport = (d.get("sport_name") or "").lower()
         elo_sig = None
         try:
-            if "world cup" in sport or "nations" in sport or "euro" in sport or "copa" in sport:
+            if _kind == "national":
                 elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "national")
-            elif "tennis" in sport or "atp" in sport or "wta" in sport:
+            elif _kind == "tennis":
                 elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "tennis", surface="All")
             else:
-                elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "football_club")
+                elo_sig = elo_based_probability(d.get("home_team"), d.get("away_team"), "football_club",
+                                                sport_name=d.get("sport_name"))
+                # Ratings of two different leagues are not on one scale: as a
+                # "second opinion" on a European-cup fixture they are noise.
+                if elo_sig and elo_sig.get("comparable") is False:
+                    elo_sig = None
         except Exception as e:
             print(f"WARN: elo error: {e}", flush=True)
             elo_sig = None
@@ -3368,17 +3370,57 @@ def get_bankroll_advanced(starting_bankroll=1000):
 # ELO — rating lookup and match probability
 # ==========================================================
 
-def get_elo_rating(entity, category, surface=None):
-    """Lookup Elo rating with fuzzy name matching."""
+def _fd_only_sql():
+    """SQL fragment restricting football_matches to the football-data.co.uk rows.
+
+    football_matches holds the same matches twice under two spellings: the
+    openfootball import ("Manchester United FC") and the football-data one ("Man
+    United"). Anything that walks a team's matches must stay in ONE of them, or it
+    sees every match twice or mixes two half-histories. football-data is the one
+    kept: 16 divisions instead of 5, and current to the last weekend."""
+    try:
+        from collectors import teamnames
+        return " AND substr(match_id, 1, 3) = 'fd_'" if teamnames.has_results_vocabulary() else ""
+    except Exception:                                  # noqa: BLE001
+        return ""
+
+
+def canonical_team(team, sport_name=None, national=False):
+    """The name the results tables use for this team, or None when we hold no
+    results for it. Never a look-alike: see collectors/teamnames.py."""
+    try:
+        from collectors import teamnames
+        if national:
+            return teamnames.resolve_national(team)[0]
+        return teamnames.resolve_club(team, sport_name)[0]
+    except Exception as e:                             # noqa: BLE001
+        print(f"WARN canonical_team({team!r}): {e}", flush=True)
+        return None
+
+
+def get_elo_rating(entity, category, surface=None, sport_name=None):
+    """Elo row for a team or player, or None.
+
+    Club and national-team names are first resolved to the name the results use
+    and then looked up EXACTLY. The lookup used to fall back to "the first rating
+    whose name contains this one": "Milan" got whichever of AC Milan and
+    Internazionale Milano came first, and "Inter Milan" or "Atlético Madrid",
+    contained in no stored name, silently had no rating at all."""
     if not entity:
         return None
+    eff_surface = surface if surface else ''
+    exact_only = False
+    if category in ("football_club", "national"):
+        canon = canonical_team(entity, sport_name, national=(category == "national"))
+        if not canon:
+            return None
+        entity, exact_only = canon, True
 
     # Use pre-loaded session cache if available (avoids new Neon connection per call)
     if _session_elo is not None:
-        eff_surface = surface if surface else ''
         key = (entity.lower(), category, eff_surface)
         row = _session_elo.get(key)
-        if not row:
+        if not row and not exact_only:
             norm = entity.replace("FC ", "").replace(" FC", "").strip().lower()
             for (e, c, s), v in _session_elo.items():
                 if c == category and (s or '') == eff_surface and norm in e:
@@ -3387,13 +3429,12 @@ def get_elo_rating(entity, category, surface=None):
         return row
 
     # PostgreSQL PRIMARY KEY makes surface NOT NULL; we store '' for categories without surface
-    eff_surface = surface if surface else ''
     conn = get_connection()
     row = conn.execute(
         "SELECT * FROM elo_ratings WHERE entity = ? AND category = ? AND COALESCE(surface,'') = ?",
         (entity, category, eff_surface)
     ).fetchone()
-    if not row:
+    if not row and not exact_only:
         norm = entity.replace("FC ", "").replace(" FC", "").strip()
         row = conn.execute(
             "SELECT * FROM elo_ratings WHERE entity LIKE ? AND category = ? AND COALESCE(surface,'') = ?",
@@ -3403,16 +3444,31 @@ def get_elo_rating(entity, category, surface=None):
     return dict(row) if row else None
 
 
-def elo_based_probability(home_team, away_team, category, surface=None, home_advantage=65):
+def elo_based_probability(home_team, away_team, category, surface=None, home_advantage=65,
+                          sport_name=None):
     """
     Match outcome probabilities from Elo ratings.
     For football: includes home advantage + draw estimation.
     For tennis: head-to-head win probability (no draw).
+
+    Club ratings are computed league by league: every league is a closed pool
+    that averages 1500, so a rating says how good a team is INSIDE its league and
+    nothing about how two leagues compare. For a fixture between clubs of two
+    countries (European cups) the result carries "comparable": False and callers
+    must not present it as a probability.
     """
-    rh = get_elo_rating(home_team, category, surface)
-    ra = get_elo_rating(away_team, category, surface)
+    rh = get_elo_rating(home_team, category, surface, sport_name=sport_name)
+    ra = get_elo_rating(away_team, category, surface, sport_name=sport_name)
     if not rh or not ra:
         return None
+    comparable = True
+    if category == "football_club":
+        try:
+            from collectors import teamnames
+            ch, ca = teamnames.club_country(rh["entity"]), teamnames.club_country(ra["entity"])
+            comparable = not (ch and ca and ch != ca)
+        except Exception:                              # noqa: BLE001
+            comparable = True
 
     rating_h = rh["rating"]
     rating_a = ra["rating"]
@@ -3429,6 +3485,7 @@ def elo_based_probability(home_team, away_team, category, surface=None, home_adv
             "rating_diff": round(rating_h - rating_a),
             "games_home": rh["games"],
             "games_away": ra["games"],
+            "comparable": True,
         }
     else:
         # Football: home advantage + draw model
@@ -3451,6 +3508,8 @@ def elo_based_probability(home_team, away_team, category, surface=None, home_adv
             "rating_diff": round((rating_h + ha) - rating_a),
             "games_home": rh["games"],
             "games_away": ra["games"],
+            "entity_home": rh["entity"], "entity_away": ra["entity"],
+            "comparable": comparable,
         }
 
 
@@ -3472,6 +3531,27 @@ def elo_based_probability(home_team, away_team, category, surface=None, home_adv
 #     "safest pick" / accumulator meaningful (still -EV — an accumulator only
 #     ever multiplies the bookmaker margin).
 # ============================================================
+# Confidence bands and what each one actually did, market number, in the backtest
+# (scripts/prognosis_backtest.py). Highest first.
+PROGNOSIS_TIERS = [
+    {"min": 70, "tier": "Alta", "hit": 81},
+    {"min": 60, "tier": "Média-alta", "hit": 65},
+    {"min": 50, "tier": "Média", "hit": 55},
+    {"min": 0, "tier": "Baixa", "hit": 42},
+]
+# How much of the goals model's distance from 50% is real (fitted on its own
+# calibration table): said 72% for a side of O/U 2.5 -> happened 59.6%.
+GOALS_OU_SHRINK = 0.46
+# BTTS is worse still: said 72% -> happened 57.8% (same 22,373 matches).
+GOALS_BTTS_SHRINK = 0.40
+
+# A club that has not got a result in our tables for this long (measured from the
+# fixture's kickoff) is being read from stale data: a normal season never leaves
+# more than ~3 weeks between a team's matches outside the summer break.
+PROGNOSIS_STALE_DAYS_CLUB = int(os.environ.get("PROGNOSIS_STALE_DAYS_CLUB", "35"))
+# National teams play in windows months apart.
+PROGNOSIS_STALE_DAYS_NATIONAL = int(os.environ.get("PROGNOSIS_STALE_DAYS_NATIONAL", "200"))
+
 _TENNIS_SURFACE_KW = {
     "Grass": ["wimbledon", "halle", "queen", "hertogenbosch", "eastbourne", "mallorca",
               "newport", "nottingham", "birmingham"],
@@ -3496,121 +3576,141 @@ def _tennis_surface(sport_name):
 
 
 def _prognosis_category(sport_name):
-    s = (sport_name or "").lower()
-    if any(k in s for k in ["world cup", "nations", "euro", "copa"]):
+    """('national' | 'tennis' | 'football_club', tennis surface).
+
+    Was `"euro" in name or "world cup" in name`, which put the EUROpa League and
+    the Club WORLD CUP among the national teams — their fixtures had no Elo, no
+    form and no H2H. The rule now lives in teamnames.competition_kind."""
+    from collectors.teamnames import competition_kind
+    kind = competition_kind(sport_name)
+    if kind == "national":
         return "national", None
-    if any(k in s for k in ["tennis", "atp", "wta"]):
+    if kind == "tennis":
         return "tennis", _tennis_surface(sport_name)
     return "football_club", None
 
 
-def _fuzzy_team_filter(team):
-    """Return (exact, like) params for matching a team across data sources whose
-    names differ slightly (The Odds API vs football-data.co.uk)."""
-    t = (team or "").strip()
-    # longest word as a cheap discriminator for a LIKE fallback
-    words = [w for w in t.replace(".", " ").split() if len(w) >= 4]
-    like = f"%{max(words, key=len)}%" if words else f"%{t}%"
-    return t, like
+def _team_recent_football(conn, canon, limit=8, national=False):
+    """Most-recent finished matches of ONE team, newest first.
 
-
-def _team_recent_football(conn, team, limit=8, national=False):
-    """Most-recent finished matches for a team (goals for/against + W/D/L), from
-    the results history. Best-effort fuzzy name match; returns [] if none."""
+    `canon` is the team's name as the results tables spell it (canonical_team()).
+    The match is exact. It used to fall back to `LIKE '%<longest word>%'`, which
+    built Manchester United's form out of "%Manchester%" (City's matches too),
+    West Ham's out of "%United%" (four other clubs) and Dortmund's out of
+    "%Borussia%" (Mönchengladbach's)."""
+    if not canon:
+        return []
     tbl = "national_matches" if national else "football_matches"
-    exact, like = _fuzzy_team_filter(team)
+    only = "" if national else _fd_only_sql()
     q = (f"SELECT date, home_team, away_team, home_goals, away_goals FROM {tbl} "
-         "WHERE (home_team = ? OR away_team = ?) AND home_goals IS NOT NULL "
+         f"WHERE (home_team = ? OR away_team = ?) AND home_goals IS NOT NULL{only} "
          "ORDER BY date DESC LIMIT ?")
     try:
-        rows = conn.execute(q, (exact, exact, limit)).fetchall()
-        if not rows:
-            q2 = (f"SELECT date, home_team, away_team, home_goals, away_goals FROM {tbl} "
-                  "WHERE (home_team LIKE ? OR away_team LIKE ?) AND home_goals IS NOT NULL "
-                  "ORDER BY date DESC LIMIT ?")
-            rows = conn.execute(q2, (like, like, limit)).fetchall()
-    except Exception:
+        return [dict(r) for r in conn.execute(q, (canon, canon, limit)).fetchall()]
+    except Exception as e:                             # noqa: BLE001
+        print(f"WARN _team_recent_football({canon!r}): {e}", flush=True)
         return []
-    return [dict(r) for r in rows]
 
 
-def _team_goal_rates(matches, team):
-    """Avg goals for / against over the given matches (fuzzy team side detect)."""
-    _, like = _fuzzy_team_filter(team)
-    key = like.strip("%").lower()
+def _team_goal_rates(matches, canon):
+    """Avg goals for / against of `canon` over its own matches."""
     gf = ga = n = 0
     for m in matches:
-        h, a = (m.get("home_team") or ""), (m.get("away_team") or "")
-        if key in h.lower():
+        if m.get("home_team") == canon:
             gf += m["home_goals"]; ga += m["away_goals"]; n += 1
-        elif key in a.lower():
+        elif m.get("away_team") == canon:
             gf += m["away_goals"]; ga += m["home_goals"]; n += 1
     if n == 0:
         return None
     return {"gf": gf / n, "ga": ga / n, "n": n}
 
 
-def _h2h_football(conn, home, away, limit=6, national=False):
-    tbl = "national_matches" if national else "football_matches"
-    _, lh = _fuzzy_team_filter(home)
-    _, la = _fuzzy_team_filter(away)
-    q = (f"SELECT date, home_team, away_team, home_goals, away_goals FROM {tbl} "
-         "WHERE ((home_team LIKE ? AND away_team LIKE ?) OR (home_team LIKE ? AND away_team LIKE ?)) "
-         "AND home_goals IS NOT NULL ORDER BY date DESC LIMIT ?")
-    try:
-        rows = conn.execute(q, (lh, la, la, lh, limit)).fetchall()
-    except Exception:
+def _h2h_football(conn, canon_home, canon_away, limit=6, national=False):
+    """Past meetings of exactly these two teams (either venue), newest first."""
+    if not canon_home or not canon_away:
         return []
-    out = []
-    for r in rows:
-        out.append({"date": r["date"], "home_team": r["home_team"], "away_team": r["away_team"],
-                    "home_goals": r["home_goals"], "away_goals": r["away_goals"]})
-    return out
+    tbl = "national_matches" if national else "football_matches"
+    only = "" if national else _fd_only_sql()
+    q = (f"SELECT date, home_team, away_team, home_goals, away_goals FROM {tbl} "
+         "WHERE ((home_team = ? AND away_team = ?) OR (home_team = ? AND away_team = ?)) "
+         f"AND home_goals IS NOT NULL{only} ORDER BY date DESC LIMIT ?")
+    try:
+        rows = conn.execute(q, (canon_home, canon_away, canon_away, canon_home, limit)).fetchall()
+    except Exception as e:                             # noqa: BLE001
+        print(f"WARN _h2h_football({canon_home!r}, {canon_away!r}): {e}", flush=True)
+        return []
+    return [{"date": r["date"], "home_team": r["home_team"], "away_team": r["away_team"],
+             "home_goals": r["home_goals"], "away_goals": r["away_goals"]} for r in rows]
+
+
+_tennis_names = {"at": 0.0, "by_norm": None}
+
+
+def _tennis_player(conn, player):
+    """The player's name as tennis_matches spells it, or None.
+
+    Exact first, then the same name ignoring accents/hyphens/case. It used to be
+    `LIKE '%<longest word>%'`, which for "Alexander Zverev" searched "%Alexander%"
+    and for "Jessica Pegula" searched "%Jessica%" — other players' matches."""
+    if not player:
+        return None
+    try:
+        from collectors.teamnames import norm as _norm
+        if _tennis_names["by_norm"] is None or time.time() - _tennis_names["at"] > 3600:
+            by_norm = {}
+            for r in conn.execute(
+                    "SELECT winner_name AS n FROM tennis_matches WHERE winner_name IS NOT NULL "
+                    "UNION SELECT loser_name AS n FROM tennis_matches WHERE loser_name IS NOT NULL").fetchall():
+                by_norm.setdefault(_norm(r["n"]), []).append(r["n"])
+            _tennis_names["by_norm"], _tennis_names["at"] = by_norm, time.time()
+        hit = _tennis_names["by_norm"].get(_norm(player))
+        if hit and len(set(hit)) == 1:
+            return hit[0]
+        if hit and player in hit:
+            return player
+    except Exception as e:                             # noqa: BLE001
+        print(f"WARN _tennis_player({player!r}): {e}", flush=True)
+    return None
 
 
 def _tennis_recent(conn, player, limit=8):
     """Last matches for a tennis player from tennis_matches (winner/loser rows).
-    Returns {'results': ['W','L',...] most-recent-first, wins, losses, n, last_surface}."""
-    _, like = _fuzzy_team_filter(player)
-    key = like.strip("%").lower()
+    Returns {'results': ['W','L',...] most-recent-first, wins, losses, n, last_date}."""
+    name = _tennis_player(conn, player)
+    if not name:
+        return None
     try:
         rows = conn.execute(
             "SELECT tourney_date, winner_name, loser_name, surface, tourney_name "
-            "FROM tennis_matches WHERE (winner_name LIKE ? OR loser_name LIKE ?) "
-            "ORDER BY tourney_date DESC LIMIT ?", (like, like, limit)).fetchall()
+            "FROM tennis_matches WHERE (winner_name = ? OR loser_name = ?) "
+            "ORDER BY tourney_date DESC LIMIT ?", (name, name, limit)).fetchall()
     except Exception:
         return None
-    results = []
-    for r in rows:
-        w = (r["winner_name"] or "").lower()
-        if key in w:
-            results.append(("W", r["surface"], r["tourney_name"]))
-        elif key in (r["loser_name"] or "").lower():
-            results.append(("L", r["surface"], r["tourney_name"]))
+    results = [("W" if r["winner_name"] == name else "L") for r in rows]
     if not results:
         return None
-    wins = sum(1 for x in results if x[0] == "W")
-    return {"results": [x[0] for x in results], "wins": wins,
-            "losses": len(results) - wins, "n": len(results)}
+    wins = results.count("W")
+    return {"results": results, "wins": wins, "losses": len(results) - wins, "n": len(results),
+            "last_date": str(rows[0]["tourney_date"]) if rows else None}
 
 
 def _tennis_h2h(conn, p1, p2, limit=8):
     """Head-to-head matches between two tennis players."""
-    _, l1 = _fuzzy_team_filter(p1)
-    _, l2 = _fuzzy_team_filter(p2)
-    k1, k2 = l1.strip("%").lower(), l2.strip("%").lower()
+    n1, n2 = _tennis_player(conn, p1), _tennis_player(conn, p2)
+    if not n1 or not n2:
+        return None
     try:
         rows = conn.execute(
             "SELECT tourney_date, winner_name, loser_name, surface, tourney_name, score "
-            "FROM tennis_matches WHERE ((winner_name LIKE ? AND loser_name LIKE ?) "
-            "OR (winner_name LIKE ? AND loser_name LIKE ?)) ORDER BY tourney_date DESC LIMIT ?",
-            (l1, l2, l2, l1, limit)).fetchall()
+            "FROM tennis_matches WHERE ((winner_name = ? AND loser_name = ?) "
+            "OR (winner_name = ? AND loser_name = ?)) ORDER BY tourney_date DESC LIMIT ?",
+            (n1, n2, n2, n1, limit)).fetchall()
     except Exception:
         return None
     matches, w1, w2 = [], 0, 0
     for r in rows:
         win = r["winner_name"]
-        if k1 in (win or "").lower(): w1 += 1
+        if win == n1: w1 += 1
         else: w2 += 1
         matches.append({"date": r["tourney_date"], "winner": win,
                         "surface": r["surface"], "tourney": r["tourney_name"], "score": r["score"]})
@@ -3654,24 +3754,27 @@ def poisson_pmf_local(k, lam):
 
 
 def _devig_pin_odds(pin_odds):
-    """(home, draw, away) decimal odds -> devigged pct dict, or None."""
+    """(home, draw, away) decimal odds -> devigged pct dict, or None.
+
+    Power method, the same one Value Bets and the closing line use. It used to be
+    the proportional method here only, so the "probabilidade do mercado" on the
+    prognosis page and the "true prob" on the Value Bets card for the SAME game
+    differed by up to ~1 point on favourites and longshots."""
     if not pin_odds:
         return None
     h_o, d_o, a_o = pin_odds
     if not (h_o and a_o and h_o > 1 and a_o > 1):
         return None
-    if d_o and d_o > 1:
-        m = 1 / h_o + 1 / d_o + 1 / a_o
-        return {"home": round((1 / h_o) / m * 100, 1),
-                "draw": round((1 / d_o) / m * 100, 1),
-                "away": round((1 / a_o) / m * 100, 1)}
-    m = 1 / h_o + 1 / a_o
-    return {"home": round((1 / h_o) / m * 100, 1), "draw": None,
-            "away": round((1 / a_o) / m * 100, 1)}
+    dv = remove_vig_power(h_o, d_o if (d_o and d_o > 1) else None, a_o)
+    if not dv:
+        return None
+    return {"home": round(dv["home"], 1),
+            "draw": round(dv["draw"], 1) if dv.get("draw") is not None else None,
+            "away": round(dv["away"], 1)}
 
 
 def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
-                        pin_odds=None):
+                        pin_odds=None, ref_updated_at=None):
     """Pure-model prognosis for one fixture (NO edge/CLV). Returns a dict the
     match-analysis view renders. Degrades gracefully: any missing data source is
     simply omitted, never fatal.
@@ -3690,18 +3793,40 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
         "elo": None, "market": None, "probs": None, "basis": None,
         "poisson": None, "form": None, "h2h": None, "tennis_form": None, "tennis_h2h": None,
         "best_pick": None, "confidence": None, "confidence_tier": None,
-        "agreement": None, "notes": [],
+        "agreement": None, "notes": [], "data": None,
     }
+
+    # ---- WHO are these two teams in our results? Resolved once, used by every
+    # lookup below (Elo, form, goal rates, H2H). None = we hold no results for the
+    # team, and then nothing about it is shown — never another team's numbers. ----
+    canon_h = canon_a = None
+    if not is_tennis:
+        canon_h = canonical_team(home_team, sport_name, national=is_national)
+        canon_a = canonical_team(away_team, sport_name, national=is_national)
+        missing = [t for t, c in ((home_team, canon_h), (away_team, canon_a)) if not c]
+        if missing:
+            out["notes"].append(
+                "Sem histórico de resultados para " + " e ".join(missing)
+                + " — sem Elo, forma nem H2H desta(s) equipa(s).")
 
     # ---- Elo (tennis: try the match surface first, fall back to All) ----
     elo = None
     try:
-        elo = elo_based_probability(home_team, away_team, category, surface=surface)
+        elo = elo_based_probability(home_team, away_team, category, surface=surface,
+                                    sport_name=sport_name)
         if not elo and is_tennis and surface != "All":
             elo = elo_based_probability(home_team, away_team, category, surface="All")
             out["surface"] = "All"  # signal we used the overall rating
     except Exception:
         elo = None
+    # Club ratings are per league (each league averages 1500): for two clubs of
+    # different countries the difference between their ratings means nothing.
+    # Keep the ratings for display, but never turn them into a probability.
+    elo_usable = elo
+    if elo and elo.get("comparable") is False:
+        elo_usable = None
+        out["notes"].append("Clubes de ligas diferentes: o Elo de cada um mede a força dentro da "
+                            "sua liga e não é comparável — a leitura usa só a linha do mercado.")
     out["elo"] = elo
 
     # ---- Market devig (for the blended headline) ----
@@ -3712,16 +3837,27 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
         market = None
     out["market"] = market
 
+    # The line is only as current as the last odds refresh.
+    if market and ref_updated_at:
+        try:
+            from datetime import datetime as _dt0
+            _age = (_dt0.utcnow() - _dt0.strptime(str(ref_updated_at)[:16], "%Y-%m-%d %H:%M")).total_seconds() / 3600.0
+            out["market_age_h"] = round(_age, 1)
+            if _age > 6:
+                out["notes"].append(f"A linha usada tem {_age:.0f}h — atualiza as odds para uma leitura atual.")
+        except (TypeError, ValueError):
+            pass
+
     # ---- Poisson shape (O/U, scorelines, BTTS, agreement vote) — football only ----
     poisson = None
     if not is_tennis:
         try:
             conn = get_connection()
-            hm = _team_recent_football(conn, home_team, national=is_national)
-            am = _team_recent_football(conn, away_team, national=is_national)
+            hm = _team_recent_football(conn, canon_h, national=is_national)
+            am = _team_recent_football(conn, canon_a, national=is_national)
             conn.close()
-            hr = _team_goal_rates(hm, home_team)
-            ar = _team_goal_rates(am, away_team)
+            hr = _team_goal_rates(hm, canon_h)
+            ar = _team_goal_rates(am, canon_a)
             if hr and ar:
                 # mirror the live xG-Poisson blend (home boost / away damp)
                 lam_h = (hr["gf"] + ar["ga"]) / 2 * 1.10
@@ -3733,32 +3869,20 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
     out["poisson"] = poisson
 
     # ---- Recent form ----
+    hm = am = []
     try:
-        conn = get_connection()
-        if is_national:
-            allm = [dict(r) for r in conn.execute(
-                "SELECT home_team, away_team, home_goals, away_goals FROM national_matches ORDER BY date DESC LIMIT 200").fetchall()]
-        else:
-            allm = []
-        conn.close()
         if not is_tennis:
             conn = get_connection()
-            hm = _team_recent_football(conn, home_team, national=is_national)
-            am = _team_recent_football(conn, away_team, national=is_national)
+            hm = _team_recent_football(conn, canon_h, national=is_national)
+            am = _team_recent_football(conn, canon_a, national=is_national)
             conn.close()
-            def _form(matches, team):
-                _, like = _fuzzy_team_filter(team); key = like.strip("%").lower()
+            def _form(matches, canon):
+                if not canon or not matches or not calculate_recent_form:
+                    return None
                 ml = [{"home_team": m["home_team"], "away_team": m["away_team"],
                        "home_score": m["home_goals"], "away_score": m["away_goals"]} for m in matches]
-                # pick the name as it appears in the data for calculate_recent_form
-                name = None
-                for m in matches:
-                    if key in (m.get("home_team") or "").lower(): name = m["home_team"]; break
-                    if key in (m.get("away_team") or "").lower(): name = m["away_team"]; break
-                if not name or not calculate_recent_form:
-                    return None
-                return calculate_recent_form(name, ml, last_n=6)
-            hf, af = _form(hm, home_team), _form(am, away_team)
+                return calculate_recent_form(canon, ml, last_n=6)
+            hf, af = _form(hm, canon_h), _form(am, canon_a)
             if hf or af:
                 out["form"] = {"home": hf, "away": af}
     except Exception:
@@ -3768,13 +3892,12 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
     try:
         if not is_tennis:
             conn = get_connection()
-            h2h = _h2h_football(conn, home_team, away_team, national=is_national)
+            h2h = _h2h_football(conn, canon_h, canon_a, national=is_national)
             conn.close()
             if h2h:
                 hw = aw = dr = 0
-                _, lh = _fuzzy_team_filter(home_team); hk = lh.strip("%").lower()
                 for m in h2h:
-                    home_is_h = hk in (m["home_team"] or "").lower()
+                    home_is_h = m["home_team"] == canon_h
                     hg, ag = m["home_goals"], m["away_goals"]
                     if hg == ag: dr += 1
                     elif (hg > ag) == home_is_h: hw += 1
@@ -3782,6 +3905,34 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
                 out["h2h"] = {"matches": h2h, "home_wins": hw, "away_wins": aw, "draws": dr, "n": len(h2h)}
     except Exception:
         pass
+
+    # ---- HOW CURRENT is what we know about these teams? The results stopped at
+    # 31 May once and the page kept printing "forma" and Elo as if they were live.
+    # Say the date; and say it loudly when it is old. ----
+    try:
+        from datetime import datetime as _dt
+        def _last(matches):
+            ds = [str(m.get("date") or "")[:10] for m in matches if m.get("date")]
+            return max(ds) if ds else None
+        lh, la = _last(hm), _last(am)
+        out["data"] = {"home_name": canon_h, "away_name": canon_a,
+                       "home_last_result": lh, "away_last_result": la, "stale": False}
+        ref = _parse_ts(commence_time) or _dt.utcnow()
+        ages = []
+        for d_ in (lh, la):
+            try:
+                ages.append((ref - _dt.strptime(d_, "%Y-%m-%d")).days)
+            except (TypeError, ValueError):
+                pass
+        limit = PROGNOSIS_STALE_DAYS_NATIONAL if is_national else PROGNOSIS_STALE_DAYS_CLUB
+        if ages and not is_tennis and max(ages) > limit:
+            out["data"]["stale"] = True
+            oldest = min(x for x in (lh, la) if x)
+            out["notes"].append(
+                f"Atenção: o último resultado que temos é de {oldest[8:10]}/{oldest[5:7]}/{oldest[:4]} "
+                f"(há {max(ages)} dias). Forma, golos e Elo podem estar desatualizados.")
+    except Exception as e:                             # noqa: BLE001
+        print(f"WARN prognosis freshness: {e}", flush=True)
 
     # ---- Tennis form + H2H (players) ----
     if is_tennis:
@@ -3798,29 +3949,28 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
         except Exception:
             pass
 
-    # ---- Headline probabilities: BLEND (market+Elo) > Elo > market alone ----
+    # ---- Headline probabilities: the MARKET when there is a line, else Elo ----
+    # Measured, not assumed (scripts/prognosis_backtest.py — walk-forward on the
+    # 17,718 matches of 2022-23..2026-27, 16 divisions, that have a Pinnacle line):
+    #     devigged Pinnacle price      log-loss 0.9776   52.4% right
+    #     50% market + 50% Elo         log-loss 0.9870   51.8%   <- what this WAS
+    #     Elo alone                    log-loss 1.0085   50.3%
+    # and the log-loss falls steadily as the market's weight goes from 0 to 100%.
+    # Elo knows nothing a sharp price does not already contain, so averaging it in
+    # only dilutes the better number. It stays as the fallback when there is no
+    # line, and as a second opinion ("concordam" / "divergem").
     spine, basis = None, None
-    if elo and market:
-        labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
-        spine = {}
-        for k in labels:
-            e_v, m_v = elo.get(k), market.get(k)
-            if e_v is not None and m_v is not None:
-                spine[k] = round((e_v + m_v) / 2, 1)
-            elif e_v is not None:
-                spine[k] = e_v
-        basis = "Elo + mercado"
-    elif elo:
-        labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
-        spine = {k: elo.get(k) for k in labels if elo.get(k) is not None}
-        basis = "Elo"
-    elif market:
+    if market:
         spine = {k: v for k, v in market.items() if v is not None}
         basis = "mercado"
+    elif elo_usable:
+        labels = ["home", "draw", "away"] if elo_usable.get("draw") is not None else ["home", "away"]
+        spine = {k: elo_usable.get(k) for k in labels if elo_usable.get(k) is not None}
+        basis = "Elo"
     out["probs"] = spine
     out["basis"] = basis
 
-    # ---- Confidence + agreement + best pick (on the blended spine) ----
+    # ---- Confidence + agreement + best pick ----
     def _argmax(d):
         ks = [k for k in ("home", "draw", "away") if d and d.get(k) is not None]
         return max(ks, key=lambda k: d[k]) if ks else None
@@ -3832,11 +3982,7 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
         out["best_pick"] = {"outcome": top, "selection": sel_name, "prob": conf}
         out["confidence"] = conf
 
-        # AGREEMENT THAT MATTERS = the two STRONG, calibrated signals (Elo vs the
-        # sharp market). The goals-Poisson is overconfident (model-lab: says 75%,
-        # happens 52%), so it must NOT be allowed to downgrade a market-backed
-        # read — it is only an informational side-note for context.
-        elo_top, mkt_top = _argmax(elo), _argmax(market)
+        elo_top, mkt_top = _argmax(elo_usable), _argmax(market)
         strong_agree = (elo_top == mkt_top) if (elo_top and mkt_top) else None
         out["agreement"] = strong_agree
         goals_agree = None
@@ -3846,49 +3992,58 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
             goals_agree = (g_top == top)
         out["goals_agreement"] = goals_agree
 
-        # tier from the calibrated blend confidence, gated ONLY by strong agreement
-        if conf >= 70 and strong_agree is not False:
-            tier = "Alta"
-        elif conf >= 60 and strong_agree is not False:
-            tier = "Média-alta"
-        elif conf >= 50:
-            tier = "Média"
-        else:
-            tier = "Baixa"
+        # Tier = what a confidence in this band actually did in the backtest
+        # (market number): >=70% was right ~81% of the time, 60-70% ~65%,
+        # 50-60% ~55%, under 50% ~42%. PROGNOSIS_TIERS keeps those next to the
+        # thresholds so the page can print them.
+        tier = next(t["tier"] for t in PROGNOSIS_TIERS if conf >= t["min"])
+        out["confidence_tier"] = tier
+        out["tier_hit_rate"] = next(t["hit"] for t in PROGNOSIS_TIERS if conf >= t["min"])
         if strong_agree is False:
-            out["notes"].append("Elo e mercado discordam no favorito — leitura menos segura.")
-            if tier == "Alta":
-                tier = "Média-alta"
+            out["notes"].append("O Elo aponta para outro favorito. No backtest o mercado é o "
+                                "preditor mais certeiro, por isso a leitura segue o mercado.")
         if goals_agree is False:
             out["notes"].append("O modelo de golos aponta noutra direção (sinal fraco, só contexto).")
-        out["confidence_tier"] = tier
 
-        # RELIABILITY OF THE READ — data-driven, so the user knows how much to
-        # trust it before betting. Based on which strong signals are present and
-        # whether they confirm each other.
-        if market and elo and strong_agree:
-            rel, why = "Alta", "linha sharp + Elo concordam"
-        elif market and elo:
-            rel, why = "Média", "linha sharp + Elo, mas divergem no favorito"
-        elif market:
-            rel, why = "Média", "só a linha sharp (sem Elo destas equipas)"
-        elif elo:
-            rel, why = "Baixa", "só o Elo (sem linha sharp da Pinnacle)"
+        # RELIABILITY OF THE READ = where the number comes from.
+        if market:
+            rel, why = "Alta", "linha sharp da Pinnacle sem margem — o melhor preditor no backtest"
+        elif elo_usable:
+            thin = min(elo_usable.get("games_home") or 0, elo_usable.get("games_away") or 0) < 30
+            stale = bool((out.get("data") or {}).get("stale"))
+            if stale or thin:
+                rel = "Baixa"
+                why = ("só o Elo, e com resultados desatualizados" if stale
+                       else "só o Elo, com poucos jogos de uma das equipas")
+            else:
+                rel, why = "Média", "só o Elo (sem linha da Pinnacle) — acerta menos do que o mercado"
         else:
             rel, why = "Baixa", "dados escassos"
-        # thin context caps reliability at Média (a rich read needs some history)
-        has_ctx = bool(out.get("form")) or ((out.get("h2h") or {}).get("n", 0) >= 3)
-        if rel == "Alta" and not has_ctx and category != "tennis":
-            rel, why = "Média", why + " (sem forma/H2H suficientes)"
         out["reliability"] = rel
         out["reliability_why"] = why
     else:
-        out["notes"].append("Sem rating Elo nem odds Pinnacle para estas equipas — prognóstico indisponível.")
+        out["notes"].append("Sem linha da Pinnacle e sem Elo comparável para estas equipas — "
+                            "prognóstico indisponível.")
         out["reliability"] = "Baixa"
 
+    # ---- The goals model, as measured. It is OVERCONFIDENT: when it said 70-75%
+    # for a side of Over/Under 2.5 that side came in 59.6% of the time (22,373
+    # matches). Printing its raw number next to the calibrated 1X2 made a weak
+    # "Over 2.5: 78%" outrank everything as "the most likely market". Shrink it to
+    # what such a number has actually been worth before it is shown or ranked. ----
+    if poisson:
+        def _shrunk(pct, k):
+            return round(50.0 + k * (pct - 50.0), 1)
+        poisson["raw"] = {k: poisson[k] for k in ("over25", "under25", "btts_yes", "btts_no")}
+        poisson["over25"] = _shrunk(poisson["over25"], GOALS_OU_SHRINK)
+        poisson["under25"] = round(100.0 - poisson["over25"], 1)
+        poisson["btts_yes"] = _shrunk(poisson["btts_yes"], GOALS_BTTS_SHRINK)
+        poisson["btts_no"] = round(100.0 - poisson["btts_yes"], 1)
+        poisson["calibrated"] = True
+
     # ---- MARKET RANKING: most-likely market per match ("qual o mercado mais
-    # provável?"). Derived from the calibrated blend; O/U + BTTS come from the
-    # goals-Poisson and are flagged as auxiliary (weaker signal, 53% acc). ----
+    # provável?"). 1X2-derived rows come from the headline; O/U + BTTS come from
+    # the (calibrated) goals model and are flagged as auxiliary. ----
     markets = []
     if spine:
         top = max(spine, key=spine.get)
@@ -3922,12 +4077,24 @@ def get_match_prognosis(home_team, away_team, sport_name, commence_time=None,
     return out
 
 
-def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
-    """Rank upcoming fixtures by (calibrated) Elo confidence, keeping only picks
-    where the goals-Poisson AGREES with Elo — the combination the backtest showed
-    actually raises the realised hit-rate. Returns the top legs for a "Múltipla do
-    Dia". FOR FUN ONLY: an accumulator multiplies the bookmaker margin, so this is
-    -EV by construction and is never part of the edge/CLV system."""
+def get_daily_multiple(max_legs=5, min_conf=65, window_hours=48):
+    """The most likely winners among the upcoming fixtures, as an accumulator.
+
+    Each leg's confidence is the SAME number the match page shows: the devigged
+    Pinnacle price when the game has a line, Elo otherwise (and never a
+    cross-league Elo). Measured on 2,933 past legs chosen this way (market >= 65%):
+    they said 75.1% on average and came in 77.3% of the time.
+
+    What changed, and why (scripts/prognosis_backtest.py):
+      * confidence was the 50/50 market+Elo average — a worse predictor than the
+        market alone (log-loss 0.9870 vs 0.9776);
+      * a leg was dropped when the goals model disagreed. That filter cost legs
+        and bought nothing: 76.6% of its legs came in, against 77.3% without it;
+      * the odd shown was the best price at ANY bookmaker; it is now the user's
+        own book (1xBet) whenever 1xBet quotes the leg.
+
+    FOR FUN ONLY: an accumulator multiplies the bookmaker's margin on every leg.
+    """
     # preload Elo once so per-event lookups are cheap
     global _session_elo
     try:
@@ -3935,10 +4102,10 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         elo_rows = [dict(r) for r in conn.execute("SELECT * FROM elo_ratings").fetchall()]
         _session_elo = {(r["entity"].lower(), r["category"], r.get("surface") or ''): r for r in elo_rows}
         rows = conn.execute(
-            "SELECT event_id, sport_name, home_team, away_team, commence_time, "
+            "SELECT event_id, sport_name, home_team, away_team, commence_time, updated_at, "
             "pin_home, pin_draw, pin_away, "
             "x1_home, x1_draw, x1_away, best_home, best_draw, best_away "
-            "FROM odds_events WHERE commence_time > datetime('now','-3 hours') "
+            "FROM odds_events WHERE commence_time > datetime('now') "
             f"AND commence_time < datetime('now','+{int(window_hours)} hours') "
             "ORDER BY commence_time ASC"
         ).fetchall()
@@ -3947,6 +4114,7 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
         try: conn.close()
         except Exception: pass
         return {"legs": [], "note": "sem dados"}
+    conn.close()
 
     # DEDUPE: the same real-world match can be stored under two sport_keys (e.g.
     # World Cup + a team's other competition key) with different event_ids and
@@ -3955,7 +4123,7 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
     # by the (sorted) team-pair — and among duplicates keep the row with the most
     # odds populated (so a leg never shows "odd —" when a priced copy exists).
     by_fixture = {}
-    for r in rows[:120]:
+    for r in rows[:200]:
         d = dict(r)
         key = tuple(sorted([(d.get("home_team") or "").lower().strip(),
                             (d.get("away_team") or "").lower().strip()]))
@@ -3965,61 +4133,55 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
     dedup_rows = [v[1] for v in by_fixture.values()]
     dedup_rows.sort(key=lambda d: d.get("commence_time") or "")
 
+    from datetime import datetime as _dt
+    now = _dt.utcnow()
+    oldest_ref_h = None
     candidates = []
     for d in dedup_rows:
         home, away, sport = d["home_team"], d["away_team"], d["sport_name"]
         category, surface = _prognosis_category(sport)
-        is_tennis = category == "tennis"
-        is_national = category == "national"
-        try:
-            elo = elo_based_probability(home, away, category, surface=surface)
-        except Exception:
-            elo = None
-        if not elo:
-            continue
-        labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
-        # blended confidence (market+Elo) when Pinnacle is priced — same spine as
-        # get_match_prognosis, better accuracy and conservative calibration
         market = _devig_pin_odds((d.get("pin_home"), d.get("pin_draw"), d.get("pin_away")))
-        probs = {}
-        for k in labels:
-            e_v = elo.get(k)
-            m_v = market.get(k) if market else None
-            if e_v is None:
+        if market:
+            probs = {k: v for k, v in market.items() if v is not None}
+            basis = "mercado"
+        else:
+            try:
+                elo = elo_based_probability(home, away, category, surface=surface, sport_name=sport)
+            except Exception:
+                elo = None
+            if not elo or elo.get("comparable") is False:
                 continue
-            probs[k] = round((e_v + m_v) / 2, 1) if m_v is not None else e_v
+            labels = ["home", "draw", "away"] if elo.get("draw") is not None else ["home", "away"]
+            probs = {k: elo.get(k) for k in labels if elo.get(k) is not None}
+            basis = "Elo"
         if not probs:
             continue
         top = max(probs, key=probs.get)
         conf = probs[top]
         if conf < min_conf:
             continue
-        # agreement vote with goals-Poisson (football only) using the shared conn
-        agree = None
-        if not is_tennis:
-            try:
-                hm = _team_recent_football(conn, home, national=is_national)
-                am = _team_recent_football(conn, away, national=is_national)
-                hr, ar = _team_goal_rates(hm, home), _team_goal_rates(am, away)
-                if hr and ar:
-                    ps = _poisson_shape((hr["gf"] + ar["ga"]) / 2 * 1.10,
-                                        (ar["gf"] + hr["ga"]) / 2 * 0.95)
-                    pk = {"home": ps["home"], "draw": ps.get("draw", 0), "away": ps["away"]}
-                    agree = (max((k for k in labels), key=lambda k: pk.get(k, 0)) == top)
-            except Exception:
-                agree = None
-        # require agreement when we could compute it (that's the gate that works)
-        if agree is False:
-            continue
-        odds_all = {"home": d.get("best_home") or d.get("x1_home"),
-                    "draw": d.get("best_draw") or d.get("x1_draw"),
-                    "away": d.get("best_away") or d.get("x1_away")}
+        # The user's own book first; another book's price only when 1xBet has none.
+        x1 = {"home": d.get("x1_home"), "draw": d.get("x1_draw"), "away": d.get("x1_away")}
+        best = {"home": d.get("best_home"), "draw": d.get("best_draw"), "away": d.get("best_away")}
+        odds_all = x1 if (x1.get(top) and x1[top] > 1) else best
+        odd_book = "1xBet" if odds_all is x1 else "melhor casa"
         odd = odds_all.get(top)
         sel = home if top == "home" else away if top == "away" else "Empate"
+        ref_age_h = None
+        try:
+            ref_age_h = round((now - _dt.strptime(str(d.get("updated_at"))[:16], "%Y-%m-%d %H:%M")).total_seconds() / 3600.0, 1)
+        except (TypeError, ValueError):
+            pass
+        if basis == "mercado" and ref_age_h is not None:
+            oldest_ref_h = ref_age_h if oldest_ref_h is None else max(oldest_ref_h, ref_age_h)
         leg = {
             "event_id": d["event_id"], "sport_name": sport, "commence_time": d["commence_time"],
             "home_team": home, "away_team": away, "selection": sel, "outcome": top,
-            "confidence": conf, "agreement": agree, "odd": odd,
+            "confidence": conf, "basis": basis, "odd": odd, "odd_book": odd_book if odd else None,
+            "ref_age_h": ref_age_h,
+            # what the confidence is worth at this price: > 0 only if the book pays
+            # more than the leg's fair odd, which for a single book is the exception
+            "ev_pct": round((odd * conf / 100.0 - 1) * 100, 1) if (odd and odd > 1) else None,
         }
         # safe variant: double chance fav-or-draw (football only). Book odd derived
         # by dutching the two 1X2 prices: odd_DC = 1/(1/o_fav + 1/o_draw).
@@ -4030,9 +4192,9 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
             if o_top and o_dr and o_top > 1 and o_dr > 1:
                 leg["dc_odd"] = round(1.0 / (1.0 / o_top + 1.0 / o_dr), 2)
         candidates.append(leg)
-    conn.close()
 
-    candidates.sort(key=lambda x: -x["confidence"])
+    # Market-backed legs first (the stronger number), then by confidence.
+    candidates.sort(key=lambda x: (x["basis"] != "mercado", -x["confidence"]))
     legs = candidates[:max_legs]
 
     def _combine(legs_, odd_key, prob_key):
@@ -4052,16 +4214,31 @@ def get_daily_multiple(max_legs=5, min_conf=65, window_hours=72):
     # much shorter combined odd — only legs where DC applies
     safe_legs = [l for l in candidates if l.get("dc_prob")][:max_legs]
     safe_odd, safe_hit = _combine(safe_legs, "dc_odd", "dc_prob")
-    return {
+    # Expected return of the accumulator at the prices shown: the product of the
+    # legs' own (odd x probability). Below 0 means the book's margin outweighs
+    # the legs' edge — the normal case.
+    ev = None
+    if combined_odd and all_hit is not None:
+        ev = round((combined_odd * all_hit / 100.0 - 1) * 100, 1)
+    note = ("Informativo e para diversão. Cada perna é o resultado mais provável segundo a linha da "
+            "Pinnacle sem margem (no backtest, pernas ≥65% acertaram 77%). Uma múltipla multiplica a "
+            "margem da casa em cada perna, por isso o retorno esperado é normalmente negativo. "
+            "Nada disto tem a ver com o sistema de edge/CLV da página Value Bets.")
+    out = {
         "legs": legs,
         "combined_odd": combined_odd,
         "model_all_hit_pct": all_hit,
+        "expected_return_pct": ev,
         "safe_legs": safe_legs,
         "safe_combined_odd": safe_odd,
         "safe_all_hit_pct": safe_hit,
-        "note": "Informativo e para diversão. Uma múltipla multiplica a margem da casa — é -EV. "
-                "Nada disto tem a ver com o sistema de edge/CLV da página Value Bets.",
+        "oldest_reference_h": oldest_ref_h,
+        "note": note,
     }
+    if oldest_ref_h is not None and oldest_ref_h > 6:
+        out["warning"] = (f"As odds de pelo menos uma perna têm {oldest_ref_h:.0f}h — as probabilidades e os "
+                          f"preços podem já ter mudado. Atualiza as odds (↻ Refresh em Value Bets).")
+    return out
 
 
 def get_elo_summary():
@@ -4231,8 +4408,8 @@ def diagnose_national_xg(limit=15):
     out = []
     for r in rows:
         d = dict(r)
-        sport = (d.get("sport_name") or "").lower()
-        if not any(k in sport for k in ("world cup", "nations", "euro", "copa")):
+        from collectors.teamnames import competition_kind
+        if competition_kind(d.get("sport_name")) != "national":
             continue
         home, away = d.get("home_team"), d.get("away_team")
         ref_h = d.get("bf_home") or d.get("pin_home")

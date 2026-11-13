@@ -461,7 +461,8 @@ async def api_match_prognosis(event_id: str):
     prog = get_match_prognosis(match.get("home_team"), match.get("away_team"),
                                match.get("sport_name"), match.get("commence_time"),
                                pin_odds=(match.get("pin_home"), match.get("pin_draw"),
-                                         match.get("pin_away")))
+                                         match.get("pin_away")),
+                               ref_updated_at=match.get("updated_at"))
     return JSONResponse(prog)
 
 @app.get("/api/daily-multiple")

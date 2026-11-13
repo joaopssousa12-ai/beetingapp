@@ -107,21 +107,27 @@ function render(d) {
 
   // Honesty banner — this page is context, NOT the edge/CLV system.
   let html = `<div class="md-info-banner">
-    <strong>Análise do modelo — informativa.</strong> Isto diz-te <em>em quem o modelo acha que devias apostar</em>
-    (Elo + mercado + forma + confrontos + golos), para contexto e diversão. <strong>Não</strong> é uma recomendação
-    de valor: o sistema de edge/CLV (semáforo 🟢) vive na página <strong>Value Bets</strong> e é independente disto.
-    A confiança vem da fusão Elo + linha sharp, o sinal mais preciso e calibrado no backtest (27.844 jogos).
+    <strong>Análise — informativa.</strong> Isto diz-te <em>qual é o resultado mais provável</em>, para contexto e
+    diversão. <strong>Não</strong> é uma recomendação de valor: o sistema de edge/CLV (semáforo 🟢) vive na página
+    <strong>Value Bets</strong> e é independente disto. O número principal é a probabilidade implícita na linha da
+    Pinnacle sem margem — no nosso backtest (17.718 jogos) foi o melhor preditor, melhor do que misturá-la com o Elo.
+    O Elo aparece como segunda opinião, e é o recurso quando o jogo não tem linha.
   </div>`;
 
   // === MELHOR PALPITE + CONFIANÇA + FIABILIDADE ===
   if (d.best_pick && d.confidence != null) {
     const tier = d.confidence_tier || 'Média';
-    const agr = d.agreement === true ? '✓ Elo e mercado concordam'
-              : d.agreement === false ? '⚠ Elo e mercado divergem' : '';
+    const agr = d.agreement === true ? '✓ Elo concorda com o mercado'
+              : d.agreement === false ? '⚠ Elo aponta outro favorito' : '';
+    const hitTxt = d.tier_hit_rate ? ` · no backtest, leituras neste escalão acertaram ~${d.tier_hit_rate}%` : '';
+    const dt = d.data || {};
+    const fmtD = x => x ? `${x.slice(8,10)}/${x.slice(5,7)}/${x.slice(0,4)}` : null;
+    const dataLine = (dt.home_last_result || dt.away_last_result)
+      ? `Resultados até: ${home} ${fmtD(dt.home_last_result) || '—'} · ${away} ${fmtD(dt.away_last_result) || '—'}` : '';
     const relCls = d.reliability === 'Alta' ? 'Alta' : d.reliability === 'Baixa' ? 'Baixa' : 'Média';
     const relDot = d.reliability === 'Alta' ? '🟢' : d.reliability === 'Baixa' ? '🔴' : '🟡';
     html += `<div class="md-pick-box">
-      <div class="md-pick-title">🎯 Melhor palpite do modelo</div>
+      <div class="md-pick-title">🎯 Resultado mais provável</div>
       <div class="md-pick-selection">${d.best_pick.selection}</div>
       <div class="md-pick-meta">
         <span class="md-tier ${tier}">Confiança: ${tier}</span>
@@ -130,17 +136,24 @@ function render(d) {
       </div>
       ${d.reliability ? `<div class="md-reliability">
         ${relDot} <strong>Fiabilidade da leitura: ${d.reliability}</strong>
-        <span style="color:var(--text3)">— ${d.reliability_why || ''}</span>
+        <span style="color:var(--text3)">— ${d.reliability_why || ''}${hitTxt}</span>
       </div>` : ''}
+      ${dataLine ? `<div style="font-size:11.5px;color:${dt.stale ? '#b45309' : 'var(--text3)'};margin-top:.4rem">${dt.stale ? '⚠ ' : ''}${dataLine}</div>` : ''}
       ${(d.notes && d.notes.length) ? `<div class="md-warn-banner">${d.notes.join(' ')}</div>` : ''}
     </div>`;
   }
 
-  // === PROBABILIDADES DO MODELO (blend Elo + mercado) ===
+  // Notes must never be lost: without a best pick (no line, no usable Elo) the
+  // box above is not drawn, and the reason was in the notes.
+  if (!(d.best_pick && d.confidence != null) && d.notes && d.notes.length) {
+    html += `<div class="md-warn-banner">${d.notes.join(' ')}</div>`;
+  }
+
+  // === PROBABILIDADES (mercado; Elo quando não há linha) ===
   if (probs) {
     const h = probs.home || 0, dr = probs.draw || 0, a = probs.away || 0;
     html += `<div class="md-section">
-      <div class="md-section-title">📈 Probabilidades do modelo <span style="font-size:11px;color:var(--text3);font-weight:400">(${basis})</span></div>
+      <div class="md-section-title">📈 Probabilidades <span style="font-size:11px;color:var(--text3);font-weight:400">(${basis})</span></div>
       <div class="md-prob-bar">
         <div class="md-prob-segment md-prob-home" style="width:${h}%">${h > 8 ? h + '%' : ''}</div>
         ${dr ? `<div class="md-prob-segment md-prob-draw" style="width:${dr}%">${dr > 8 ? dr + '%' : ''}</div>` : ''}
@@ -152,7 +165,9 @@ function render(d) {
         <span>${away}: ${a}% (${fairOdd(a)})</span>
       </div>
       ${elo ? `<div class="md-prob-labels" style="color:var(--text3)">
-        <span>Elo: ${elo.rating_home ?? '—'} vs ${elo.rating_away ?? '—'} (dif ${elo.rating_diff ?? '—'}) — Elo puro: ${elo.home ?? '—'}%${elo.draw != null ? ' / ' + elo.draw + '%' : ''} / ${elo.away ?? '—'}%</span>
+        <span>Elo: ${elo.rating_home ?? '—'} vs ${elo.rating_away ?? '—'}${elo.comparable === false
+          ? ' — ligas diferentes, não comparável'
+          : ` (dif ${elo.rating_diff ?? '—'}) — Elo puro: ${elo.home ?? '—'}%${elo.draw != null ? ' / ' + elo.draw + '%' : ''} / ${elo.away ?? '—'}%`}</span>
       </div>` : ''}
       ${d.market ? `<div class="md-prob-labels" style="color:var(--text3)">
         <span>Mercado (Pinnacle sem margem): ${d.market.home ?? '—'}%${d.market.draw != null ? ' / ' + d.market.draw + '%' : ''} / ${d.market.away ?? '—'}%</span>
@@ -171,7 +186,7 @@ function render(d) {
       <div class="md-section-title">🎯 Mercados mais prováveis <span style="font-size:11px;color:var(--text3);font-weight:400">(ordenados por probabilidade do modelo)</span></div>
       ${rows}
       <div style="font-size:11.5px;color:var(--text3);margin-top:0.6rem;line-height:1.5">
-        Probabilidade alta ⇒ odd baixa — o mercado já cobra por isso. "aux." = vem do modelo de golos (sinal mais fraco).
+        Probabilidade alta ⇒ odd baixa — o mercado já cobra por isso. "aux." = vem do modelo de golos (sinal fraco; os valores já vêm corrigidos pela calibração medida).
       </div>
     </div>`;
   }
@@ -246,8 +261,9 @@ function render(d) {
         <div class="md-stat"><div class="md-stat-label">Golos esperados</div><div class="md-stat-value">${poi.lambda_home}–${poi.lambda_away}</div></div>
       </div>
       ${sl ? `<div style="font-size:12px;color:var(--text3);margin-bottom:0.4rem">Resultados mais prováveis</div>${sl}` : ''}
-      <div class="md-warn-banner">O modelo de golos é <strong>sobreconfiante</strong> no 1X2 (por isso a confiança principal
-      vem do Elo, não daqui). Serve para O/U, ambas-marcam e forma do resultado.</div>
+      <div class="md-warn-banner">O modelo de golos (médias dos últimos 8 jogos) é <strong>fraco</strong>: no backtest acertou
+      o lado do O/U 2.5 em 54,6% dos jogos (o mercado 58,6%) e, quando dizia 72%, acontecia 60%. As percentagens acima já
+      estão <strong>corrigidas</strong> por essa medição, por isso raramente passam dos 60-65%. Serve de contexto, não de palpite.</div>
     </div>`;
   }
 

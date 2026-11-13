@@ -58,10 +58,20 @@ def compute_football_elo(status_callback=None):
         if status_callback: status_callback(msg)
 
     conn = get_connection()
-    matches = conn.execute("""
+    # football_matches holds the same matches under TWO spellings — the
+    # openfootball import ("Manchester United FC") and the football-data.co.uk one
+    # ("Man United"). Rating them together produced two half-teams for every
+    # club, each playing only the opponents spelled its own way, and which half a
+    # lookup found was luck. Rate ONE universe: football-data (16 divisions,
+    # current to the last weekend). The other is used only when it is all there is.
+    has_fd = conn.execute(
+        "SELECT COUNT(*) AS c FROM football_matches WHERE substr(match_id, 1, 3) = 'fd_'"
+    ).fetchone()["c"]
+    only = "AND substr(match_id, 1, 3) = 'fd_'" if has_fd else ""
+    matches = conn.execute(f"""
         SELECT date, home_team, away_team, home_goals, away_goals, league_name
         FROM football_matches
-        WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL
+        WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL {only}
         ORDER BY date ASC
     """).fetchall()
 
@@ -230,6 +240,12 @@ def collect_elo(status_callback=None):
     total = n1 + n2 + n3
     log_collection("elo ratings", "success", total, f"FB:{n1} Nat:{n2} Tennis:{n3}")
     cb(f"✓ Elo done: {n1} clubs, {n2} nations, {n3} tennis ratings.")
+    try:
+        # new results may have brought new team names: rebuild the name resolver
+        from collectors import teamnames
+        teamnames.invalidate()
+    except Exception:                                  # noqa: BLE001
+        pass
     return total
 
 
